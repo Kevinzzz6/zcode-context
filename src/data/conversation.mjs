@@ -2,6 +2,8 @@ import { DatabaseSync } from "node:sqlite";
 import { statSync } from "node:fs";
 import { ContextError } from "../domain/session.mjs";
 const TEXT_CHARS = 4000;
+// Token estimates of large outputs scale the script mix of a short sample to the full length.
+const SAMPLE_CHARS = 400;
 const DETAIL_ROWS = 400;
 const REQUIRED = ["id", "session_id", "time_created", "time_updated", "data"];
 function open(dbPath) {
@@ -32,7 +34,8 @@ const PART_FIELDS = ["type:$.type", "tool:$.tool", "callId:$.callID", "skill:$.s
 const select = fields => fields.map(x => { const [name, path] = x.split(":"); return field(path) + " AS " + name; }).join(",");
 
 // The session's conversation store: message semantics, compaction and timeline parts, Skill loads and injected text.
-// Rows are read incrementally by time_updated; a shrinking row count (rewind, deletion) reloads everything.
+// Rows are read incrementally by time_updated; a shrinking row count (a deleted message or part) reloads everything.
+// A rewind deletes nothing: the abandoned branch stays in the store and session.revert records the active one.
 export function readConversation(dbPath, sessionId, cache = null) {
   let handle;
   try {
@@ -55,6 +58,7 @@ export function readConversation(dbPath, sessionId, cache = null) {
       ",CASE WHEN ok AND json_extract(data,'$.type')='text' THEN substr(json_extract(data,'$.text'),1," + TEXT_CHARS + ") END AS text" +
       ",CASE WHEN ok AND json_extract(data,'$.type')='text' THEN length(json_extract(data,'$.text')) END AS textChars" +
       ",CASE WHEN ok AND json_extract(data,'$.tool')='Skill' THEN length(json_extract(data,'$.state.output')) END AS outputChars" +
+      ",CASE WHEN ok AND json_extract(data,'$.tool')='Skill' THEN substr(json_extract(data,'$.state.output'),1," + SAMPLE_CHARS + ") END AS outputSample" +
       ",CASE WHEN ok AND json_extract(data,'$.type') IN ('compaction','timeline') THEN data END AS raw" +
       " FROM (SELECT *,json_valid(data) AS ok FROM part WHERE session_id=? AND time_updated>=?)").all(sessionId, c.partCursor);
     // Only the parts events are built from are kept; every other part is reread only when it changes.
@@ -71,23 +75,45 @@ export function readConversation(dbPath, sessionId, cache = null) {
   } finally { handle?.db.close(); }
 }
 
-// The messages one compaction summarized, between two message sequences, with their parts reduced to titles and sizes.
-export function readSummarizedMessages(dbPath, sessionId, after, through) {
+// Sequences of the active conversation branch, or null when no rewind narrowed it. Follows ZCode's
+// selectActiveConversationBranch: the kept prefix plus everything after the cut (or from the created message).
+function activeSequences(db, sessionId) {
+  if (!new Set(db.prepare("PRAGMA table_info(session)").all().map(row => row.name)).has("revert")) return null;
+  const raw = db.prepare("SELECT revert FROM session WHERE id=?").get(sessionId)?.revert;
+  let revert = null;
+  try { revert = raw == null ? null : JSON.parse(raw); } catch { throw new ContextError("branch_unknown", "The rewind state is unreadable."); }
+  if (!revert?.targetMessageID) return null;
+  const rows = db.prepare("SELECT id,sequence FROM message WHERE session_id=? ORDER BY sequence").all(sessionId);
+  const index = id => rows.findIndex(row => row.id === id), target = index(revert.targetMessageID);
+  const keptIds = Array.isArray(revert.keptMessageIDs) ? new Set(revert.keptMessageIDs) : null;
+  if (!keptIds && target < 0) return null;
+  const kept = keptIds ? rows.filter(row => keptIds.has(row.id)) : rows.slice(0, target);
+  const cut = revert.branchCutAfterMessageID ? index(revert.branchCutAfterMessageID) : -1, created = revert.createdMessageID ? index(revert.createdMessageID) : -1;
+  const from = revert.branchCutAfterMessageID ? (cut < 0 ? rows.length : cut + 1) : created < 0 ? rows.length : created;
+  return new Set([...kept, ...rows.slice(from)].map(row => row.sequence));
+}
+
+// The messages one compaction summarized: after the newest earlier summary still on the active branch, through its
+// last summarized message. `after` lists earlier compaction summary sequences, newest first.
+export function readSummarizedMessages(dbPath, sessionId, { after = [], through, summary = null }) {
   let handle;
   try {
     handle = open(dbPath);
     const { db, sequence } = handle;
     if (sequence === "NULL") throw new ContextError("schema_unsupported", "Messages have no sequence.");
-    const messages = db.prepare("SELECT id,sequence," + select(MESSAGE_FIELDS) + " FROM (SELECT *,json_valid(data) AS ok FROM message" +
-      " WHERE session_id=? AND sequence>? AND sequence<=? ORDER BY sequence LIMIT " + (DETAIL_ROWS + 1) + ")").all(sessionId, after, through);
-    const total = db.prepare("SELECT count(*) AS n FROM message WHERE session_id=? AND sequence>? AND sequence<=?").get(sessionId, after, through).n;
+    const active = activeSequences(db, sessionId), live = value => !active || active.has(value);
+    if (!live(through) || (summary != null && !live(summary))) throw new ContextError("rewound_branch", "This compaction is on a rewound branch.");
+    const ids = db.prepare("SELECT id,sequence FROM message WHERE session_id=? AND sequence>? AND sequence<=? ORDER BY sequence")
+      .all(sessionId, after.find(live) ?? -1, through).filter(row => live(row.sequence));
+    const message = db.prepare("SELECT id,sequence," + select(MESSAGE_FIELDS) + " FROM (SELECT *,json_valid(data) AS ok FROM message WHERE session_id=? AND id=?)");
     const parts = db.prepare("SELECT message_id AS messageId,time_created AS created," + select(PART_FIELDS) +
       ",CASE WHEN ok THEN substr(json_extract(data,'$.text'),1,400) END AS text,CASE WHEN ok THEN length(json_extract(data,'$.text')) END AS textChars" +
       ",CASE WHEN ok THEN json_extract(data,'$.state.input') END AS input,CASE WHEN ok THEN length(json_extract(data,'$.state.output')) END AS outputChars" +
+      ",CASE WHEN ok THEN substr(json_extract(data,'$.state.output'),1," + SAMPLE_CHARS + ") END AS outputSample" +
       " FROM (SELECT *,json_valid(data) AS ok FROM part WHERE session_id=? AND message_id=?) ORDER BY created");
-    const rows = messages.slice(0, DETAIL_ROWS).map(m => ({ ...m, parts: parts.all(sessionId, m.id) }));
+    const rows = ids.slice(0, DETAIL_ROWS).map(row => ({ ...message.get(sessionId, row.id), parts: parts.all(sessionId, row.id) }));
     db.exec("COMMIT");
-    return { available: true, messages: rows, total: Number(total) };
+    return { available: true, messages: rows, total: ids.length };
   } catch (error) {
     if (handle) { try { handle.db.exec("ROLLBACK"); } catch {} }
     return { available: false, code: failure(error), messages: [], total: 0 };

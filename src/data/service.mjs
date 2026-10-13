@@ -39,11 +39,10 @@ export class ContextDataService {
   constructor(paths) { this.paths = paths; this.sessions = new Map(); }
   state(sessionId) {
     let state = this.sessions.get(sessionId);
-    if (!state) {
-      if (this.sessions.size >= 8) this.sessions.delete(this.sessions.keys().next().value);
-      state = { ledgers: new Map(), events: new Map(), logTails: new Map(), overview: null, conversation: null, recorded: [], targets: new Map() };
-      this.sessions.set(sessionId, state);
-    }
+    if (state) { this.sessions.delete(sessionId); this.sessions.set(sessionId, state); return state; }
+    if (this.sessions.size >= 8) this.sessions.delete(this.sessions.keys().next().value);
+    state = { ledgers: new Map(), events: new Map(), logTails: new Map(), overview: null, conversation: null, recorded: [], targets: new Map() };
+    this.sessions.set(sessionId, state);
     return state;
   }
   async refresh(sessionId) {
@@ -73,8 +72,9 @@ export class ContextDataService {
       }, () => { ledger.previous = null; ledger.records.clear(); ledger.chars = 0; ledger.segment++; ledger.steps = 0; ledger.turns.clear(); }, () => { ledger.previous = null; ledger.segment++; });
       coverage.push(status);
     }
-    // Event logs are a short diagnostic window; usage history comes from SQLite.
-    for (let day = 0; day < 3; day++) {
+    // Event logs are a short diagnostic window; usage history comes from SQLite. Oldest day first, so the
+    // insertion-ordered caps below drop the oldest events and log tails.
+    for (let day = 2; day >= 0; day--) {
       const date = new Date(); date.setDate(date.getDate() - day);
       const stamp = date.getFullYear() + "-" + String(date.getMonth()+1).padStart(2,"0") + "-" + String(date.getDate()).padStart(2,"0");
       const path = join(this.paths.logDir, "zcode-" + stamp + ".jsonl");
@@ -201,8 +201,8 @@ export class ContextDataService {
     const state=this.state(sessionId);if(!state.overview)await this.refresh(sessionId);
     const compactions=state.recorded.filter(e=>e.kind==="compaction"),event=compactions.find(e=>e.id===id);
     if(!event||event.lastSummarizedSequence==null)throw new ContextError("event_missing","Compaction details are unavailable.");
-    const previous=compactions.filter(e=>e.timestamp<event.timestamp&&e.summarySequence!=null).at(-1);
-    const read=readSummarizedMessages(this.paths.db,sessionId,previous?.summarySequence??-1,event.lastSummarizedSequence);
+    const previous=compactions.filter(e=>e.timestamp<event.timestamp&&e.summarySequence!=null).map(e=>e.summarySequence).reverse();
+    const read=readSummarizedMessages(this.paths.db,sessionId,{after:previous,through:event.lastSummarizedSequence,summary:event.summarySequence});
     if(!read.available)throw new ContextError(read.code,"Compaction details are unavailable.");
     const items=summarizedItems(read.messages);
     return {sessionId,eventDetail:{id,messageCount:read.total,listedMessages:read.messages.length,items:items.slice(0,300),itemCount:items.length,
@@ -244,6 +244,9 @@ export class ContextDataService {
     const stampOf=key=>{const e=key.startsWith("message:")?entries?.[Number(key.slice(8))]:null;return !e?{}:e.entered?{entered:e.entered}:{enteredBefore:true,tracedTo:e.before};};
     const decorate=(x,own=true)=>x.role==="schema"?{...x,callCount:callCount(x)}:own?{...x,...stampOf(x.key)}:x;
     const order=(list,own)=>arrange(list.map(x=>decorate(x,own)),args.sort,args.schemaSort);
+    const search=(args.search??"").toLowerCase(),role=args.role;
+    const loadedSearch=args.searchScope==="loaded"&&Boolean(search),selectedSearch=Boolean(search)&&!loadedSearch;
+    const hit=item=>!search||[item.readable,item.toolName,item.toolCallId,item.key].some(v=>String(v??"").toLowerCase().includes(search));
     // Partial (tail) records cannot be diffed, but entry stamps still tell what entered after the baseline step.
     // Messages whose trace stops after the baseline are counted as unknown rather than guessed.
     let arrivals=null;
@@ -255,21 +258,26 @@ export class ContextDataService {
         const list=stamped.filter(x=>x.entry.entered&&x.entry.entered.step>since).map(x=>elementSummary(x.item));
         arrivals={available:true,sinceStep:since,count:list.length,keys:list.map(x=>x.key),groups:groupByRole(order(list,true)),
           unknownCount:stamped.filter(x=>!x.entry.entered&&x.entry.before&&x.entry.before.step>since).length};
+        if(selectedSearch)arrivals.searchGroups=groupByRole(order(stamped.filter(x=>x.entry.entered&&x.entry.entered.step>since&&hit(x.item)).map(x=>elementSummary(x.item)),true));
       }
+    }
+    // Searching in Changes matches full bodies like the element list; the unfiltered groups still feed the In row.
+    if(diff.available&&selectedSearch) {
+      const own=new Map(elements.map(x=>[x.key,x])),before=new Map(inputElements(all.find(x=>x.key===diff.previousKey).record).map(x=>[x.key,x]));
+      const matching=(list,map)=>list.filter(x=>map.has(x.key)&&hit(map.get(x.key)));
+      diff={...diff,searchAddedGroups:groupByRole(order(matching(diff.added,own),true)),searchRemovedGroups:groupByRole(order(matching(diff.removed,before),false))};
     }
     if(diff.available)diff={...diff,addedCount:diff.added.length,removedCount:diff.removed.length,changedCount:diff.changed.length,
       addedKeys:diff.added.slice(0,2000).map(x=>x.key),changedPairs:diff.changed.map(x=>({before:x.before.key,after:x.after.key})),
       addedGroups:groupByRole(order(diff.added,true)),removedGroups:groupByRole(order(diff.removed,false)),
       added:diff.added.slice((args.changePage??0)*40,(args.changePage??0)*40+40),
       removed:diff.removed.slice((args.changePage??0)*40,(args.changePage??0)*40+40),changed:diff.changed.slice((args.changePage??0)*40,(args.changePage??0)*40+40)};
-    const search=(args.search??"").toLowerCase(),role=args.role;
-    const loadedSearch=args.searchScope==="loaded"&&Boolean(search);
     const filtered=[];
     // Search one snapshot at a time and retain summaries, avoiding a second copy of all cached bodies.
     for(const snapshot of loadedSearch?all:[selected]) {
       for(const item of snapshot===selected?elements:inputElements(snapshot.record)) {
         if(role&&item.role!==role)continue;
-        if(search&&![item.readable,item.toolName,item.toolCallId,item.key].some(v=>String(v??"").toLowerCase().includes(search)))continue;
+        if(!hit(item))continue;
         filtered.push({...decorate(elementSummary(item),snapshot===selected),...(loadedSearch?{snapshotKey:snapshot.key,snapshotTime:snapshot.record.startedAt}:{})});
       }
     }
