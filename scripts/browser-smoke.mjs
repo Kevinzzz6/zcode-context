@@ -75,7 +75,11 @@ try {
   await a.locator("#content").filter({hasText:"long fixture"}).waitFor();assert.equal((await a.locator("#content").textContent()).length,12000);
   await a.locator("#body-search").fill("END_OF_LONG_INPUT");await a.locator("#next-match").waitFor();
   await page.waitForTimeout(350);await a.locator("#next-match").click();await a.locator("#content mark.current").filter({hasText:"END_OF_LONG_INPUT"}).waitFor();
-  assert.ok((await a.locator("#content").textContent()).length<12000);checks.push("12k body parts and full-body search navigation");
+  assert.ok((await a.locator("#content").textContent()).length<12000);
+  await a.locator("#body-search").press("Shift+Enter");await a.locator(".find .muted").filter({hasText:/1 of 1|第 1 \/ 1 处/}).waitFor();
+  await a.locator("#body-search").press("Escape");await a.locator("#content mark").first().waitFor({state:"detached"});
+  await a.locator("#body-search").fill("END_OF_LONG_INPUT");await a.locator("#next-match").waitFor();
+  checks.push("12k body parts, full-body search with Enter/Shift+Enter/Esc");
 
   for(const width of [320,360,420,520]) {
     await page.setViewportSize({width:width*2+24,height:1100});
@@ -109,12 +113,39 @@ try {
   await page.request.get(base+"/event?session=sess_A");await page.request.get(base+"/append?session=sess_A&gap=1");
   await refresh(a);await a.locator("#latest").click();await a.locator("#mode-changes").click();
   await a.locator("#diff-status").filter({hasText:"两次记录之间有缺口"}).waitFor();checks.push("history gap suppresses deletion and negative Delta");
-  await a.locator(".event").filter({hasText:"自动压缩"}).waitFor();
+  await a.locator(".event").filter({hasText:"自动压缩"}).first().waitFor();
   await a.locator(".event-nav button").first().click();await a.locator("#follow-state").filter({hasText:"正在查看历史请求"}).waitFor();
   checks.push("readable logged compaction with before/after step navigation");
 
   await a.locator("#trend-delta").click();await a.locator("#trend-scroll .bar").first().click();
   assert.equal(await a.locator("#trend-scroll .bar").first().getAttribute("aria-pressed"),"true");checks.push("trend Delta mode and bar selection");
+
+  await a.locator("#trend-scroll .bar").last().dispatchEvent("mouseenter");await a.locator(".trend-tip").waitFor();
+  await a.locator('.legend-item[data-role="tool"]').dispatchEvent("mouseenter");
+  assert.equal(await a.locator("html").getAttribute("data-hl"),"tool");
+  await a.locator('.legend-item[data-role="tool"]').dispatchEvent("mouseleave");assert.equal(await a.locator("html").getAttribute("data-hl"),null);
+  checks.push("trend hover tip and cross-card category highlight");
+  await a.locator("#gran-turn").click();await a.locator("#trend-scroll .bar-x").filter({hasText:/^T\d+$/}).first().waitFor();
+  await a.locator("#gran-step").click();checks.push("turn granularity");
+
+  await a.locator("#latest").click();await a.locator(".brief-row").filter({hasText:"本轮"}).waitFor();
+  await a.locator("#base-turn").click();assert.equal(await a.locator("#base-turn").getAttribute("aria-pressed"),"true");
+  await a.locator("#base-step").click();checks.push("turn brief and previous-turn baseline");
+  const beforeKey=await a.locator("#snapshot").inputValue();
+  await a.locator("#summary").press("ArrowLeft");await page.waitForTimeout(200);
+  assert.notEqual(await a.locator("#snapshot").inputValue(),beforeKey);checks.push("arrow keys move between steps");
+
+  for(let i=0;i<30;i++)await page.request.get(base+"/append?session=sess_A");
+  await page.locator("#sess_A").evaluate(frame=>{frame.style.width="320px";});await refresh(a);await a.locator("#latest").click();
+  await a.locator("#trend-adaptive").click();
+  const scroller=a.locator("#trend-scroll");
+  assert.ok(await scroller.evaluate(el=>el.scrollWidth>el.clientWidth),"trend scrolls");
+  await scroller.evaluate(el=>{el.scrollLeft=el.scrollWidth;});await page.waitForTimeout(250);
+  const endScale=await a.locator(".trend-card").getAttribute("data-scale");
+  await scroller.evaluate(el=>{el.scrollLeft=0;});await page.waitForTimeout(250);
+  const startScale=await a.locator(".trend-card").getAttribute("data-scale");
+  assert.notEqual(startScale,endScale,"adaptive axis follows the visible bars");
+  await a.locator("#trend-adaptive").click();checks.push("adaptive axis rescales to the visible bars ("+startScale+" → "+endScale+")");
   await b.locator("#show-usage").click();assert.equal(await b.locator("#calls").textContent(),"2");
   assert.deepEqual(errors,[]);
   await writeFile(new URL("result.json",out),JSON.stringify({passed:true,browser:await browser.version(),hostType:"SDK fixture, not ZCode Desktop",checks,pageErrors:errors},null,2)+"\n");
