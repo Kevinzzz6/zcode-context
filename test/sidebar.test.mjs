@@ -252,3 +252,13 @@ test("a prompt-cache breakpoint moving to the newest message breaks neither entr
     assert.deepEqual(stamps(await service.request("sess_A",{key:o.trajectories.at(-1).key})),{0:"S2T1",1:"S3T1",2:"S3T1"});
   });
 });
+test("partial records list what entered after the baseline step from entry stamps",()=>fixture([
+  tail("r1",chat(5),3,{turnId:"t1"}),tail("r2",chat(7),3,{turnId:"t1"}),tail("r3",chat(8),3,{turnId:"t2"})],async(service,o)=>{
+    const keys=o.trajectories.map(x=>x.key);
+    const step=await service.request("sess_A",{key:keys[2]});
+    assert.equal(step.diff.available,false);assert.equal(step.arrivals.sinceStep,2);
+    assert.deepEqual(step.arrivals.keys,["message:2"]);assert.equal(step.arrivals.unknownCount,0);
+    const since=await service.request("sess_A",{key:keys[2],baselineKey:keys[0]});
+    assert.equal(since.arrivals.sinceStep,1);assert.deepEqual([...since.arrivals.keys].sort(),["message:0","message:1","message:2"]);
+    assert.equal((await service.request("sess_A",{key:keys[0]})).arrivals,null);
+  }));
