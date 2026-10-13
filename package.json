@@ -16,7 +16,8 @@
     "fixture:browser": "node scripts/browser-fixture.mjs",
     "test:browser": "node scripts/browser-smoke.mjs",
     "verify": "node scripts/verify.mjs",
-    "fixture:ui": "node scripts/ui-fixture.mjs"
+    "fixture:ui": "node scripts/ui-fixture.mjs",
+    "preview:session": "node scripts/session-preview.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.29.0",
