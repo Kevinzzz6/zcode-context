@@ -69,7 +69,7 @@ From top to bottom:
   <tr><td nowrap><b>Context trend</b></td><td>One bar per agent request with an axis, a turn band and ✂ compaction markers; Total/Delta, Steps/Turns, Adaptive scaling; hover for per-category values, and hovering a category highlights it everywhere</td></tr>
   <tr><td nowrap><b>Context browser</b></td><td>Collapsible, paged categories; compare with the previous step, the previous turn or any earlier step; Changes mode shows only additions and removals; elements are named by tool and key argument, such as <code>Read · src/cache.ts</code></td></tr>
   <tr><td nowrap><b>Element details</b></td><td>Inline tool cards (argument table, OK/error), schema parameter tables and bodies (readable / Markdown / raw, copy, find, parts)</td></tr>
-  <tr><td nowrap><b>Context events</b></td><td>Logged compactions (kind, status, duration, reason, savings), rewinds and edited questions, model switches and MCP tool registrations, filterable by kind; clicking one selects the step after it and opens the browser, comparing with the step before for compactions and rewinds. The ✂ markers in the trend are clickable too</td></tr>
+  <tr><td nowrap><b>Context events</b></td><td>From ZCode's conversation store, for the whole session: injections (TodoWrite reminders, agent list, restored context, background task notices, Skill loads, one row each), compactions (tokens before and after, the summarized messages and what they were) and model switches; rewinds and MCP registrations come from the last 3 days of logs. Clicking an event opens its item in the browser, a compaction compares with the step before and expands what it summarized, and an injection whose request is no longer readable shows its stored text. The ✂ markers in the trend are clickable too</td></tr>
   <tr><td nowrap><b>Usage</b></td><td>Secondary page with 30-day logical usage, daily totals and recent requests</td></tr>
   <tr><td nowrap><b>About</b></td><td>Secondary page (<kbd>ⓘ</kbd> in the toolbar): version, author, licence, source repository, and the read-only local-data, no-network statement</td></tr>
 </table>
@@ -193,9 +193,9 @@ flowchart LR
   server["Plugin service<br/>MCP · stdio"]
   worker["Data worker<br/>serialized · time-boxed · memory-bounded"]
   subgraph local["This machine: ~/.zcode/cli (read-only)"]
-    db[("db/db.sqlite<br/>usage · tool call counts")]
+    db[("db/db.sqlite<br/>usage · tool calls · conversation store")]
     traj["rollout/ · debug/<br/>Model I/O records"]
-    log["log/<br/>context events"]
+    log["log/<br/>rewinds · MCP registrations"]
   end
   panel -- "two read-only tools<br/>bound to the session" --> server --> worker
   worker --> db
