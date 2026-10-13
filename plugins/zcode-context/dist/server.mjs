@@ -31399,7 +31399,7 @@ function createContextServer() {
   const annotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
   server2.registerTool("get_context_summary", {
     description: "App-only read-only session usage and context overview.",
-    inputSchema: { revision: external_exports.string().max(64).optional(), historyPage: external_exports.number().int().min(0).max(4).optional() },
+    inputSchema: { revision: external_exports.string().max(64).optional(), historyPage: external_exports.number().int().min(0).max(4).optional(), eventDetail: external_exports.string().max(300).regex(/^c:[\w-]+$/).optional() },
     annotations,
     _meta: { ui: { visibility: ["app"] } }
   }, wrap("overview"));
@@ -31419,6 +31419,7 @@ function createContextServer() {
       changePage: external_exports.number().int().min(0).max(1e5).optional(),
       diffBeforeElement: external_exports.string().regex(/^(message|tool):[0-9]+$/).optional(),
       elementKey: external_exports.string().regex(/^(message|tool):[0-9]+$/).optional(),
+      focusKey: external_exports.string().regex(/^(message|tool):[0-9]+$/).optional(),
       offset: external_exports.number().int().min(0).max(1e8).optional()
     },
     annotations,

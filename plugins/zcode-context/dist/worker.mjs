@@ -207,8 +207,120 @@ function readToolCalls(dbPath, sessionId) {
   }
 }
 
+// src/data/conversation.mjs
+import { DatabaseSync as DatabaseSync2 } from "node:sqlite";
+import { statSync as statSync2 } from "node:fs";
+var TEXT_CHARS = 4e3;
+var DETAIL_ROWS = 400;
+var REQUIRED = ["id", "session_id", "time_created", "time_updated", "data"];
+function open(dbPath) {
+  if (!statSync2(dbPath).isFile()) throw new ContextError("database_missing", "Session database is not a regular file.");
+  const db = new DatabaseSync2(dbPath, { readOnly: true });
+  try {
+    db.exec("PRAGMA query_only = ON; PRAGMA busy_timeout = 100; BEGIN");
+    const columns = (table) => new Set(db.prepare("PRAGMA table_info(" + table + ")").all().map((row) => row.name));
+    const message = columns("message"), part = columns("part");
+    if (!REQUIRED.every((key) => message.has(key)) || !REQUIRED.every((key) => part.has(key)) || !part.has("message_id"))
+      throw new ContextError("schema_unsupported", "This database does not have the supported message/part schema.");
+    return { db, sequence: message.has("sequence") ? "sequence" : "NULL" };
+  } catch (error) {
+    try {
+      db.exec("ROLLBACK");
+    } catch {
+    }
+    db.close();
+    throw error;
+  }
+}
+var failure = (error) => error.code === "ENOENT" ? "database_missing" : error.code === "SQLITE_BUSY" || /locked|busy/i.test(error.message) ? "database_busy" : error instanceof ContextError ? error.code : "database_unavailable";
+var field = (path) => "CASE WHEN ok THEN json_extract(data,'" + path + "') END";
+var MESSAGE_FIELDS = [
+  "role:$.role",
+  "origin:$.semantics.origin",
+  "kind:$.semantics.kind",
+  "source:$.semantics.source",
+  "visibility:$.semantics.providerVisibility",
+  "synthetic:$.synthetic",
+  "metaSource:$.metadata.source"
+];
+var PART_FIELDS = [
+  "type:$.type",
+  "tool:$.tool",
+  "callId:$.callID",
+  "skill:$.state.input.skill",
+  "toolEnd:$.state.time.end",
+  "synthetic:$.synthetic",
+  "textSource:$.metadata.source",
+  "timelineType:$.timelineType"
+];
+var select = (fields) => fields.map((x) => {
+  const [name, path] = x.split(":");
+  return field(path) + " AS " + name;
+}).join(",");
+function readConversation(dbPath, sessionId, cache = null) {
+  let handle;
+  try {
+    handle = open(dbPath);
+    const { db, sequence } = handle;
+    const stat = (table) => db.prepare("SELECT count(*) AS n, max(time_updated) AS u FROM " + table + " WHERE session_id=?").get(sessionId);
+    const messageStat = stat("message"), partStat = stat("part");
+    let c = cache;
+    if (!c || messageStat.n < c.messageCount || partStat.n < c.partCount)
+      c = { messageCursor: -1, partCursor: -1, messageCount: 0, partCount: 0, messages: /* @__PURE__ */ new Map(), parts: /* @__PURE__ */ new Map() };
+    if (c.messageCursor === (messageStat.u ?? -1) && c.partCursor === (partStat.u ?? -1) && c.messageCount === messageStat.n && c.partCount === partStat.n) {
+      db.exec("COMMIT");
+      return { available: true, changed: false, cache: c };
+    }
+    const messages = db.prepare("SELECT id," + sequence + " AS sequence,time_created AS created,time_updated AS updated," + select(MESSAGE_FIELDS) + ",CASE WHEN ok THEN substr(json_extract(data,'$.summary.body'),1," + TEXT_CHARS + ") END AS summary FROM (SELECT *,json_valid(data) AS ok FROM message WHERE session_id=? AND time_updated>=?)").all(sessionId, c.messageCursor);
+    for (const row of messages) c.messages.set(row.id, row);
+    const parts = db.prepare("SELECT id,message_id AS messageId,time_created AS created,time_updated AS updated," + select(PART_FIELDS) + ",CASE WHEN ok AND json_extract(data,'$.type')='text' THEN substr(json_extract(data,'$.text'),1," + TEXT_CHARS + ") END AS text,CASE WHEN ok AND json_extract(data,'$.type')='text' THEN length(json_extract(data,'$.text')) END AS textChars,CASE WHEN ok AND json_extract(data,'$.tool')='Skill' THEN length(json_extract(data,'$.state.output')) END AS outputChars,CASE WHEN ok AND json_extract(data,'$.type') IN ('compaction','timeline') THEN data END AS raw FROM (SELECT *,json_valid(data) AS ok FROM part WHERE session_id=? AND time_updated>=?)").all(sessionId, c.partCursor);
+    for (const row of parts) {
+      const keep = row.type === "compaction" || row.type === "timeline" || row.type === "tool" && row.tool === "Skill" || row.type === "text" && row.synthetic === 1;
+      if (keep) c.parts.set(row.id, row);
+      else c.parts.delete(row.id);
+    }
+    db.exec("COMMIT");
+    Object.assign(c, { messageCursor: messageStat.u ?? -1, partCursor: partStat.u ?? -1, messageCount: messageStat.n, partCount: partStat.n });
+    return { available: true, changed: true, cache: c };
+  } catch (error) {
+    if (handle) {
+      try {
+        handle.db.exec("ROLLBACK");
+      } catch {
+      }
+    }
+    return { available: false, code: failure(error), cache };
+  } finally {
+    handle?.db.close();
+  }
+}
+function readSummarizedMessages(dbPath, sessionId, after, through) {
+  let handle;
+  try {
+    handle = open(dbPath);
+    const { db, sequence } = handle;
+    if (sequence === "NULL") throw new ContextError("schema_unsupported", "Messages have no sequence.");
+    const messages = db.prepare("SELECT id,sequence," + select(MESSAGE_FIELDS) + " FROM (SELECT *,json_valid(data) AS ok FROM message WHERE session_id=? AND sequence>? AND sequence<=? ORDER BY sequence LIMIT " + (DETAIL_ROWS + 1) + ")").all(sessionId, after, through);
+    const total = db.prepare("SELECT count(*) AS n FROM message WHERE session_id=? AND sequence>? AND sequence<=?").get(sessionId, after, through).n;
+    const parts = db.prepare("SELECT message_id AS messageId,time_created AS created," + select(PART_FIELDS) + ",CASE WHEN ok THEN substr(json_extract(data,'$.text'),1,400) END AS text,CASE WHEN ok THEN length(json_extract(data,'$.text')) END AS textChars,CASE WHEN ok THEN json_extract(data,'$.state.input') END AS input,CASE WHEN ok THEN length(json_extract(data,'$.state.output')) END AS outputChars FROM (SELECT *,json_valid(data) AS ok FROM part WHERE session_id=? AND message_id=?) ORDER BY created");
+    const rows = messages.slice(0, DETAIL_ROWS).map((m) => ({ ...m, parts: parts.all(sessionId, m.id) }));
+    db.exec("COMMIT");
+    return { available: true, messages: rows, total: Number(total) };
+  } catch (error) {
+    if (handle) {
+      try {
+        handle.db.exec("ROLLBACK");
+      } catch {
+      }
+    }
+    return { available: false, code: failure(error), messages: [], total: 0 };
+  } finally {
+    handle?.db.close();
+  }
+}
+
 // src/data/jsonl.mjs
-import { open } from "node:fs/promises";
+import { open as open2 } from "node:fs/promises";
 import { createHash } from "node:crypto";
 var CHUNK = 128 * 1024;
 var COLD_BYTES = 24 * 1024 * 1024;
@@ -243,7 +355,7 @@ var JsonlTail = class {
   async scan(path, onRow, onReset, onGap) {
     let file;
     try {
-      file = await open(path, "r");
+      file = await open2(path, "r");
       const st = await file.stat();
       const identity = st.dev + ":" + st.ino;
       const prefix = Buffer.alloc(this.headLength || Math.min(256, st.size));
@@ -440,6 +552,8 @@ function callIndex(record) {
   return index;
 }
 var REMINDER = /^\s*<system-reminder>\s*/;
+var CONTINUATION = /^\s*This session is being continued from a previous conversation/;
+var isContinuation = (item) => item.role === "user" && CONTINUATION.test(userText(item.readable));
 var INJECTED = /^\s*<([a-z][\w-]*)(\s[^>]*)?>[\s\S]*?<\/\1>\s*/i;
 function userText(text) {
   let rest = String(text ?? "");
@@ -690,6 +804,7 @@ function contextEvent(record, sessionId) {
     status: record.event.split(".").at(-1),
     reason: context.compactReason ?? context.trigger ?? null,
     durationMs: count(record.durationMs),
+    queryId: context.queryId ?? null,
     tokensSavedEstimate: count(context.tokensSaved),
     clearedMessageCount: count(context.clearedMessageCount)
   };
@@ -720,7 +835,7 @@ function mergeEvents(events) {
         next.status = event.status;
         next.event = event.event;
       }
-      for (const field of ["reason", "durationMs", "tokensSavedEstimate", "clearedMessageCount"]) next[field] = event[field] ?? last[field];
+      for (const field2 of ["reason", "durationMs", "tokensSavedEstimate", "clearedMessageCount", "queryId"]) next[field2] = event[field2] ?? last[field2];
       next.durationMs ??= next.endedAt != null ? next.endedAt - last.timestamp : null;
     } else {
       next.edited = last.edited || event.edited;
@@ -730,10 +845,145 @@ function mergeEvents(events) {
   }
   return [...merged.values()].sort((a, b) => a.timestamp - b.timestamp);
 }
+var TEXT_CHARS2 = 1500;
+var NEEDLE_CHARS = 300;
+var parse = (text) => {
+  try {
+    const value = JSON.parse(text);
+    return value && typeof value === "object" ? value : {};
+  } catch {
+    return {};
+  }
+};
+var number = (value) => typeof value === "number" && Number.isFinite(value) ? value : null;
+var modelLabel = (selection) => !selection ? null : selection.label ?? ([selection.providerId ?? selection.providerID, selection.modelId ?? selection.modelID].filter(Boolean).join("/") || null);
+var statusOf = (value) => /fail|error/i.test(String(value)) ? "failed" : /run|pend|progress|start/i.test(String(value)) ? "started" : "completed";
+var injected = (m) => m.role === "user" && m.visibility !== "hidden" && m.kind !== "compact_summary" && m.kind !== "user_prompt" && (m.origin === "agent_runtime" || m.synthetic === 1 || m.kind != null);
+function conversationEvents(cache) {
+  const events = [], texts = /* @__PURE__ */ new Map(), groups = /* @__PURE__ */ new Map();
+  for (const part of [...cache.parts.values()].sort((a, b) => a.created - b.created)) {
+    if (part.type === "text") {
+      const list = texts.get(part.messageId) ?? [];
+      list.push(part);
+      texts.set(part.messageId, list);
+    } else if (part.type === "tool" && part.tool === "Skill") events.push({
+      kind: "inject",
+      evidence: "recorded",
+      id: "p:" + part.id,
+      form: "skill",
+      name: typeof part.skill === "string" ? part.skill : null,
+      timestamp: number(part.toolEnd) ?? part.created,
+      tokens: part.outputChars != null ? Math.round(part.outputChars / 4) : null,
+      toolCallId: part.callId ?? null
+    });
+    else if (part.type === "timeline" && part.timelineType === "model_change") {
+      const data = parse(part.raw), from = modelLabel(data.fromModelSelection), to = modelLabel(data.toModelSelection ?? data.toModel);
+      if (to && from !== to) events.push({ kind: "model", evidence: "recorded", id: "t:" + part.id, timestamp: number(data.time?.start) ?? part.created, from, to });
+    } else if (part.type === "compaction" || part.type === "timeline" && part.timelineType === "context_compaction") {
+      const data = parse(part.raw), boundary = data.compactBoundary ?? {}, key = data.boundaryId ?? boundary.boundaryId ?? data.operationId;
+      if (!key) continue;
+      const group = groups.get(key) ?? { boundaryId: key };
+      for (const [name, value] of Object.entries({
+        operationId: data.operationId,
+        queryId: data.sourceCommandId,
+        trigger: data.trigger ?? boundary.trigger,
+        reason: data.compactReason ?? boundary.compactReason,
+        status: data.status ?? data.timelineStatus,
+        start: data.time?.start,
+        end: data.time?.end,
+        preTokens: data.preCompactTokenCount ?? boundary.preCompactTokenCount,
+        postTokens: data.truePostCompactTokenCount ?? boundary.truePostCompactTokenCount,
+        summarizedCount: boundary.summarizedMessageCount,
+        keptCount: boundary.keptMessageCount,
+        lastSummarizedId: boundary.lastSummarizedMessageId,
+        summaryMessageId: data.summaryMessageId ?? boundary.summaryMessageId,
+        created: part.created
+      })) if (value != null) group[name] ??= value;
+      groups.set(key, group);
+    }
+  }
+  for (const m of cache.messages.values()) {
+    if (!injected(m)) continue;
+    const text = (texts.get(m.id) ?? []).map((x) => x.text ?? "").join("\n").trim();
+    if (!text) continue;
+    const chars = (texts.get(m.id) ?? []).reduce((n, x) => n + (x.textChars ?? 0), 0);
+    events.push({
+      kind: "inject",
+      evidence: "recorded",
+      id: "m:" + m.id,
+      form: m.kind ?? "context",
+      source: m.source ?? m.metaSource ?? null,
+      timestamp: m.created,
+      tokens: estimateTokens(text) + (chars > text.length ? Math.round((chars - text.length) / 4) : 0),
+      text: text.slice(0, TEXT_CHARS2),
+      truncated: chars > TEXT_CHARS2,
+      needle: text.slice(0, NEEDLE_CHARS)
+    });
+  }
+  for (const g of groups.values()) {
+    const start = number(g.start) ?? g.created, end = number(g.end), status = statusOf(g.status);
+    const summary = g.summaryMessageId ? cache.messages.get(g.summaryMessageId) : null, last = g.lastSummarizedId ? cache.messages.get(g.lastSummarizedId) : null;
+    events.push({
+      kind: "compaction",
+      evidence: "recorded",
+      id: "c:" + g.boundaryId,
+      event: g.trigger === "auto" ? "compact.auto." + status : "compact." + status,
+      status,
+      trigger: g.trigger ?? null,
+      reason: g.reason ?? null,
+      timestamp: start,
+      endedAt: status === "started" ? null : end ?? start,
+      durationMs: end != null ? end - start : null,
+      preTokens: number(g.preTokens),
+      postTokens: number(g.postTokens),
+      tokensSavedEstimate: number(g.preTokens) != null && number(g.postTokens) != null ? g.preTokens - g.postTokens : null,
+      summarizedCount: number(g.summarizedCount),
+      keptCount: number(g.keptCount),
+      queryId: g.queryId ?? null,
+      summarySequence: summary?.sequence ?? null,
+      lastSummarizedSequence: last?.sequence ?? null
+    });
+  }
+  return events.sort((a, b) => a.timestamp - b.timestamp);
+}
+var sampled = (text, chars) => !text ? 0 : Math.round(estimateTokens(text) * Math.max(1, (chars ?? text.length) / text.length));
+var firstLine2 = (text) => String(text ?? "").split("\n").map((x) => x.trim()).find((x) => x && !/^<\/?[a-z][\w-]*>$/i.test(x))?.slice(0, 160) ?? "";
+function summarizedItems(messages) {
+  const items = [];
+  for (const m of messages) {
+    if (m.visibility === "hidden") continue;
+    for (const p of m.parts) {
+      if (p.type === "text" && p.text) items.push({
+        role: p.synthetic === 1 || injected(m) ? "inject" : m.role === "user" ? "user" : "assistant",
+        chip: p.synthetic === 1 || injected(m) ? m.source ?? m.kind ?? p.textSource ?? null : null,
+        title: firstLine2(p.text),
+        tokens: sampled(p.text, p.textChars)
+      });
+      else if (p.type === "reasoning" && p.text) items.push({ role: "reasoning", chip: null, title: firstLine2(p.text), tokens: sampled(p.text, p.textChars) });
+      else if (p.type === "tool") {
+        let input = null;
+        try {
+          input = p.input == null ? null : JSON.parse(p.input);
+        } catch {
+        }
+        items.push({ role: "tool", chip: p.tool ?? null, title: inputSummary(input) ?? "", tokens: Math.round(((p.input?.length ?? 0) + (p.outputChars ?? 0)) / 4) });
+      }
+    }
+  }
+  return items;
+}
+function combineEvents(recorded, logged) {
+  if (!recorded.length) return logged;
+  const compactions = recorded.filter((e) => e.kind === "compaction");
+  const same = (e) => compactions.some((c) => e.queryId && e.queryId === c.queryId || e.timestamp <= (c.endedAt ?? c.timestamp) + 2e3 && (e.endedAt ?? e.timestamp) >= c.timestamp - 2e3);
+  const recordedModels = recorded.some((e) => e.kind === "model");
+  return [...recorded, ...logged.filter((e) => e.kind === "compaction" ? !same(e) : e.kind === "model" ? !recordedModels : true)].sort((a, b) => a.timestamp - b.timestamp);
+}
 
 // src/data/service.mjs
 var digest = (value) => createHash2("sha256").update(value).digest("hex").slice(0, 24);
 var MAX_CACHE_CHARS = 32 * 1024 * 1024;
+var TRUNCATED = ["history_window", "display_window", "history_reset", "source_rotated"];
 function groupByRole(items, limit = 40) {
   const groups = {};
   for (const item of items) {
@@ -757,6 +1007,11 @@ function arrange(list, sort, schemaSort) {
   });
   return result;
 }
+function focused(groups, ordered, key) {
+  const item = key ? ordered.find((x) => x.key === key) : null, group = item && groups[item.role];
+  if (group && !group.items.some((x) => x.key === key)) group.items.push(item);
+  return groups;
+}
 var ContextDataService = class {
   constructor(paths) {
     this.paths = paths;
@@ -766,7 +1021,7 @@ var ContextDataService = class {
     let state = this.sessions.get(sessionId);
     if (!state) {
       if (this.sessions.size >= 8) this.sessions.delete(this.sessions.keys().next().value);
-      state = { ledgers: /* @__PURE__ */ new Map(), events: /* @__PURE__ */ new Map(), logTails: /* @__PURE__ */ new Map(), overview: null };
+      state = { ledgers: /* @__PURE__ */ new Map(), events: /* @__PURE__ */ new Map(), logTails: /* @__PURE__ */ new Map(), overview: null, conversation: null, recorded: [], targets: /* @__PURE__ */ new Map() };
       this.sessions.set(sessionId, state);
     }
     return state;
@@ -849,6 +1104,14 @@ var ContextDataService = class {
     const records = this.records(state);
     const usage = readUsage(this.paths.db, sessionId);
     state.toolCalls = readToolCalls(this.paths.db, sessionId);
+    const conversation = readConversation(this.paths.db, sessionId, state.conversation);
+    if (conversation.available) {
+      if (conversation.changed || !state.conversation) state.recorded = conversationEvents(conversation.cache);
+      state.conversation = conversation.cache;
+    } else if (conversation.code !== "database_busy") {
+      state.conversation = null;
+      state.recorded = [];
+    }
     if (records.length && coverage.every((item) => !item.available)) coverage.push({ coverage: ["source_rotated"], scanning: false });
     const cutoff = Date.now() - 3 * 864e5;
     for (const [key, event] of state.events) if (event.timestamp < cutoff) state.events.delete(key);
@@ -867,8 +1130,9 @@ var ContextDataService = class {
         coverage: [...new Set(coverage.flatMap((item) => item.coverage))],
         errorCode: records.length ? null : coverage.every((item) => !item.available) ? "trajectory_missing" : "waiting_for_records"
       },
-      events: mergeEvents(state.events.values()).slice(-30).map((event) => this.eventNavigation(records, event)),
-      eventWindowDays: 3
+      events: this.contextEvents(state, records, !coverage.some((item) => (item.coverage ?? []).some((code) => TRUNCATED.includes(code)))),
+      eventWindowDays: 3,
+      conversation: { available: conversation.available || Boolean(state.conversation), code: conversation.available ? null : conversation.code }
     };
     overview.history = { loadedCount: records.length, loadedKeys: records.map((x) => x.key), page: 0, hasOlder: records.length > 60, scope: "bounded_loaded_window" };
     overview.revision = digest(JSON.stringify(overview));
@@ -958,17 +1222,63 @@ var ContextDataService = class {
     }
     return item.timeline;
   }
+  // Recorded events cover the whole session; the list keeps the newest injections and the newest of everything else.
+  contextEvents(state, records, complete) {
+    const all = combineEvents(state.recorded, mergeEvents(state.events.values()));
+    const kept = [...all.filter((e) => e.kind === "inject").slice(-150), ...all.filter((e) => e.kind !== "inject").slice(-60)].sort((a, b) => a.timestamp - b.timestamp);
+    while (state.targets.size > 400) state.targets.delete(state.targets.keys().next().value);
+    return kept.map((e) => e.kind === "inject" ? this.locate(state, records, e, complete) : this.eventNavigation(records, e)).map(({ needle, ...e }) => e);
+  }
+  // An injected message is first sent with the next agent request; it is found there by tool-call id or by its exact text,
+  // the newest occurrence, since reminders repeat. When that request is not readable, or does not contain it, the event keeps no step.
+  locate(state, records, event, complete) {
+    const agents = records.filter((x) => x.summary.step != null), first = agents[0]?.key ?? null, memo = state.targets.get(event.id);
+    if (memo && memo.first === first) return { ...event, ...memo.target };
+    const index = agents.findIndex((x) => x.record.startedAt >= event.timestamp);
+    if (index < 0) return { ...event, stepKey: null, elementKey: null, elementRole: null };
+    let target = { stepKey: null, elementKey: null, elementRole: null };
+    if (index > 0 || complete) {
+      const record = agents[index], elements = inputElements(record.record);
+      const element = event.toolCallId ? elements.find((x) => x.toolCallId === event.toolCallId) : event.needle ? elements.findLast((x) => x.key.startsWith("message:") && x.readable.includes(event.needle)) : null;
+      if (element) target = { stepKey: record.key, elementKey: element.key, elementRole: element.role };
+    }
+    state.targets.set(event.id, { first, target });
+    return { ...event, ...target };
+  }
+  // The messages a recorded compaction summarized: after the previous compaction's summary, through its last summarized message.
+  async eventDetail(sessionId, id) {
+    const state = this.state(sessionId);
+    if (!state.overview) await this.refresh(sessionId);
+    const compactions = state.recorded.filter((e) => e.kind === "compaction"), event = compactions.find((e) => e.id === id);
+    if (!event || event.lastSummarizedSequence == null) throw new ContextError("event_missing", "Compaction details are unavailable.");
+    const previous = compactions.filter((e) => e.timestamp < event.timestamp && e.summarySequence != null).at(-1);
+    const read = readSummarizedMessages(this.paths.db, sessionId, previous?.summarySequence ?? -1, event.lastSummarizedSequence);
+    if (!read.available) throw new ContextError(read.code, "Compaction details are unavailable.");
+    const items = summarizedItems(read.messages);
+    return { sessionId, eventDetail: {
+      id,
+      messageCount: read.total,
+      listedMessages: read.messages.length,
+      items: items.slice(0, 300),
+      itemCount: items.length,
+      tokens: items.reduce((n, x) => n + (x.tokens ?? 0), 0)
+    } };
+  }
   eventNavigation(records, event) {
     const matching = event.turnId ? records.filter((x) => x.record.turnId === event.turnId) : [];
     const before = records.findLast((x) => x.record.startedAt <= event.timestamp);
     const after = records.find((x) => x.record.startedAt > (event.endedAt ?? event.timestamp));
+    const agent = event.kind === "compaction" ? records.find((x) => x.summary.step != null && x.record.startedAt > (event.endedAt ?? event.timestamp)) : null;
+    if (agent) agent.continuation ??= inputElements(agent.record).find(isContinuation)?.key ?? null;
     return { ...event, navigation: {
       evidence: matching.length ? "turn_range" : "time_range",
       turnKeys: matching.slice(0, 12).map((x) => x.key),
       beforeKey: before?.key ?? null,
       afterKey: after?.key ?? null,
       beforeTime: before?.record.startedAt ?? null,
-      afterTime: after?.record.startedAt ?? null
+      afterTime: after?.record.startedAt ?? null,
+      summaryStepKey: agent?.key ?? null,
+      summaryKey: agent?.continuation ?? null
     } };
   }
   async overview(sessionId, revision, historyPage = 0) {
@@ -1104,7 +1414,7 @@ var ContextDataService = class {
       searchScope: args.searchScope === "loaded" && search ? "all_loaded_snapshots" : "all_elements_in_selected_loaded_snapshot",
       loadedSnapshotCount: all.length,
       largest: filtered.length ? filtered.reduce((largest, x) => x.chars > largest.chars ? x : largest) : null,
-      groups: loadedSearch ? null : groupByRole(ordered),
+      groups: loadedSearch ? null : focused(groupByRole(ordered), ordered, args.focusKey),
       schemaCalls,
       elements: ordered.slice(page * pageSize, (page + 1) * pageSize),
       content,
@@ -1141,6 +1451,6 @@ function serialRunner(run, reply) {
 // src/worker.mjs
 var service = new ContextDataService(workerData.paths);
 parentPort.on("message", serialRunner(
-  (input) => input.method === "overview" ? service.overview(input.sessionId, input.args.revision, input.args.historyPage) : service.request(input.sessionId, input.args),
+  (input) => input.method !== "overview" ? service.request(input.sessionId, input.args) : input.args.eventDetail ? service.eventDetail(input.sessionId, input.args.eventDetail) : service.overview(input.sessionId, input.args.revision, input.args.historyPage),
   (message) => parentPort.postMessage(message)
 ));
