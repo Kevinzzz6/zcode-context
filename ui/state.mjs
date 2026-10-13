@@ -1,7 +1,7 @@
 const PREFIX="zcode-context:view:v3:";
 export function initialView() {
   return {selectedKey:null,follow:true,page:"context",trend:"total",granularity:"step",trendAdaptive:false,search:"",searchAll:false,sort:"size",mode:"all",
-    expanded:null,searchExpanded:null,open:null,baselineKey:null,aboutOpen:false,scroll:0};
+    expanded:null,searchExpanded:null,open:null,baselineKey:null,baselineMode:"step",aboutOpen:false,scroll:0};
 }
 export function restoreView(sessionId) {
   try {
@@ -13,6 +13,7 @@ export function restoreView(sessionId) {
     if(!["step","turn"].includes(view.granularity))view.granularity="step";
     view.trendAdaptive=view.trendAdaptive===true;
     if(!["all","changes"].includes(view.mode))view.mode="all";
+    if(!["step","turn"].includes(view.baselineMode))view.baselineMode="step";
     if(view.expanded!==null&&!Array.isArray(view.expanded))view.expanded=null;
     if(view.searchExpanded!==null&&!Array.isArray(view.searchExpanded))view.searchExpanded=null;
     if(view.open&&(typeof view.open!=="object"||typeof view.open.elementKey!=="string"))view.open=null;

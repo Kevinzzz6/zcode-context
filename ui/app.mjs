@@ -120,9 +120,10 @@ async function loadDetail(background=false) {
   startLoad();
   try {
     const searchAll=view.searchAll&&Boolean(view.search);
-    const next=await call("get_context_request",{key,search:view.search,searchScope:searchAll?"loaded":"selected",sort:view.sort,...(view.baselineKey?{baselineKey:view.baselineKey}:{})});
+    const next=await call("get_context_request",{key,search:view.search,searchScope:searchAll?"loaded":"selected",sort:view.sort,...baselineArgs(key)});
     if(sequence!==detailSequence||expected!==generation||key!==view.selectedKey||next.sessionId!==boundSession)return;
     detail=next;more={};
+    if(view.baselineMode==="turn"&&!view.baselineKey&&!baselineArgs(key).baselineKey&&isAgent(items.find(x=>x.key===key)))detail={...next,diff:{available:false,reason:"no_previous_turn"}};
     if(!items.some(x=>x.key===key))items=mergeSnapshots(items,[next.summary]);
     if(view.expanded===null) {
       const roles=next.composition.buckets.map(b=>b.role),largest=[...next.composition.buckets].sort((a,b)=>b.estimatedTokens-a.estimatedTokens)[0]?.role;
@@ -139,7 +140,7 @@ async function loadContent() {
   startLoad();
   try {
     const args={key:pointer.key,elementKey:pointer.elementKey,offset:pointer.offset??0,format:pointer.format==="raw"?"raw":"readable",bodySearch:pointer.search??""};
-    if(pointer.diff&&pointer.diffBefore){args.diffBeforeElement=pointer.diffBefore;if(view.baselineKey)args.baselineKey=view.baselineKey;}
+    if(pointer.diff&&pointer.diffBefore){args.diffBeforeElement=pointer.diffBefore;Object.assign(args,baselineArgs(pointer.key));}
     const next=await call("get_context_request",args);
     if(sequence!==contentSequence||expected!==generation||view.open?.elementKey!==pointer.elementKey||view.open?.key!==pointer.key||next.sessionId!==boundSession)return;
     content=next;render();
@@ -152,7 +153,7 @@ async function loadContent() {
 async function loadMore(role) {
   const key=view.selectedKey,sequence=++moreSequence,expected=generation,page=(more[role]?.page??0)+1;
   try {
-    const next=await call("get_context_request",{key,role,page,search:view.search,searchScope:"selected",sort:view.sort,...(view.baselineKey?{baselineKey:view.baselineKey}:{})});
+    const next=await call("get_context_request",{key,role,page,search:view.search,searchScope:"selected",sort:view.sort,...baselineArgs(key)});
     if(sequence!==moreSequence||expected!==generation||key!==view.selectedKey)return;
     more={...more,[role]:{page,items:[...(more[role]?.items??[]),...next.elements]}};render();
   }catch(error){if(expected===generation)showError(error);}
@@ -172,6 +173,15 @@ async function loadOlder() {
 async function copy(text) {
   try{await navigator.clipboard.writeText(text);flash("copied");}catch{flash("copyFailed");}
 }
+// "Previous turn" compares with the last agent step of the preceding turn, from the same source.
+function baselineArgs(key) {
+  if(view.baselineKey)return {baselineKey:view.baselineKey};
+  if(view.baselineMode!=="turn")return {};
+  const item=items.find(x=>x.key===key);
+  if(!item||!isAgent(item)||item.turn==null)return {};
+  const previous=items.filter(x=>isAgent(x)&&x.querySource===item.querySource&&x.turn!=null&&x.turn<item.turn&&x.startedAt<item.startedAt).at(-1);
+  return previous?{baselineKey:previous.key}:{};
+}
 const updateOpen=patch=>{view={...view,open:{...view.open,...patch}};persist();};
 const actions={
   select(key) {
@@ -187,6 +197,10 @@ const actions={
   set(patch){view={...view,...patch};persist();render();},
   remember(patch){view={...view,...patch};persist();},
   sort(sort){view={...view,sort};persist();render();loadDetail();},
+  baselineMode(mode) {
+    view={...view,baselineMode:mode,baselineKey:null,open:view.open?.diff?{...view.open,diff:false,diffBefore:null,offset:0}:view.open};
+    persist();render();loadDetail();if(view.open)loadContent();
+  },
   baseline(key) {
     view={...view,baselineKey:key,open:view.open?.diff?{...view.open,diff:false,diffBefore:null,offset:0}:view.open};
     persist();render();loadDetail();if(view.open)loadContent();
