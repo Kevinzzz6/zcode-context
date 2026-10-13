@@ -1,6 +1,18 @@
 # ZCode Context 交接文档
 
-更新时间：2026-10-13，Asia/Shanghai。当前版本：0.3.0。
+更新时间：2026-10-13，Asia/Shanghai。当前版本：0.3.2。
+
+## 真实会话测试（0.3.1–0.3.2）
+
+用 `npm run preview:session -- <sessionId>` 只读预览了一个真实会话（约 60 万 token，默认记录模式），发现并修复：
+- 默认 rollout 是 `tail` 记录，只保存最近 64 条消息（偶尔是接在 tail 上的 `delta`）。旧界面把已记录部分当作上下文大小（约 6 万 vs 实际 60 万）；现在以 provider 实际输入为主，其余显示为“更早消息（未记录）”。
+- ZCode 把缓存断点 `cacheControl` 放在每次请求的最新消息上，相邻记录的同一条消息只差这个字段；匹配消息时改用忽略缓存字段的 `contentKey`。
+- ZCode 会轮转长会话的 model-io 文件（首条记录带 `modelIOReset`），历史随之清零，步序号从头计数；趋势图下方现在会说明。
+- 默认模式下无法逐条对比，“输入”行和“仅变化”改由入场标记推出的 `arrivals`（基线步之后进入的消息）提供；移除项仍无法得知，界面会说明。
+- 工具调用次数来自 SQLite `tool_usage`（整个会话），不从 tail 消息里统计。
+
+真实 ZCode（`C:\Users\Kevin\.zcode\cli`）中已安装的插件用 `output/install-existing/update.mjs` 升级：先备份配置，再 validate → 重新添加本地市场 → `plugins update`，最后核对 config.json 未变、安装产物与构建逐字节一致。
+升级后需要重启 ZCode 才生效；0.3.x 在桌面侧栏中的验收（含工具授权表现）尚待用户完成。
 
 ## 0.3.0 界面改版
 
