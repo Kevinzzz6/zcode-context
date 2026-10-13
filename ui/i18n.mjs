@@ -24,6 +24,8 @@ const messages={
  callsTip:["本会话调用过 {n} 次","Called {n} times in this session"],allSchemasCalled:["每个工具定义本会话都调用过","Every schema has been called in this session"],
  unusedSchemas:["{n} 个工具定义本会话从未调用，每次请求占 {tokens}","{n} schemas never called in this session, {tokens} on every request"],
  unusedTip:["按本会话的工具调用记录统计，包括所选这一步之后的调用和已被压缩出上下文的调用。从未调用的工具定义仍随每次请求发送。","Counted from this session's tool-call log, including calls after the selected step and calls already compacted out of context. Schemas never called are still sent with every request."],
+ entryEarlier:["更早","earlier"],enteredTip:["首次随第 {turn} 轮第 {step} 步进入上下文","Entered with turn {turn}, step {step}"],enteredStepTip:["首次随第 {step} 步进入上下文","Entered with step {step}"],
+ enteredBeforeTip:["第 {step} 步时已在上下文中；再往前的记录未加载或不连续（缺口、重置或压缩），无法确定它进入的步骤","Already in context at step {step}; earlier records are not loaded or not continuous (gap, reset or compaction), so the step it entered is unknown"],
  callsUnknown:["调用次数未知：没有可读的工具调用记录","Call counts unknown: no readable tool-call log"],callsUnknownSome:["{n} 个未知","{n} unknown"],
  all:["全部","All"],changesOnly:["仅变化","Changes"],searchLoaded:["搜索全部已加载请求","Search all loaded requests"],
  items:["{n} 项","{n} items"],matchedItems:["{m} / {n} 项","{m} / {n} items"],showMore:["显示更多（还有 {n} 项）","Show more ({n} left)"],
