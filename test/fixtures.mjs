@@ -9,9 +9,15 @@ export function usageDatabase(root) {
     input_tokens INTEGER,output_tokens INTEGER,reasoning_tokens INTEGER,cache_creation_input_tokens INTEGER,cache_read_input_tokens INTEGER,
     provider_total_tokens INTEGER,computed_total_tokens INTEGER,retry_count INTEGER,raw_usage_json TEXT)`);
   const statement=db.prepare("INSERT INTO model_usage VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
+  let tools=null;
   return {path,db,add(sessionId,id,input=100,output=10,time=Date.now(),raw={inputTokens:input,outputTokens:output},source="main_turn"){
     statement.run(id,id,sessionId,"turn_"+id,"trace_"+id,source,"demo","demo-model","completed",time,1000,200,
       input,output,3,0,Math.floor(input*.5),raw===null?null:input+output,input+output,0,raw===null?null:JSON.stringify(raw));
+  },tool(sessionId,id,name,status="completed",time=Date.now()){
+    // The real tool_usage table has more columns; the reader only needs these.
+    if(!tools){db.exec("CREATE TABLE tool_usage(id TEXT PRIMARY KEY,session_id TEXT,turn_id TEXT,tool_call_id TEXT,tool_name TEXT,status TEXT,started_at INTEGER,duration_ms INTEGER,exit_code INTEGER,error_type TEXT)");
+      tools=db.prepare("INSERT INTO tool_usage VALUES (?,?,?,?,?,?,?,?,?,?)");}
+    tools.run(id,sessionId,"turn_"+id,"call_"+id,name,status,time,10,null,status==="error"?"tool_execution_failed":null);
   }};
 }
 export function modelRecord(sessionId,requestId,messages,extra={}) {
