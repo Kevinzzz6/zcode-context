@@ -46,6 +46,14 @@ const sourceName=(t,source)=>t("source."+(SOURCES.has(source)?source:"unknown"))
 export const itemName=(t,item)=>!item?"—":item.step!=null?t("step",{n:item.step}):sourceName(t,item.querySource);
 const itemLong=(t,item)=>[itemName(t,item),item.turn!=null?t("turn",{n:item.turn}):null,clock(item.startedAt)].filter(Boolean).join(" · ");
 const totalOf=item=>item?.composition?.buckets?.reduce((n,x)=>n+x.estimatedTokens,0)??0;
+// Default ZCode rollouts keep only the latest messages (a tail). The provider's input count is then the only full size,
+// and the difference to the recorded estimate is shown as unrecorded earlier messages.
+const actualOf=item=>item?.usage?.inputTokens??null;
+function partialOf(item) {
+  const recorded=totalOf(item),actual=actualOf(item);
+  return item&&!item.complete&&actual!=null&&actual>recorded?{recorded,actual,unrecorded:actual-recorded}:null;
+}
+const previousAgent=(items,item)=>items.filter(x=>isAgent(x)&&x.querySource===item.querySource&&x.startedAt<item.startedAt).at(-1)??null;
 function bucketsOf(item) {
   const map=new Map((item?.composition?.buckets??[]).map(x=>[x.role,x]));
   return ORDER.filter(role=>map.has(role)).map(role=>map.get(role));
@@ -119,22 +127,31 @@ function summaryCard(ctx) {
   const head=node("div",{class:"card-head"},
     node("div",{class:"eyebrow"},node("b",{},itemName(t,s)),s.turn!=null?muted(t("turn",{n:s.turn})):null),
     node("div",{class:"head-meta"},live?node("span",{class:"live"},node("i",{class:"live-dot"}),t("following")):null,muted(clock(s.startedAt))));
-  const deltaTokens=s.delta?tokensOf(s.delta.chars):null;
-  const badge=s.delta
-    ?node("span",{class:"badge "+(deltaTokens>0?"up":deltaTokens<0?"down":"flat"),id:"selected-delta"},signed(deltaTokens)+" "+t("vsPrevious"))
+  const partial=partialOf(s),prev=partial?previousAgent(ctx.items,s):null,actualDelta=partial&&actualOf(prev)!=null?partial.actual-actualOf(prev):null;
+  const deltaTokens=s.delta?tokensOf(s.delta.chars):actualDelta;
+  const badge=deltaTokens!=null
+    ?node("span",{class:"badge "+(deltaTokens>0?"up":deltaTokens<0?"down":"flat"),id:"selected-delta",title:s.delta?"":t("actualDeltaTip")},signed(deltaTokens)+" "+t("vsPrevious"))
     :node("span",{class:"badge flat",id:"selected-delta",title:t(s.deltaReason??"no_previous_snapshot")},t("notComparable"));
-  const big=node("div",{class:"big-row"},node("strong",{class:"big",id:"selected-total"},approx(totalOf(s))),muted(t("estimate")),badge);
+  const big=partial
+    ?node("div",{class:"big-row"},node("strong",{class:"big",id:"selected-total"},compact(partial.actual)),muted(t("actualInput")),badge)
+    :node("div",{class:"big-row"},node("strong",{class:"big",id:"selected-total"},approx(totalOf(s))),muted(t("estimate")),badge);
   const u=s.usage??{},facts=node("div",{class:"facts"});
-  if(u.inputTokens!=null)facts.append(node("span",{},t("actualIn")+" ",node("b",{},compact(u.inputTokens))));
+  if(partial)facts.append(node("span",{title:t("recordedTip")},t("recorded")+" ",node("b",{},approx(partial.recorded)),
+    s.messageTotal!=null?" · "+t("recordedMessages",{n:s.messageCount,total:s.messageTotal}):null));
+  else if(u.inputTokens!=null)facts.append(node("span",{},t("actualIn")+" ",node("b",{},compact(u.inputTokens))));
   if(u.outputTokens!=null)facts.append(node("span",{},t("output")+" ",node("b",{},compact(u.outputTokens))));
   if(u.inputTokens&&u.cacheReadTokens!=null)facts.append(node("span",{},t("cache")+" ",node("b",{},pct(u.cacheReadTokens/u.inputTokens))));
   if(s.model?.modelId)facts.append(muted(s.model.modelId));
-  if(!s.complete)facts.append(node("span",{class:"badge warn",title:s.incompleteReason??""},t("partial")));
-  const stack=node("div",{class:"stackbar"});
+  if(!s.complete&&!partial)facts.append(node("span",{class:"badge warn",title:s.incompleteReason??""},t("partial")));
+  const whole=partial?partial.actual:sum,stack=node("div",{class:"stackbar"});
   for(const b of buckets)stack.append(node("span",{dataset:{role:b.role},style:{flexGrow:String(Math.max(b.estimatedTokens,1)),background:palette[b.role]??palette.unknown},title:t(b.role)+" "+approx(b.estimatedTokens),...hoverRole(b.role)}));
+  if(partial)stack.append(node("span",{class:"unrecorded",dataset:{role:"unrecorded"},style:{flexGrow:String(partial.unrecorded)},title:t("unrecorded")+" "+approx(partial.unrecorded),...hoverRole("unrecorded")}));
   const legend=node("div",{class:"legend"});
-  for(const b of buckets)legend.append(button([dot(b.role),node("span",{class:"legend-name"},t(b.role)),node("span",{class:"num"},approx(b.estimatedTokens)),node("span",{class:"pct"},pct(b.estimatedTokens/sum))],
+  for(const b of buckets)legend.append(button([dot(b.role),node("span",{class:"legend-name"},t(b.role)),node("span",{class:"num"},approx(b.estimatedTokens)),node("span",{class:"pct"},pct(b.estimatedTokens/whole))],
     ()=>a.focusRole(b.role),{class:"legend-item",dataset:{role:b.role},...hoverRole(b.role)}));
+  if(partial)legend.append(node("div",{class:"legend-item",dataset:{role:"unrecorded"},title:t("unrecordedTip"),...hoverRole("unrecorded")},node("i",{class:"dot unrecorded"}),
+    node("span",{class:"legend-name"},t("unrecorded")),node("span",{class:"num"},approx(partial.unrecorded)),node("span",{class:"pct"},pct(partial.unrecorded/whole))));
+  const hint=partial?node("p",{class:"note partial-hint",id:"partial-hint"},t("partialHint",{n:s.messageCount,total:s.messageTotal??"?"})):null;
   const brief=node("div",{class:"brief"});
   if(s.userPreview)brief.append(briefRow(t("briefTurn"),node("span",{class:"brief-text"},s.userPreview),t("briefTurnTip")));
   const inputs=stepInputs(ctx,s);
@@ -144,7 +161,7 @@ function summaryCard(ctx) {
     s.responseCallCount>2?muted(t("moreItems",{n:s.responseCallCount-2})):null),t("briefReplyTip")));
   else if(s.responsePreview)brief.append(briefRow(t("briefReply"),node("span",{class:"brief-text"},s.responsePreview.replace(/\s+/g," ")),t("briefReplyTip")));
   else if(!s.hasResponse)brief.append(briefRow(t("briefReply"),muted(t("noResponse")),t("briefReplyTip")));
-  return node("section",{class:"card summary",id:"summary"},head,big,facts.children.length?facts:null,stack,legend,brief.children.length?brief:null);
+  return node("section",{class:"card summary",id:"summary"},head,big,facts.children.length?facts:null,stack,legend,hint,brief.children.length?brief:null);
 }
 // What entered the context after the previous step's reply: tool results, reminders and other non-reply items, in message order.
 function stepInputs(ctx,s) {
@@ -220,14 +237,17 @@ function trendTip(ctx,column,deltaMode) {
   const title=column.items.length>1||ctx.view.granularity==="turn"
     ?t("turn",{n:s.turn??"?"})+" · "+t("stepsIn",{n:column.items.length})
     :itemLong(t,s);
-  const change=column.delta?tokensOf(column.delta.chars):null;
+  const partial=column.partial,change=column.delta?tokensOf(column.delta.chars):partial?column.actualDelta:null;
   for(const role of ORDER) {
     const value=deltaMode?tokensOf(column.delta?.categories.find(c=>c.role===role)?.charsDelta??0):bucketsOf(s).find(b=>b.role===role)?.estimatedTokens;
     if(!value)continue;
     rows.append(node("div",{class:"tip-row",dataset:{role}},dot(role),node("span",{class:"spacer"},t(role)),node("span",{class:"num"},deltaMode?signed(value):approx(value))));
   }
+  if(partial&&!deltaMode)rows.append(node("div",{class:"tip-row",dataset:{role:"unrecorded"}},node("i",{class:"dot unrecorded"}),node("span",{class:"spacer"},t("unrecorded")),node("span",{class:"num"},approx(partial.unrecorded))));
+  if(partial&&deltaMode&&!column.delta)rows.append(node("div",{class:"tip-row muted"},t("actualOnly")));
   return node("div",{class:"trend-tip"},node("div",{class:"tip-title"},title),
-    node("div",{class:"tip-total"},node("b",{},approx(totalOf(s))),change!=null?node("span",{class:"delta "+(change>0?"up":change<0?"down":"")},signed(change)):muted(t("notComparable"))),
+    node("div",{class:"tip-total"},node("b",{},partial?compact(partial.actual):approx(totalOf(s))),partial?muted(t("actualShort")):null,
+      change!=null?node("span",{class:"delta "+(change>0?"up":change<0?"down":"")},signed(change)):muted(t("notComparable"))),
     rows,s.userPreview?node("div",{class:"tip-user muted"},s.userPreview):null);
 }
 function showTip(ctx,bar,column,deltaMode) {
@@ -249,6 +269,11 @@ function trendCard(ctx) {
   let series=items.filter(isAgent);
   if(!series.length)series=items;
   const delta=view.trend==="delta",turns=view.granularity==="turn",columns=trendColumns(series,turns);
+  for(const [i,c] of columns.entries()) {
+    c.partial=partialOf(c.s);
+    const before=actualOf(columns[i-1]?.s);
+    c.actualDelta=c.partial&&before!=null?c.partial.actual-before:null;
+  }
   const selectedItem=items.find(x=>x.key===view.selectedKey);
   const cuts=new Map();
   for(const event of o.events??[]){const after=anchors(items,event).after;if(after)cuts.set(after.key,event);}
@@ -261,12 +286,13 @@ function trendCard(ctx) {
     if(i>0&&c.turn!==lastTurn)parity^=1;
     lastTurn=c.turn;
     let pos=[],neg=[],missing=false;
-    if(!delta)pos=bucketsOf(s).map(b=>({role:b.role,v:b.estimatedTokens}));
-    else if(!c.delta)missing=true;
-    else for(const role of ORDER) {
+    if(!delta){pos=bucketsOf(s).map(b=>({role:b.role,v:b.estimatedTokens}));if(c.partial)pos.push({role:"unrecorded",v:c.partial.unrecorded});}
+    else if(c.delta)for(const role of ORDER) {
       const v=tokensOf(c.delta.categories.find(x=>x.role===role)?.charsDelta??0);
       if(v)(v>0?pos:neg).push({role,v:Math.abs(v)});
     }
+    else if(c.partial&&c.actualDelta!=null){if(c.actualDelta)(c.actualDelta>0?pos:neg).push({role:"actual",v:Math.abs(c.actualDelta)});}
+    else missing=true;
     const sum=list=>list.reduce((n,x)=>n+x.v,0);
     const bar=button([],()=>a.select(s.key),{class:"bar"+(selected?" selected":""),dataset:{key:s.key,pos:sum(pos),neg:sum(neg)},ariaLabel:turns?t("turn",{n:c.turn??"?"}):itemLong(t,s),
       onmouseenter:e=>showTip(ctx,e.currentTarget,c,delta),onfocus:e=>showTip(ctx,e.currentTarget,c,delta)});

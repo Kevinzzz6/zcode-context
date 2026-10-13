@@ -30,6 +30,7 @@ export function foldRecord(raw, previous) {
   const bodyTools = Array.isArray(body?.tools) ? body.tools : null;
   return {
     requestId: typeof raw.requestId === "string" ? raw.requestId : "",
+    messageTotal: Number.isInteger(request.messageCount) && request.messageCount >= 0 ? request.messageCount : null,
     attempt: Number.isInteger(raw.attempt) ? raw.attempt : 1,
     startedAt: Date.parse(raw.startedAt) || 0, turnId: raw.turnId ?? null,
     querySource: raw.querySource ?? "unknown", model: raw.model ?? {},
@@ -83,6 +84,13 @@ export function callIndex(record) {
   return index;
 }
 const REMINDER = /^\s*<system-reminder>\s*/;
+// Hosts prepend tagged context blocks (for example <in-app-browser-context>) to the user's own text.
+const INJECTED = /^\s*<([a-z][\w-]*)(\s[^>]*)?>[\s\S]*?<\/\1>\s*/i;
+export function userText(text) {
+  let rest = String(text ?? "");
+  for (let i = 0; i < 8 && INJECTED.test(rest); i++) rest = rest.replace(INJECTED, "");
+  return rest.replace(/^\s*## My request for ZCode:\s*/i, "");
+}
 const oneLine = text => String(text).replace(/\s+/g, " ").trim().slice(0, 160);
 function firstLine(text) {
   for (const line of String(text ?? "").split("\n")) {
@@ -111,6 +119,7 @@ function describe(item) {
   }
   if (item.role === "user" && REMINDER.test(item.readable)) return {chip:"reminder", title:firstLine(item.readable.replace(REMINDER, "")), subtitle:null};
   if (item.role === "schema") return {chip:null, title:item.toolName ?? firstLine(item.readable), subtitle:firstLine(item.value?.function?.description ?? item.value?.description ?? "") || null};
+  if (item.role === "user") return {chip:null, title:firstLine(userText(item.readable)) || firstLine(item.readable), subtitle:null};
   return {chip:null, title:firstLine(item.readable), subtitle:null};
 }
 export function inputElements(record) {
@@ -201,10 +210,10 @@ export function diffRecords(before, after) {
 export function trajectorySummary(record, key) {
   return {key,requestId:record.requestId,attempt:record.attempt,startedAt:record.startedAt,turnId:record.turnId,
     querySource:record.querySource,model:record.model,complete:record.messages.complete,incompleteReason:record.messages.reason,
-    messageCount:record.messages.items.length,schemaCount:record.tools?.length??null,hasResponse:record.hasResponse,hasError:record.hasError,
+    messageCount:record.messages.items.length,messageTotal:record.messageTotal??null,schemaCount:record.tools?.length??null,hasResponse:record.hasResponse,hasError:record.hasError,
     composition:composition(record),usage:attemptUsage(record.responseUsage),responsePreview:record.responsePreview,
     responseCalls:record.responseCalls??[],responseCallCount:record.responseCallCount??0,
-    userPreview:oneLine(inputElements(record).findLast(x=>x.role==="user"&&!REMINDER.test(x.readable))?.readable??"")};
+    userPreview:oneLine(userText(inputElements(record).findLast(x=>x.role==="user"&&!REMINDER.test(x.readable))?.readable??""))};
 }
 // Linear, bounded unified difference. This highlights a replacement block without an expensive full LCS.
 export function textDifference(before,after) {
