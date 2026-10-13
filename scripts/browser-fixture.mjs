@@ -32,6 +32,7 @@ const http=createServer(async(req,res)=>{
     if(url.pathname==="/reset"){
       fixture.db.exec("DELETE FROM model_usage");counter=0;
       for(const id of ["sess_A","sess_B"])await writeFile(join(root,"rollout","model-io-"+id+".jsonl"),"");
+      await rm(join(root,"log"),{recursive:true,force:true});await mkdir(join(root,"log"));
       await append("sess_A");await append("sess_A");await append("sess_B");res.writeHead(204);res.end();return;
     }
     if(url.pathname==="/favicon.ico"){res.writeHead(204);res.end();return;}
