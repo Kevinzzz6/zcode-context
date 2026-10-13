@@ -111,6 +111,8 @@ html[lang^=zh] .brief-label{width:28px}
 .toggle{height:24px;border:1px solid var(--border);border-radius:12px;background:transparent;padding:0 10px;font-size:11.5px;color:var(--muted);white-space:nowrap}
 .toggle.on{background:var(--accent-bg);border-color:transparent;color:var(--accent);font-weight:600}
 .compare{display:flex;align-items:center;gap:6px;font-size:11.5px}
+.card-head.wrap{flex-wrap:wrap}
+.mini-select.on{border-color:var(--accent);color:var(--accent)}
 .mini-select{height:24px;border:1px solid var(--border);border-radius:6px;background:var(--bg);font-size:11.5px;padding:0 4px;max-width:160px}
 .note{margin:0 0 8px;padding:6px 9px;border-radius:7px;background:var(--bg2);color:var(--muted);font-size:11.5px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .el-body .note{margin:0}

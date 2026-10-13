@@ -297,12 +297,13 @@ function trendCard(ctx) {
 
 function browserCard(ctx) {
   const {t,view,detail:d,items,actions:a}=ctx,card=node("section",{class:"card browser",id:"browser"});
-  const baseline=node("select",{id:"baseline",class:"mini-select",ariaLabel:t("compareWith"),onchange:e=>a.baseline(e.target.value||null)},node("option",{value:""},t("autoBaseline")));
+  const baseline=node("select",{id:"baseline",class:"mini-select"+(view.baselineKey?" on":""),ariaLabel:t("earlierBaseline"),onchange:e=>a.baseline(e.target.value||null)},node("option",{value:""},t("earlierBaseline")));
   for(const option of [...(d?.baselineOptions??[])].reverse()) {
     const item=items.find(x=>x.key===option.key);
     baseline.append(node("option",{value:option.key,selected:option.key===view.baselineKey},[item?itemName(t,item):null,clock(option.startedAt),option.complete?null:t("partial")].filter(Boolean).join(" · ")));
   }
-  card.append(node("div",{class:"card-head"},node("h2",{},t("browser")),node("label",{class:"compare"},muted(t("compareWith")),baseline)));
+  card.append(node("div",{class:"card-head wrap"},node("h2",{},t("browser")),node("div",{class:"compare",title:t("baselineTip")},muted(t("compareWith")),
+    seg([["step",t("baseStep")],["turn",t("baseTurn")]],view.baselineKey?null:view.baselineMode,v=>a.baselineMode(v),{id:"base",small:true}),baseline)));
   const search=node("input",{id:"element-search",type:"search",placeholder:t("filter"),value:view.search,maxLength:200,autocomplete:"off",spellcheck:false,oninput:e=>a.search(e.target.value)});
   card.append(node("div",{class:"controls"},search,seg([["size",t("bySize")],["order",t("byOrder")]],view.sort,v=>a.sort(v),{id:"sort",small:true})));
   const counts=d?.diff?.available?` +${d.diff.addedCount} −${d.diff.removedCount}`:"";
