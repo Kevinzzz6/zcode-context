@@ -159,6 +159,7 @@ npm run verify       # 以上全部，结果写入 output/verification
 ## 文档
 
 - [更新日志](CHANGELOG.md)
+- [产品决策与取舍](docs/decisions.md)：刻意没做的功能和原因
 - [架构](docs/architecture.md)
 - [交接与接续步骤](docs/handoff.md)
 - [桌面验收](docs/desktop-acceptance.md)（只在隔离的 ZCode 副本中进行）

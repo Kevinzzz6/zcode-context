@@ -161,6 +161,7 @@ The browser test covers the official App/AppBridge handshake, real stdio/SQLite 
 - [Handoff and next steps](docs/handoff.md) (Chinese)
 - [Desktop acceptance](docs/desktop-acceptance.md) (isolated ZCode copies only)
 - [Verification](docs/verification.md)
+- [Product decisions and trade-offs](docs/decisions.md) (Chinese): features left out on purpose, and why
 - [Comparison with dsh-context](docs/dsh-comparison.md) (Chinese)
 
 ## License
