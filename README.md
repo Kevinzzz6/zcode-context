@@ -297,7 +297,7 @@ npm run verify       # 以上全部，结果写入 output/verification
 
 浏览器测试验证官方 App/AppBridge 握手、真实 stdio/SQLite 和双会话隔离，但不代替在 ZCode 桌面侧栏中的验收。
 
-README 里的图全部由 [`docs/images/src/render.sh`](docs/images/src/render.sh) 生成：它构建一份独立的面板副本，用带会话记录的合成会话截取中英文、浅色与深色两套截图，再合成头图、截图外框、上下文事件示意图和数据流图。运行方式：`PLAYWRIGHT=<playwright/index.mjs 的绝对路径> bash docs/images/src/render.sh`，需要 Chrome、curl 和 ImageMagick。
+README 里的图全部由 [`docs/images/src/render.sh`](docs/images/src/render.sh) 生成：它构建一份独立的面板副本，用带会话记录的合成会话截取中英文、浅色与深色两套截图，再合成头图、截图外框、上下文事件示意图和数据流图。运行方式：`PLAYWRIGHT=<playwright/index.mjs 的绝对路径> bash docs/images/src/render.sh`，需要 Chrome、curl 和 ImageMagick；装有 oxipng 时，PNG 还会再无损压小约一成。
 
 ## 当前状态
 
