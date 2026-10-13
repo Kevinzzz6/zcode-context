@@ -5,18 +5,20 @@ export function canonical(value) {
   if (value && typeof value === "object") return "{" + Object.keys(value).sort().map(k => JSON.stringify(k) + ":" + canonical(value[k])).join(",") + "}";
   return JSON.stringify(value) ?? "null";
 }
+// `offset` is the absolute index of items[0] in the full message list, or null when the encoding does not say.
 export function expandCollection(items, kind, offset, count, previous) {
-  if (!Array.isArray(items)) return { items: [], complete: false, reason: "not_recorded" };
-  if (kind !== undefined && !["full","delta","tail"].includes(kind)) return { items, complete: false, reason: "unsupported_encoding" };
-  if (kind === "tail") return { items, complete: offset === 0 && (count == null || count === items.length), reason: "tail" };
+  const at = Number.isInteger(offset) && offset >= 0 ? offset : null;
+  if (!Array.isArray(items)) return { items: [], offset: 0, complete: false, reason: "not_recorded" };
+  if (kind !== undefined && !["full","delta","tail"].includes(kind)) return { items, offset: null, complete: false, reason: "unsupported_encoding" };
+  if (kind === "tail") return { items, offset: at, complete: offset === 0 && (count == null || count === items.length), reason: "tail" };
   if (kind === "delta") {
-    if (!Number.isInteger(offset) || offset < 0 || !previous?.complete || previous.items.length < offset) {
-      return { items, complete: false, reason: "missing_baseline" };
+    if (at === null || !previous?.complete || previous.items.length < offset) {
+      return { items, offset: at, complete: false, reason: "missing_baseline" };
     }
     const expanded = previous.items.slice(0, offset).concat(items);
-    return { items: expanded, complete: count == null || expanded.length === count, reason: count == null || expanded.length === count ? null : "count_mismatch" };
+    return { items: expanded, offset: 0, complete: count == null || expanded.length === count, reason: count == null || expanded.length === count ? null : "count_mismatch" };
   }
-  return { items, complete: count == null || items.length === count, reason: count == null || items.length === count ? null : "count_mismatch" };
+  return { items, offset: 0, complete: count == null || items.length === count, reason: count == null || items.length === count ? null : "count_mismatch" };
 }
 export function foldRecord(raw, previous) {
   const request = raw.request ?? {};

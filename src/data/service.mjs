@@ -124,6 +124,33 @@ export class ContextDataService {
     if(previous.key===selected.key||all.indexOf(previous)>=all.indexOf(selected))return {available:false,reason:"invalid_baseline"};
     return {...diffRecords(previous.record,selected.record),previousKey:previous.key};
   }
+  // Absolute message range and per-message digests of one cached record, computed once and kept on the cache entry.
+  fingerprint(entry) {
+    const {items,offset}=entry.record.messages;
+    return entry.fingerprint??={start:offset,end:offset==null?null:offset+items.length,hashes:items.map(x=>digest(canonical(x)))};
+  }
+  // The message at absolute index i entered with the earliest snapshot of an unbroken chain whose message count exceeds i.
+  // The chain follows previous(): same file, segment and source. A missing offset, a shrinking count (compaction) or a
+  // different recorded message at the same index ends it; whatever is still present there entered before that point.
+  // Older records never appear later in a ledger, so the result is cached on the entry.
+  entries(all,selected) {
+    if(selected.entries!==undefined)return selected.entries;
+    const own=this.fingerprint(selected);
+    if(selected.summary.step==null||own.start==null)return selected.entries=null;
+    const stamp=x=>({step:x.summary.step,turn:x.summary.turn}),result=[],alive=new Set(own.hashes.keys());
+    let cursor=selected,current=own;
+    while(alive.size) {
+      const prev=this.previous(all,cursor),before=prev&&this.fingerprint(prev);
+      if(!prev||prev.segment!==cursor.segment||before.start==null||before.end>current.end){for(const p of alive)result[p]={before:stamp(cursor)};break;}
+      for(const p of alive) {
+        const i=own.start+p;
+        if(before.end<=i){result[p]={entered:stamp(cursor)};alive.delete(p);}
+        else if(i>=before.start&&before.hashes[i-before.start]!==own.hashes[p]){result[p]={before:stamp(cursor)};alive.delete(p);}
+      }
+      cursor=prev;current=before;
+    }
+    return selected.entries=result;
+  }
   timelineItem(all,item) {
     if(!item.timeline || item.timeline.baselineKey && !all.some(x=>x.key===item.timeline.baselineKey)){
       const d=this.comparison(all,item);
@@ -158,11 +185,14 @@ export class ContextDataService {
     // Session-wide counts from tool_usage; null when the table is unavailable or a name fell outside the bounded read.
     const calls=state.toolCalls??{available:false,byName:{}};
     const callCount=x=>!calls.available||typeof x.toolName!=="string"?null:Object.hasOwn(calls.byName,x.toolName)?calls.byName[x.toolName].count:calls.truncated?null:0;
-    const decorate=x=>x.role==="schema"?{...x,callCount:callCount(x)}:x;
-    const order=list=>arrange(list.map(decorate),args.sort,args.schemaSort);
+    // Entry stamps describe the selected snapshot's own messages only; removed items and other snapshots carry none.
+    const entries=this.entries(all,selected);
+    const stampOf=key=>{const e=key.startsWith("message:")?entries?.[Number(key.slice(8))]:null;return !e?{}:e.entered?{entered:e.entered}:{enteredBefore:true,tracedTo:e.before};};
+    const decorate=(x,own=true)=>x.role==="schema"?{...x,callCount:callCount(x)}:own?{...x,...stampOf(x.key)}:x;
+    const order=(list,own)=>arrange(list.map(x=>decorate(x,own)),args.sort,args.schemaSort);
     if(diff.available)diff={...diff,addedCount:diff.added.length,removedCount:diff.removed.length,changedCount:diff.changed.length,
       addedKeys:diff.added.slice(0,2000).map(x=>x.key),changedPairs:diff.changed.map(x=>({before:x.before.key,after:x.after.key})),
-      addedGroups:groupByRole(order(diff.added)),removedGroups:groupByRole(order(diff.removed)),
+      addedGroups:groupByRole(order(diff.added,true)),removedGroups:groupByRole(order(diff.removed,false)),
       added:diff.added.slice((args.changePage??0)*40,(args.changePage??0)*40+40),
       removed:diff.removed.slice((args.changePage??0)*40,(args.changePage??0)*40+40),changed:diff.changed.slice((args.changePage??0)*40,(args.changePage??0)*40+40)};
     const search=(args.search??"").toLowerCase(),role=args.role;
@@ -173,7 +203,7 @@ export class ContextDataService {
       for(const item of snapshot===selected?elements:inputElements(snapshot.record)) {
         if(role&&item.role!==role)continue;
         if(search&&![item.readable,item.toolName,item.toolCallId,item.key].some(v=>String(v??"").toLowerCase().includes(search)))continue;
-        filtered.push({...decorate(elementSummary(item)),...(loadedSearch?{snapshotKey:snapshot.key,snapshotTime:snapshot.record.startedAt}:{})});
+        filtered.push({...decorate(elementSummary(item),snapshot===selected),...(loadedSearch?{snapshotKey:snapshot.key,snapshotTime:snapshot.record.startedAt}:{})});
       }
     }
     const ordered=arrange(filtered,args.sort,loadedSearch?null:args.schemaSort);
