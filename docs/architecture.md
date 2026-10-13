@@ -30,6 +30,11 @@ are not proven to be the same identifier. This avoids multiplying usage by netwo
 ## Isolation and limits
 
 A worker serializes reads and limits memory. Server identity is per call; worker caches use session/file keys.
+A read that times out (15 s) or is cancelled is skipped by the worker if it has not started (`src/data/runner.mjs`); the
+busy limit of 8 counts reads the worker still holds, so abandoned work cannot pile up behind a slow read (`src/data/reader.mjs`).
+The panel polls every 3 s, slows to 6 s and then 10 s while summaries stay unchanged, and returns to 3 s when it becomes
+visible, gains focus or the pointer enters it. A measured unchanged refresh of a 32 MiB real session costs about 7 ms
+(SQLite about 4 ms), so the service does not cache unchanged reads.
 Overview exposes only bounded summaries. Detail returns element lists and 12k-character chunks on demand.
 The page uses textContent for captured data. Everything runs offline.
 
@@ -70,7 +75,9 @@ groups per category, added keys and verified replacement pairs. Search has expli
 and never escapes the session cache.
 Element summaries carry a chip and title derived from the recorded call (canonical `toolCalls`, OpenAI `tool_calls`
 and AI SDK parts); a call ID recorded more than once is ambiguous and pairs nothing.
-Canonical element estimates share the composition measure. Actual response usage remains an independent field.
+Canonical element estimates share the composition measure (`estimateTokens`: about 4 characters per token for ASCII,
+1.5 for CJK, 2 for other scripts; `tokenMethod: "script_weighted"`). Diff categories and timeline deltas carry `tokensDelta`
+in the same measure, so the panel never converts characters itself. Actual response usage remains an independent field.
 Schema summaries carry `callCount` from session-wide SQLite tool_usage (read-only, like model_usage; null when the table or name
 is unavailable). `schemaSort` (size, calls, name) permutes schema items among their own slots before grouping and paging; size
 keeps the general size/order sort. `schemaCalls` reports how many schemas were never called and their estimated size.

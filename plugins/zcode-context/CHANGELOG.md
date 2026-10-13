@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.4 — 2026-10-13
+
+- Token estimates weigh scripts: about 4 characters per token for English, code and JSON, about 1.5 for Chinese, Japanese and Korean. Every character used to count as a quarter token, so Chinese content looked several times smaller than it is and, on partial (tail) records, inflated "earlier messages (not recorded)", which is actual input minus the recorded estimate. Deltas now come from the server in tokens (`tokensDelta`) instead of the panel dividing characters by 4.
+- A read that timed out or was cancelled is skipped by the data worker if it has not started yet, instead of running late and holding up newer reads; the busy limit counts what the worker still holds.
+- The panel polls every 3 s while data changes, slows to 6 s and then 10 s when nothing has changed for a while, and refreshes immediately when it becomes visible, gains focus or the pointer enters it. Polling stops for good on teardown.
+- The MCP server and app announce the released version (they still said 0.3.2), and `npm run check` fails when they, package-lock.json or the plugin manifest differ from package.json.
+
 ## 0.3.3 — 2026-10-13
 
 - The repository is itself a plugin marketplace now. `npm run build` assembles `plugins/zcode-context/` plus a root `marketplace.json` (replacing `dist/local-marketplace`), so users install by adding the GitHub repo `Kevinzzz6/zcode-context` in ZCode's plugin marketplace — no clone, no npm. Release zips (`scripts/package.py`) and offline/local-directory install are documented in the READMEs.

@@ -101,14 +101,14 @@ The build writes `marketplace.json` and `plugins/zcode-context/` at the reposito
 
 Enabling the plugin only makes ZCode load it. The panel reads data by calling two tools provided by the plugin, and ZCode applies its normal tool permission rules to them:
 
-- `mcp__plugin_zcode-context_context__get_context_summary`: overview and trend, polled every 3 seconds
+- `mcp__plugin_zcode-context_context__get_context_summary`: overview and trend, polled every 3 seconds while data changes and slowing to 10 seconds while it stays unchanged
 - `mcp__plugin_zcode-context_context__get_context_request`: a step's content, comparison and bodies
 
 Both are read-only and callable only by the panel; the model never sees them. If the panel keeps showing "Loading…" or "This is taking a while", allow these two tools in ZCode (approvals are saved per project). The plugin never changes permissions itself.
 
 ## Reading the numbers
 
-- **Estimates** use about 4 serialized characters per token to compare size and change; they are not the model's tokenization. Values with "≈" are estimates.
+- **Estimates** use about 4 serialized characters per token for English and code and about 1.5 for Chinese, Japanese and Korean, to compare size and change; they are not the model's tokenization. Values with "≈" are estimates.
 - **Actual input** is the provider-reported input of the request, including cache reads.
 - **Step and turn numbers** count from the first readable record, not from the start of the session. ZCode periodically resets long sessions' record files; history then starts over, and the trend says so.
 - **Entry stamps `T2 S7`** are traced by absolute message position. A message still present where tracing stops (oldest loaded record, a gap, a reset or a compaction) shows "earlier" instead of a guessed step.

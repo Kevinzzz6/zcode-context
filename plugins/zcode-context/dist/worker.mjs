@@ -326,6 +326,21 @@ function canonical(value) {
   if (value && typeof value === "object") return "{" + Object.keys(value).sort().map((k) => JSON.stringify(k) + ":" + canonical(value[k])).join(",") + "}";
   return JSON.stringify(value) ?? "null";
 }
+var isWide = (c) => c >= 11904 && c <= 40959 || c >= 44032 && c <= 55215 || c >= 63744 && c <= 64255 || c >= 65280 && c <= 65519;
+function estimateTokens(text) {
+  let narrow = 0, wide = 0, other = 0;
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    if (c < 128) narrow++;
+    else if (isWide(c)) wide++;
+    else {
+      other++;
+      if (c >= 55296 && c <= 56319) i++;
+    }
+  }
+  return Math.ceil(narrow / 4 + wide / 1.5 + other / 2);
+}
+var TOKEN_METHOD = "script_weighted";
 var CACHE_KEYS = /* @__PURE__ */ new Set(["cacheControl", "cache_control"]);
 var withoutCache = (value) => Array.isArray(value) ? value.map(withoutCache) : value && typeof value === "object" ? Object.fromEntries(Object.entries(value).filter(([k]) => !CACHE_KEYS.has(k)).map(([k, v]) => [k, withoutCache(v)])) : value;
 var contentKey = (value) => canonical(withoutCache(value));
@@ -494,14 +509,14 @@ function inputElements(record) {
   return result;
 }
 function elementSummary(item) {
-  const label = describe(item);
+  const label = describe(item), serialized = canonical(item.value);
   return {
     key: item.key,
     role: item.role,
     toolName: typeof item.toolName === "string" ? item.toolName.slice(0, 160) : null,
     toolCallId: typeof item.toolCallId === "string" ? item.toolCallId.slice(0, 256) : null,
-    chars: canonical(item.value).length,
-    estimatedTokens: Math.ceil(canonical(item.value).length / 4),
+    chars: serialized.length,
+    estimatedTokens: estimateTokens(serialized),
     preview: item.readable.replace(/\s+/g, " ").slice(0, 180),
     status: item.status,
     chip: typeof label.chip === "string" ? label.chip.slice(0, 80) : null,
@@ -528,13 +543,13 @@ function composition(record) {
   const buckets = /* @__PURE__ */ new Map();
   for (const element of inputElements(record)) {
     const current = buckets.get(element.role) ?? { role: element.role, chars: 0, estimatedTokens: 0, count: 0 };
-    const length = canonical(element.value).length;
-    current.chars += length;
-    current.estimatedTokens += Math.ceil(length / 4);
+    const serialized = canonical(element.value);
+    current.chars += serialized.length;
+    current.estimatedTokens += estimateTokens(serialized);
     current.count++;
     buckets.set(element.role, current);
   }
-  return { buckets: [...buckets.values()], tokenMethod: "chars/4", complete: record.messages.complete, schemasRecorded: record.tools !== null };
+  return { buckets: [...buckets.values()], tokenMethod: TOKEN_METHOD, complete: record.messages.complete, schemasRecorded: record.tools !== null };
 }
 function diffRecords(before, after) {
   if (!before.messages.complete || !after.messages.complete) return { available: false, reason: "incomplete_snapshot" };
@@ -570,13 +585,18 @@ function diffRecords(before, after) {
     if (left.length === 1 && right.length === 1 && removedItems.includes(left[0])) changed.push({ before: elementSummary(left[0]), after: elementSummary(afterItem), identity: id });
   }
   const roles = [...new Set([...a, ...b].map((x) => x.role))];
+  const measure = new Map([...a, ...b].map((x) => {
+    const s = canonical(x.value);
+    return [x, { chars: s.length, tokens: estimateTokens(s) }];
+  }));
   const categories = roles.map((role) => {
-    const size = (xs) => xs.filter((x) => x.role === role).reduce((n, x) => n + canonical(x.value).length, 0);
+    const size = (xs, unit) => xs.filter((x) => x.role === role).reduce((n, x) => n + measure.get(x)[unit], 0);
     return {
       role,
-      beforeChars: size(a),
-      afterChars: size(b),
-      charsDelta: size(b) - size(a),
+      beforeChars: size(a, "chars"),
+      afterChars: size(b, "chars"),
+      charsDelta: size(b, "chars") - size(a, "chars"),
+      tokensDelta: size(b, "tokens") - size(a, "tokens"),
       addedCount: added.filter((x) => x.role === role).length,
       removedCount: removedItems.filter((x) => x.role === role).length
     };
@@ -590,6 +610,7 @@ function diffRecords(before, after) {
     reordered: matches.some((v, i) => i > 0 && v[0] < matches[i - 1][0]),
     schemasComparable,
     charsDelta: categories.reduce((n, x) => n + x.charsDelta, 0),
+    tokensDelta: categories.reduce((n, x) => n + x.tokensDelta, 0),
     modelChanged: canonical(before.model) !== canonical(after.model),
     attribution: "observed_change"
   };
@@ -878,7 +899,7 @@ var ContextDataService = class {
       const d = this.comparison(all, item);
       item.timeline = {
         ...item.summary,
-        delta: d.available ? { chars: d.charsDelta, categories: d.categories, schemasComparable: d.schemasComparable } : null,
+        delta: d.available ? { chars: d.charsDelta, tokens: d.tokensDelta, categories: d.categories, schemasComparable: d.schemasComparable } : null,
         baselineKey: d.previousKey ?? null,
         deltaReason: d.reason ?? null
       };
@@ -1040,16 +1061,34 @@ var ContextDataService = class {
   }
 };
 
+// src/data/runner.mjs
+function serialRunner(run, reply) {
+  let queue = Promise.resolve();
+  const waiting = /* @__PURE__ */ new Set(), cancelled = /* @__PURE__ */ new Set();
+  return (input) => {
+    if (input?.cancel !== void 0) {
+      if (waiting.delete(input.cancel)) {
+        cancelled.add(input.cancel);
+        reply({ id: input.cancel, skipped: true });
+      }
+      return;
+    }
+    waiting.add(input.id);
+    queue = queue.then(async () => {
+      if (cancelled.delete(input.id)) return;
+      waiting.delete(input.id);
+      try {
+        reply({ id: input.id, result: await run(input) });
+      } catch (error) {
+        reply({ id: input.id, error: { code: error.code ?? "read_failed", message: "Context data could not be read." } });
+      }
+    });
+  };
+}
+
 // src/worker.mjs
 var service = new ContextDataService(workerData.paths);
-var queue = Promise.resolve();
-parentPort.on("message", (input) => {
-  queue = queue.then(async () => {
-    try {
-      const result = input.method === "overview" ? await service.overview(input.sessionId, input.args.revision, input.args.historyPage) : await service.request(input.sessionId, input.args);
-      parentPort.postMessage({ id: input.id, result });
-    } catch (error) {
-      parentPort.postMessage({ id: input.id, error: { code: error.code ?? "read_failed", message: "Context data could not be read." } });
-    }
-  });
-});
+parentPort.on("message", serialRunner(
+  (input) => input.method === "overview" ? service.overview(input.sessionId, input.args.revision, input.args.historyPage) : service.request(input.sessionId, input.args),
+  (message) => parentPort.postMessage(message)
+));
