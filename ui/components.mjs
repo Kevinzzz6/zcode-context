@@ -136,20 +136,31 @@ function summaryCard(ctx) {
   for(const b of buckets)legend.append(button([dot(b.role),node("span",{class:"legend-name"},t(b.role)),node("span",{class:"num"},approx(b.estimatedTokens)),node("span",{class:"pct"},pct(b.estimatedTokens/sum))],
     ()=>a.focusRole(b.role),{class:"legend-item",dataset:{role:b.role},...hoverRole(b.role)}));
   const brief=node("div",{class:"brief"});
-  if(s.userPreview)brief.append(briefRow(t("briefUser"),node("span",{class:"brief-text"},s.userPreview)));
-  const added=d?.summary?.key===s.key&&d.diff?.available?Object.values(d.diff.addedGroups??{}).flatMap(g=>g.items).reduce((m,x)=>!m||x.chars>m.chars?x:m,null):null;
-  if(added)brief.append(briefRow(t("briefAdded"),[chip(label(t,added),"tool-chip"),node("span",{class:"brief-text"},added.title||added.preview),
-    node("span",{class:"num"},approx(added.estimatedTokens)),d.diff.addedCount>1?muted(t("addedTotal",{n:d.diff.addedCount})):null],()=>a.reveal(added)));
+  if(s.userPreview)brief.append(briefRow(t("briefTurn"),node("span",{class:"brief-text"},s.userPreview),t("briefTurnTip")));
+  const inputs=stepInputs(ctx,s);
+  if(inputs)brief.append(briefRow(t("briefInput"),inputs,t("briefInputTip")));
   const calls=s.responseCalls??[];
-  if(calls.length)brief.append(briefRow(t("briefResponse"),[chip(calls[0].name,"tool-chip"),node("span",{class:"brief-text"},calls[0].title??""),
-    s.responseCallCount>1?muted("+"+(s.responseCallCount-1)):null]));
-  else if(s.responsePreview)brief.append(briefRow(t("briefResponse"),node("span",{class:"brief-text"},s.responsePreview.replace(/\s+/g," "))));
-  else if(!s.hasResponse)brief.append(briefRow(t("briefResponse"),muted(t("noResponse"))));
+  if(calls.length)brief.append(briefRow(t("briefReply"),node("span",{class:"brief-list"},calls.slice(0,2).map(call=>node("span",{class:"brief-item"},chip(call.name,"tool-chip"),node("span",{class:"brief-text"},call.title??""))),
+    s.responseCallCount>2?muted(t("moreItems",{n:s.responseCallCount-2})):null),t("briefReplyTip")));
+  else if(s.responsePreview)brief.append(briefRow(t("briefReply"),node("span",{class:"brief-text"},s.responsePreview.replace(/\s+/g," ")),t("briefReplyTip")));
+  else if(!s.hasResponse)brief.append(briefRow(t("briefReply"),muted(t("noResponse")),t("briefReplyTip")));
   return node("section",{class:"card summary",id:"summary"},head,big,facts.children.length?facts:null,stack,legend,brief.children.length?brief:null);
 }
-function briefRow(name,content,action) {
-  const children=[node("span",{class:"brief-label"},name),node("span",{class:"brief-body"},content)];
-  return action?button(children,action,{class:"brief-row clickable"}):node("div",{class:"brief-row"},children);
+// What entered the context after the previous step's reply: tool results, reminders and other non-reply items, in message order.
+function stepInputs(ctx,s) {
+  const {t,view,detail:d,actions:a}=ctx;
+  if(d?.summary?.key!==s.key||view.baselineKey||view.baselineMode==="turn")return null;
+  if(!d.diff.available)return muted(t("notComparable"));
+  const index=item=>Number(item.key.split(":")[1])+(item.key.startsWith("tool:")?1e9:0);
+  const items=Object.values(d.diff.addedGroups??{}).flatMap(g=>g.items)
+    .filter(x=>x.role!=="assistant"&&!(x.role==="user"&&x.chip!=="reminder")).sort((a,b)=>index(a)-index(b));
+  if(!items.length)return muted(t("noInputs"));
+  return node("span",{class:"brief-list"},items.slice(0,3).map(item=>button([chip(label(t,item),"tool-chip"),node("span",{class:"brief-text"},item.title||item.preview),node("span",{class:"num"},approx(item.estimatedTokens))],
+    ()=>a.reveal(item),{class:"brief-item clickable",dataset:{element:item.key}})),
+    items.length>3?button(t("moreItems",{n:items.length-3}),()=>a.set({mode:"changes"}),{class:"btn ghost small brief-more"}):null);
+}
+function briefRow(name,content,tip) {
+  return node("div",{class:"brief-row"},node("span",{class:"brief-label",title:tip},name),node("span",{class:"brief-body"},content));
 }
 const label=(t,item)=>item.chip==="reminder"?t("reminder"):item.chip;
 
