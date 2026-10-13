@@ -41,6 +41,7 @@ function record(sessionId, querySource, messages, turnId, response, at) {
   const output = 40 + (lines.length * 37) % 600;
   const id = sessionId + "_req_" + lines.length;
   usage.add(sessionId, id, input, output, Date.parse(at), { inputTokens: input, outputTokens: output, cacheReadTokens: Math.floor(input * 0.92) }, querySource);
+  for (const c of response.calls ?? []) usage.tool(sessionId, sessionId + "_" + c.id, c.name, c.name === "Bash" && /cache$/.test(c.input.command) ? "error" : "completed", Date.parse(at));
   lines.push(JSON.stringify({ type: "model_io", sessionId, requestId: id, attempt: 1, querySource, startedAt: at, turnId, traceId: "trace_" + turnId,
     model: { providerId: "deepseek", modelId: "deepseek-v4" },
     request: { messages, messagesKind: "full", messageOffset: 0, messageCount: messages.length, toolNames: tools.map(x => x.function.name), body: { model: "deepseek-v4", tools: querySource === "main_turn" ? tools : [] } },

@@ -8,6 +8,8 @@ An independent, read-only Context UI plugin for ZCode Desktop local workspaces.
 - Reads 30-day SQLite model usage facts through a separate read-only connection, including live WAL.
 - Shows daily UTC usage separately from the bounded recent-request timeline.
 - Browses recorded model inputs, estimates their composition, and compares complete snapshots; added and removed elements open their respective captured content.
+- Shows how often this session called each tool schema (SQLite tool_usage) and the estimated size of schemas never called, with Size / Calls / Name ordering.
+- Stamps each recorded message with the turn and step it entered the context, or "earlier" when the continuous loaded history does not reach its entry.
 - Correlates explicit compaction log events. Observed changes are not presented as inferred causes.
 - Keeps usage available when trajectory content has rotated out. Missing usage and missing content are distinct.
 
@@ -68,6 +70,10 @@ without a Model I/O record displays an empty state until the request finishes.
   Tool schema estimates are added only when request.body.tools was captured. Images/video payloads may be redacted.
 - Diff: category changes, added/removed navigation and order changes between complete snapshots in the same file, continuous segment and query source.
   Missing schemas are not treated as removed tools. This compares captured input, not unrecorded provider processing.
+- Schema call counts: tool_usage rows for the whole session, including calls after the selected step and calls already compacted out of context.
+  Without a readable tool_usage table the counts are unknown and no ×0 is shown.
+- Entry stamps: a message at absolute index i entered with the earliest snapshot of an unbroken chain (same file, segment and source,
+  non-decreasing message count, identical recorded content at that index) whose message count exceeds i. Schemas carry no stamp.
 - Events: selected explicit compression events from the last 3 local calendar log files.
   Missing events do not establish that no compaction happened.
 - Canonical input snapshots are recorded after model attempts; this is not the exact live next-request context.
@@ -115,7 +121,7 @@ this requires available localStorage and never supplies session authority. A res
   This does not validate the real Desktop sandbox.
 - Optional browser test: start `npm run fixture:browser`, then `npm run test:browser -- /absolute/path/to/playwright/index.mjs`.
   Uses existing Playwright and installed Chrome; no browser is downloaded. It verifies official App/AppBridge communication,
-  real stdio/SQLite and A/B page isolation across 23 interaction groups, but not Electron sandbox behavior.
+  real stdio/SQLite and A/B page isolation across 25 interaction groups, but not Electron sandbox behavior.
 - [Desktop acceptance](docs/desktop-acceptance.md) must be completed in an isolated ZCode copy.
   Code and protocol tests do not prove released-client integration.
 - [Handoff](docs/handoff.md) records current state, paths, validation evidence and rollout acceptance steps.

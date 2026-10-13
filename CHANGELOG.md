@@ -6,7 +6,10 @@
 - Summary: Turn / In / Reply brief; In lists what entered the context after the previous reply, in message order.
 - Browser: compare with the previous step or the previous turn's last step; Earlier… still picks any step.
 - Body find with previous/next, Enter / Shift+Enter / Esc; left/right arrows move between steps.
-- Keep LF line endings in the working copy; the browser smoke test now covers 23 interaction groups.
+- Tool schemas: each schema row shows how often this session called the tool (×N from SQLite tool_usage, ×0 muted, nothing when the table is unavailable); the category offers Size / Calls / Name ordering and a line with the number and estimated size of schemas never called. Ordering is applied on the server before grouping and paging.
+- Entry stamps: each message row shows the turn and step it entered the context (`T2 S7`), traced by absolute message index through tail and delta records; messages already present where the continuous history begins (oldest loaded record, gap, reset or compaction) say "earlier" instead of a guessed step.
+- Collections report the absolute offset of their first recorded item.
+- Keep LF line endings in the working copy; the browser smoke test now covers 25 interaction groups.
 
 ## 0.3.0 — 2026-10-13
 

@@ -75,3 +75,27 @@ export function readUsage(dbPath, sessionId, now = Date.now()) {
     return { available: false, code, facts: [], days: [], totals: null, windowDays: 30 };
   } finally { db?.close(); }
 }
+// Session-wide calls per tool name. A missing table or column leaves counts unknown rather than zero.
+export function readToolCalls(dbPath, sessionId) {
+  let db;
+  try {
+    if (!statSync(dbPath).isFile()) throw new ContextError("database_missing", "Session database is not a regular file.");
+    db = new DatabaseSync(dbPath, { readOnly: true });
+    db.exec("PRAGMA query_only = ON; PRAGMA busy_timeout = 100; BEGIN");
+    const columns = new Set(db.prepare("PRAGMA table_info(tool_usage)").all().map(row => row.name));
+    if (!["session_id", "tool_name"].every(key => columns.has(key))) {
+      throw new ContextError("schema_unsupported", "This database does not have the supported tool_usage schema.");
+    }
+    const errors = columns.has("status") ? "sum(CASE WHEN status='error' THEN 1 ELSE 0 END)" : "NULL";
+    const rows = db.prepare("SELECT tool_name AS name, count(*) AS count, " + errors + " AS errorCount FROM tool_usage" +
+      " WHERE session_id=? AND tool_name IS NOT NULL GROUP BY tool_name ORDER BY count DESC, tool_name LIMIT 500").all(sessionId);
+    db.exec("COMMIT");
+    const byName = Object.create(null);
+    for (const row of rows) byName[String(row.name).slice(0, 160)] = { count: Number(row.count), errorCount: row.errorCount == null ? null : Number(row.errorCount) };
+    return { available: true, scope: "session", byName, callCount: rows.reduce((n, row) => n + Number(row.count), 0), truncated: rows.length === 500 };
+  } catch (error) {
+    if (db) { try { db.exec("ROLLBACK"); } catch {} }
+    const code = error.code === "ENOENT" ? "database_missing" : error.code === "SQLITE_BUSY" || /locked|busy/i.test(error.message) ? "database_busy" : error instanceof ContextError ? error.code : "database_unavailable";
+    return { available: false, code, byName: {} };
+  } finally { db?.close(); }
+}

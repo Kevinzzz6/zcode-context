@@ -120,7 +120,7 @@ async function loadDetail(background=false) {
   startLoad();
   try {
     const searchAll=view.searchAll&&Boolean(view.search);
-    const next=await call("get_context_request",{key,search:view.search,searchScope:searchAll?"loaded":"selected",sort:view.sort,...baselineArgs(key)});
+    const next=await call("get_context_request",{key,search:view.search,searchScope:searchAll?"loaded":"selected",sort:view.sort,schemaSort:view.schemaSort,...baselineArgs(key)});
     if(sequence!==detailSequence||expected!==generation||key!==view.selectedKey||next.sessionId!==boundSession)return;
     detail=next;more={};
     if(view.baselineMode==="turn"&&!view.baselineKey&&!baselineArgs(key).baselineKey&&isAgent(items.find(x=>x.key===key)))detail={...next,diff:{available:false,reason:"no_previous_turn"}};
@@ -153,7 +153,7 @@ async function loadContent() {
 async function loadMore(role) {
   const key=view.selectedKey,sequence=++moreSequence,expected=generation,page=(more[role]?.page??0)+1;
   try {
-    const next=await call("get_context_request",{key,role,page,search:view.search,searchScope:"selected",sort:view.sort,...baselineArgs(key)});
+    const next=await call("get_context_request",{key,role,page,search:view.search,searchScope:"selected",sort:view.sort,schemaSort:view.schemaSort,...baselineArgs(key)});
     if(sequence!==moreSequence||expected!==generation||key!==view.selectedKey)return;
     more={...more,[role]:{page,items:[...(more[role]?.items??[]),...next.elements]}};render();
   }catch(error){if(expected===generation)showError(error);}
@@ -215,6 +215,7 @@ const actions={
   set(patch){view={...view,...patch};persist();render();},
   remember(patch){view={...view,...patch};persist();},
   sort(sort){view={...view,sort};persist();render();loadDetail();},
+  schemaSort(schemaSort){view={...view,schemaSort};persist();render();loadDetail();},
   baselineMode(mode) {
     view={...view,baselineMode:mode,baselineKey:null,open:view.open?.diff?{...view.open,diff:false,diffBefore:null,offset:0}:view.open};
     persist();render();loadDetail();if(view.open)loadContent();
