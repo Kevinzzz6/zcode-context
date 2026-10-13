@@ -1,6 +1,6 @@
 const PREFIX="zcode-context:view:v3:";
 export function initialView() {
-  return {selectedKey:null,follow:true,page:"context",trend:"total",granularity:"step",trendAdaptive:false,search:"",searchAll:false,sort:"size",mode:"all",
+  return {selectedKey:null,follow:true,page:"context",trend:"total",granularity:"step",trendAdaptive:false,search:"",searchAll:false,sort:"size",schemaSort:"size",mode:"all",
     expanded:null,searchExpanded:null,open:null,baselineKey:null,baselineMode:"step",aboutOpen:false,scroll:0};
 }
 export function restoreView(sessionId) {
@@ -13,6 +13,8 @@ export function restoreView(sessionId) {
     if(!["step","turn"].includes(view.granularity))view.granularity="step";
     view.trendAdaptive=view.trendAdaptive===true;
     if(!["all","changes"].includes(view.mode))view.mode="all";
+    if(!["size","order"].includes(view.sort))view.sort="size";
+    if(!["size","calls","name"].includes(view.schemaSort))view.schemaSort="size";
     if(!["step","turn"].includes(view.baselineMode))view.baselineMode="step";
     if(view.expanded!==null&&!Array.isArray(view.expanded))view.expanded=null;
     if(view.searchExpanded!==null&&!Array.isArray(view.searchExpanded))view.searchExpanded=null;

@@ -71,6 +71,13 @@ and never escapes the session cache.
 Element summaries carry a chip and title derived from the recorded call (canonical `toolCalls`, OpenAI `tool_calls`
 and AI SDK parts); a call ID recorded more than once is ambiguous and pairs nothing.
 Canonical element estimates share the composition measure. Actual response usage remains an independent field.
+Schema summaries carry `callCount` from session-wide SQLite tool_usage (read-only, like model_usage; null when the table or name
+is unavailable). `schemaSort` (size, calls, name) permutes schema items among their own slots before grouping and paging; size
+keeps the general size/order sort. `schemaCalls` reports how many schemas were never called and their estimated size.
+Message summaries of the selected agent snapshot carry `entered: {step, turn}` or `enteredBefore` with `tracedTo`. Messages are
+identified by absolute index (`messages.offset` plus position, valid for full, tail and delta records). The walk follows
+previous() within one segment and stops at a missing offset, a shrinking message count or different recorded content at the same
+index. Per-message digests and the result are cached on the cache entry, so it is bounded by the 120 cached records.
 Body/Raw and body Diff return at most 12k characters; body search counts all matches and bounds navigation to 100 offsets.
 Comparison requires continuous file segment, complete messages and matching querySource. Unknown schemas are excluded
 from Delta. A body replacement additionally requires unique captured schema name or tool-result identity.

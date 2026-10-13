@@ -4,17 +4,19 @@ import {mkdtemp,mkdir,writeFile,rm} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {ContextDataService} from "../src/data/service.mjs";
-import {foldRecord,diffRecords,inputElements,toolEvidence,attemptUsage,textDifference,elementSummary,trajectorySummary} from "../src/domain/trajectory.mjs";
-import {modelRecord} from "./fixtures.mjs";
-async function fixture(records,callback,events=[]) {
+import {expandCollection,foldRecord,diffRecords,inputElements,toolEvidence,attemptUsage,textDifference,elementSummary,trajectorySummary} from "../src/domain/trajectory.mjs";
+import {modelRecord,usageDatabase} from "./fixtures.mjs";
+async function fixture(records,callback,events=[],tools=null) {
   const root=await mkdtemp(join(tmpdir(),"context-sidebar-"));
   try {
     await mkdir(join(root,"rollout"));await mkdir(join(root,"log"));
     await writeFile(join(root,"rollout","model-io-sess_A.jsonl"),records.map(x=>typeof x==="string"?x:JSON.stringify(x)).join("\n")+"\n");
     const date=new Date(),stamp=date.getFullYear()+"-"+String(date.getMonth()+1).padStart(2,"0")+"-"+String(date.getDate()).padStart(2,"0");
     await writeFile(join(root,"log","zcode-"+stamp+".jsonl"),events.map(JSON.stringify).join("\n")+"\n");
-    const service=new ContextDataService({db:join(root,"absent.sqlite"),trajectoryDirs:[join(root,"rollout")],logDir:join(root,"log")});
-    await callback(service,await service.overview("sess_A"));
+    const db=tools?usageDatabase(root):null;
+    for(const [i,[sessionId,name,status]] of (tools??[]).entries())db.tool(sessionId,"t"+i,name,status);
+    const service=new ContextDataService({db:db?db.path:join(root,"absent.sqlite"),trajectoryDirs:[join(root,"rollout")],logDir:join(root,"log")});
+    try{await callback(service,await service.overview("sess_A"));}finally{db?.db.close();}
   }finally{await rm(root,{recursive:true,force:true});}
 }
 test("search and largest-content location cover elements beyond the first 40-row page",()=>{
@@ -157,3 +159,88 @@ test("tail records keep the declared message total and user previews drop inject
   assert.equal(summary.complete,false);assert.equal(summary.messageTotal,501);assert.equal(summary.messageCount,1);
   assert.equal(summary.userPreview,"真实问题");assert.equal(elementSummary(inputElements(record)[0]).title,"真实问题");
 });
+// Production records keep only the newest messages: messagesKind "tail" with an absolute messageOffset.
+const tail=(id,all,keep,extra={})=>modelRecord("sess_A",id,[],{...extra,request:{messages:all.slice(-keep),messagesKind:"tail",messageOffset:all.length-keep,messageCount:all.length,...extra.request}});
+const tool=(name,size)=>({type:"function",function:{name,description:name+" "+"d".repeat(size),parameters:{type:"object"}}});
+test("schema call counts come from session tool_usage, not the tail of recorded messages",()=>{
+  const tools=[tool("Read",400),tool("Grep",100),tool("Write",300),tool("Unused",200)];
+  const history=[{role:"system",content:"rules"},...Array.from({length:20},(_,i)=>({role:"user",content:"m"+i}))];
+  return fixture([tail("r",history,4,{request:{body:{tools}}})],async(service,o)=>{
+    assert.equal(o.toolCalls.available,true);assert.equal(o.toolCalls.byName.Read.count,3);assert.equal(o.toolCalls.byName.Read.errorCount,1);
+    const d=await service.request("sess_A",{key:o.trajectories[0].key});
+    assert.equal(d.summary.complete,false);
+    const count=Object.fromEntries(d.groups.schema.items.map(x=>[x.toolName,x.callCount]));
+    assert.deepEqual(count,{Read:3,Grep:1,Write:0,Unused:0});
+    assert.equal(d.schemaCalls.available,true);assert.equal(d.schemaCalls.scope,"session");assert.equal(d.schemaCalls.unusedCount,2);
+    const size=name=>d.groups.schema.items.find(x=>x.toolName===name).estimatedTokens;
+    assert.equal(d.schemaCalls.unusedEstimatedTokens,size("Write")+size("Unused"));
+    assert.deepEqual(d.groups.schema.items.map(x=>x.toolName),["Read","Write","Unused","Grep"]);
+    const calls=await service.request("sess_A",{key:o.trajectories[0].key,schemaSort:"calls"});
+    assert.deepEqual(calls.groups.schema.items.map(x=>x.toolName),["Read","Grep","Write","Unused"]);
+    const names=await service.request("sess_A",{key:o.trajectories[0].key,schemaSort:"name"});
+    assert.deepEqual(names.groups.schema.items.map(x=>x.toolName),["Grep","Read","Unused","Write"]);
+    assert.deepEqual(names.groups.user.items.map(x=>x.key),d.groups.user.items.map(x=>x.key));
+    const body=await service.request("sess_A",{key:o.trajectories[0].key,elementKey:"tool:0"});assert.equal(body.content.callCount,3);
+  },[],[["sess_A","Read"],["sess_A","Read"],["sess_A","Read","error"],["sess_A","Grep"],["sess_B","Write"],["sess_B","Unused"]]);
+});
+test("schema call sort stays consistent across show-more pages",()=>{
+  const tools=Array.from({length:45},(_,i)=>tool("T"+String(i).padStart(2,"0"),100+i*10));
+  return fixture([modelRecord("sess_A","r",[{role:"user",content:"x"}],{request:{messages:[{role:"user",content:"x"}],body:{tools}}})],async(service,o)=>{
+    const key=o.trajectories[0].key,first=await service.request("sess_A",{key,schemaSort:"calls"});
+    assert.equal(first.groups.schema.count,45);assert.equal(first.groups.schema.items.length,40);
+    const next=await service.request("sess_A",{key,schemaSort:"calls",role:"schema",page:1});
+    const all=[...first.groups.schema.items,...next.elements];
+    assert.equal(new Set(all.map(x=>x.key)).size,45);
+    assert.deepEqual(all.slice(0,3).map(x=>x.toolName),["T01","T40","T00"]);
+    for(let i=1;i<all.length;i++)assert.ok(all[i-1].callCount>all[i].callCount||all[i-1].callCount===all[i].callCount&&all[i-1].chars>=all[i].chars);
+    assert.equal(first.schemaCalls.unusedCount,42);
+  },[],[["sess_A","T01"],["sess_A","T01"],["sess_A","T01"],["sess_A","T40"],["sess_A","T40"],["sess_A","T00"]]);
+});
+test("without a tool_usage table call counts are unknown, never zero",()=>fixture([
+  modelRecord("sess_A","r",[],{request:{messages:[],body:{tools:[tool("Read",10)]}}})],async(service,o)=>{
+    assert.equal(o.toolCalls.available,false);
+    const d=await service.request("sess_A",{key:o.trajectories[0].key,schemaSort:"calls"});
+    assert.equal(d.groups.schema.items[0].callCount,null);assert.equal(d.schemaCalls.available,false);
+  }));
+test("collections report the absolute offset of their first recorded item",()=>{
+  const full=expandCollection([1,2,3],"full",0,3);assert.equal(full.offset,0);
+  assert.equal(expandCollection([4,5],"tail",3,5).offset,3);assert.equal(expandCollection([4,5],"tail",undefined,5).offset,null);
+  assert.equal(expandCollection([4],"delta",3,4,full).offset,0);assert.equal(expandCollection([4],"delta",3,4,full).items.length,4);
+  const partial=expandCollection([4,5],"tail",3,5);assert.equal(expandCollection([6],"delta",5,6,partial).offset,5);
+  assert.equal(expandCollection([1],"weird",0,1).offset,null);
+  assert.equal(foldRecord(tail("r",[1,2,3,4].map(n=>({role:"user",content:String(n)})),2)).messages.offset,2);
+});
+const message=n=>({role:n%2?"assistant":"user",content:"m"+n});
+const chat=(n,extra={})=>Array.from({length:n},(_,i)=>extra[i]??message(i));
+const stamps=d=>Object.fromEntries(Object.values(d.groups).flatMap(g=>g.items).filter(x=>x.key.startsWith("message:"))
+  .map(x=>[Number(x.key.slice(8)),x.entered?"S"+x.entered.step+"T"+x.entered.turn:x.enteredBefore?"before:S"+x.tracedTo.step:null]));
+const same={role:"user",content:"identical"};
+test("entry stamps follow absolute indices across tail and delta records, including identical messages",()=>fixture([
+  tail("r1",chat(5),3,{turnId:"t1"}),tail("r2",chat(7),3,{turnId:"t1"}),
+  tail("r3",chat(8,{7:same}),3,{turnId:"t2"}),tail("r4",chat(10,{7:same,8:same}),3,{turnId:"t2"}),
+  modelRecord("sess_A","r5",[],{turnId:"t2",request:{messages:[message(10)],messagesKind:"delta",messageOffset:10,messageCount:11}})],async(service,o)=>{
+    const keys=o.trajectories.map(x=>x.key);
+    assert.deepEqual(stamps(await service.request("sess_A",{key:keys[3]})),{0:"S3T2",1:"S4T2",2:"S4T2"});
+    assert.deepEqual(stamps(await service.request("sess_A",{key:keys[1]})),{0:"before:S1",1:"S2T1",2:"S2T1"});
+    assert.deepEqual(stamps(await service.request("sess_A",{key:keys[0]})),{0:"before:S1",1:"before:S1",2:"before:S1"});
+    assert.deepEqual(stamps(await service.request("sess_A",{key:keys[4]})),{0:"S5T2"});
+    const d=await service.request("sess_A",{key:keys[3],search:"identical"});
+    assert.deepEqual(d.elements.map(x=>x.entered.step),[3,4]);
+  }));
+test("entry stamps never cross a history gap, a compaction or a changed message",()=>fixture([
+  tail("a1",chat(6),3),tail("a2",chat(8),3),"INVALID ROW",tail("a3",chat(9),3),tail("a4",chat(10),3),
+  tail("b1",chat(4),3),tail("b2",chat(5,{3:{role:"user",content:"rewritten"}}),3)],async(service,o)=>{
+    const keys=o.trajectories.map(x=>x.key);
+    // a4 holds indices 7..9: 7 and 8 were already present at a3, whose predecessor lies across the malformed row.
+    assert.deepEqual(stamps(await service.request("sess_A",{key:keys[3]})),{0:"before:S3",1:"before:S3",2:"S4Tnull"});
+    // b1 has fewer messages than a4 (compaction), so nothing traces past it; b2 rewrote index 3.
+    assert.deepEqual(stamps(await service.request("sess_A",{key:keys[4]})),{0:"before:S5",1:"before:S5",2:"before:S5"});
+    assert.deepEqual(stamps(await service.request("sess_A",{key:keys[5]})),{0:"before:S5",1:"before:S6",2:"S6Tnull"});
+  }));
+test("auxiliary snapshots and schemas carry no entry stamps",()=>fixture([
+  modelRecord("sess_A","title",[{role:"user",content:"x"}],{querySource:"session_title"}),
+  modelRecord("sess_A","r",[{role:"user",content:"x"}],{request:{messages:[{role:"user",content:"x"}],body:{tools:[tool("Read",5)]}}})],async(service,o)=>{
+    const aux=await service.request("sess_A",{key:o.trajectories[0].key});assert.ok(!("entered" in aux.groups.user.items[0])&&!("enteredBefore" in aux.groups.user.items[0]));
+    const agent=await service.request("sess_A",{key:o.trajectories[1].key});
+    assert.equal(agent.groups.user.items[0].enteredBefore,true);assert.ok(!("enteredBefore" in agent.groups.schema.items[0]));
+  }));
