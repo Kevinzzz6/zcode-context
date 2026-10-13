@@ -387,13 +387,20 @@ function elementRow(ctx,item,{badge=null,snapshotKey=null,prefix=null}={}) {
     node("span",{class:"el-title"},item.title||item.preview||item.key),
     badge?node("span",{class:"badge "+(badge==="added"?"up":"down")},t(badge==="added"?"addedBadge":"removedBadge")):null,
     item.role==="schema"&&item.callCount!=null?node("span",{class:"calls"+(item.callCount?"":" zero"),title:t("callsTip",{n:item.callCount})},"×"+item.callCount):null,
-    node("span",{class:"num"},approx(item.estimatedTokens))],()=>a.open(item,key),{class:"el-head",ariaExpanded:String(open)});
+    entryStamp(t,item),node("span",{class:"num"},approx(item.estimatedTokens))],()=>a.open(item,key),{class:"el-head",ariaExpanded:String(open)});
   const row=node("div",{class:"el element-row"+(open?" open":"")+(badge==="removed"?" removed":""),dataset:{element:item.key,snapshot:key,kind:badge??""}},head);
   if(item.subtitle&&!open)row.append(node("div",{class:"el-sub"},item.subtitle));
   if(open)row.append(elementBody(ctx,item,{badge}));
   return row;
 }
 
+// When the message first entered the context, or that it was already there where the continuous history begins.
+function entryStamp(t,item) {
+  const e=item.entered;
+  if(e)return node("span",{class:"stamp",title:e.turn!=null?t("enteredTip",{turn:e.turn,step:e.step}):t("enteredStepTip",{step:e.step})},(e.turn!=null?"T"+e.turn+" ":"")+"S"+e.step);
+  if(item.enteredBefore)return node("span",{class:"stamp before",title:t("enteredBeforeTip",{step:item.tracedTo?.step??"?"})},t("entryEarlier"));
+  return null;
+}
 function elementBody(ctx,item,{badge}) {
   const {t,view,content:data,detail:d,items,actions:a}=ctx,p=view.open,box=node("div",{class:"el-body"});
   const origin=items.find(x=>x.key===p.key);

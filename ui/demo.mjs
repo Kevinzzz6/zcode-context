@@ -2,11 +2,12 @@
 const now=Date.now(),count=9;
 const toolSize=i=>i<6?1200+i*2400:2400+(i-6)*1100;
 function elements(i) {
-  const list=[{key:"message:0",role:"system",title:"You are a demo coding agent",estimatedTokens:1800},
+  const first={step:1,turn:1},entered=j=>({step:j+2,turn:j+1<4?1:2});
+  const list=[{key:"message:0",role:"system",title:"You are a demo coding agent",estimatedTokens:1800,entered:first},
     ...["Read","Edit","Bash","Grep","Glob","Write","TodoWrite","WebFetch"].map((name,j)=>({key:"tool:"+j,role:"schema",title:name,toolName:name,subtitle:name+" demo schema",estimatedTokens:600+j*90,callCount:[4,1,2,1,0,0,0,0][j]})),
-    {key:"message:1",role:"user",title:"检查缓存过期逻辑",estimatedTokens:40}];
-  for(let j=0;j<i;j++)list.push({key:"message:"+(2+j*2),role:"assistant",chip:"Read",title:"src/demo-"+j+".ts",estimatedTokens:30},
-    {key:"message:"+(3+j*2),role:"tool",chip:"Read",title:"src/demo-"+j+".ts",estimatedTokens:j>=i-3||i<6?Math.round(toolSize(i)/Math.max(1,Math.min(i,3))):0,status:"ok",lines:120});
+    {key:"message:1",role:"user",title:"检查缓存过期逻辑",estimatedTokens:40,entered:first}];
+  for(let j=0;j<i;j++)list.push({key:"message:"+(2+j*2),role:"assistant",chip:"Read",title:"src/demo-"+j+".ts",estimatedTokens:30,entered:entered(j)},
+    {key:"message:"+(3+j*2),role:"tool",chip:"Read",entered:entered(j),title:"src/demo-"+j+".ts",estimatedTokens:j>=i-3||i<6?Math.round(toolSize(i)/Math.max(1,Math.min(i,3))):0,status:"ok",lines:120});
   return list.filter(x=>x.estimatedTokens>0).map(x=>({chars:x.estimatedTokens*4,preview:x.title,status:null,chip:null,subtitle:null,lines:1,...x}));
 }
 const buckets=list=>["system","schema","user","assistant","tool"].map(role=>{const xs=list.filter(x=>x.role===role);return {role,count:xs.length,chars:xs.reduce((n,x)=>n+x.chars,0),estimatedTokens:xs.reduce((n,x)=>n+x.estimatedTokens,0)};}).filter(b=>b.count);
