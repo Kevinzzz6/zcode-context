@@ -7,7 +7,7 @@
   "plugins": [
     {
       "name": "zcode-context",
-      "version": "0.3.4",
+      "version": "0.3.5",
       "source": "./plugins/zcode-context",
       "description": "只读查看会话用量、模型输入组成、请求差异和压缩事件。",
       "description_i18n": {

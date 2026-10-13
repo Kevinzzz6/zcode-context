@@ -1,6 +1,12 @@
 # ZCode Context 交接文档
 
-更新时间：2026-10-13，Asia/Shanghai。当前版本：0.3.4。
+更新时间：2026-10-13，Asia/Shanghai。当前版本：0.3.5。
+
+## 0.3.5 关于页
+
+- 工具栏新增 <kbd>ⓘ</kbd>，进入「关于」次级页面（与用量页同级的 `view.page="about"`）：插件一句话描述、版本、作者、MIT 许可、源码仓库（可复制 URL）、第三方许可指引（THIRD_PARTY_NOTICES.txt），以及“只读本机已落盘数据、不联网、不写入”的说明；demo 模式下附演示数据标记。
+- 版本号来源：`ui/app.mjs` 顶部的 `INFO` 常量（`name`/`version` 字面量保持一处，`npm run check` 的正则仍命中一次），经 render ctx 传入 `aboutPage`。数据未加载或绑定失败时关于页也可达。
+- 浏览器冒烟新增一组交互（`#show-about` → 版本号格式与仓库行 → `#about-back` 返回）。
 
 ## 0.3.4 修复与优化
 

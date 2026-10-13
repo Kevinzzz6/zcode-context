@@ -4,6 +4,7 @@ import { translator } from "./i18n.mjs";
 import { renderApp, isAgent, CHUNK, layoutTrend, highlight } from "./components.mjs";
 import { demoCall } from "./demo.mjs";
 const root=document.getElementById("root");
+const INFO={name:"zcode-context",version:"0.3.5"};
 const demo=new URLSearchParams(location.search).get("demo")==="1";
 let app=null,t=translator(),view=initialView(),boundSession=null,overview=null,items=[],hasOlder=false,historyPage=0;
 let detail=null,content=null,more={},notice=null,busy=false,activeLoads=0;
@@ -27,7 +28,7 @@ function render(background=false) {
   const y=window.scrollY,agents=items.filter(isAgent),index=agents.findIndex(x=>x.key===view.selectedKey);
   const selected=items.find(x=>x.key===view.selectedKey)??(detail?.summary?.key===view.selectedKey?detail.summary:null);
   const newerCount=index>=0?agents.length-1-index:selected?agents.filter(x=>x.startedAt>selected.startedAt).length:0;
-  root.replaceChildren(renderApp({t,view,overview,items,selected,detail,content,more,hasOlder,notice,busy,demo,latestKey:latestKey(),newerCount,session:boundSession,actions}));
+  root.replaceChildren(renderApp({t,view,version:INFO.version,overview,items,selected,detail,content,more,hasOlder,notice,busy,demo,latestKey:latestKey(),newerCount,session:boundSession,actions}));
   for(const el of root.querySelectorAll("[data-scroll]")) {
     const saved=scrolls.get(el.dataset.scroll);if(!saved)continue;
     el.scrollTop=saved[1];el.scrollLeft=keepRightEdge&&el.dataset.scroll==="trend"?el.scrollWidth-keepRightEdge:saved[0];
@@ -284,7 +285,7 @@ document.documentElement.addEventListener("pointerenter",wake);
 window.addEventListener("focus",wake);
 render();
 if(!demo) {
-  app=new App({name:"zcode-context",version:"0.3.4"},{availableDisplayModes:["fullscreen"]});
+  app=new App(INFO,{availableDisplayModes:["fullscreen"]});
   const applyHostContext=()=>{
     const context=app.getHostContext();t=translator(context?.locale??"zh-CN");
     document.documentElement.lang=context?.locale??"zh-CN";document.documentElement.dataset.theme=context?.theme??"light";

@@ -71,6 +71,7 @@ From top to bottom:
   <tr><td nowrap><b>Element details</b></td><td>Inline tool cards (argument table, OK/error), schema parameter tables and bodies (readable / Markdown / raw, copy, find, parts)</td></tr>
   <tr><td nowrap><b>Compaction events</b></td><td>Logged kind, status, reason and savings, with before/after step navigation</td></tr>
   <tr><td nowrap><b>Usage</b></td><td>Secondary page with 30-day logical usage, daily totals and recent requests</td></tr>
+  <tr><td nowrap><b>About</b></td><td>Secondary page (<kbd>ⓘ</kbd> in the toolbar): version, author, licence, source repository, and the read-only local-data, no-network statement</td></tr>
 </table>
 
 ## Default recording versus complete retention
