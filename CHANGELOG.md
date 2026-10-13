@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.2 — 2026-10-13
+
+- On partial (tail) records the In row and Changes mode list what entered after the baseline step, derived from entry stamps, with +N per category; removals stay unknown and the panel says so. Messages that cannot be dated are counted, not listed.
+- Incomplete-record notes name the reason in words instead of codes such as "tail".
+- `npm run preview:session -- <sessionId>` previews a real session read-only through the built service; `FIXTURE_TAIL=n` makes the UI fixture record tails like ZCode's default.
+- README.md is now Chinese (README.en.md in English), rewritten for users with screenshots and a default-versus-complete-retention table; README_CN.md is removed.
+
 ## 0.3.1 — 2026-10-13
 
 Tested against a real 600k-token session in the user's ZCode.

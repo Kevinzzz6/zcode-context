@@ -272,7 +272,7 @@ window.addEventListener("scroll",()=>{view.scroll=window.scrollY;clearTimeout(sc
 document.addEventListener("visibilitychange",()=>{clearInterval(timer);if(!document.hidden){refresh();timer=setInterval(()=>refresh(),3000);}});
 render();
 if(!demo) {
-  app=new App({name:"zcode-context",version:"0.3.1"},{availableDisplayModes:["fullscreen"]});
+  app=new App({name:"zcode-context",version:"0.3.2"},{availableDisplayModes:["fullscreen"]});
   const applyHostContext=()=>{
     const context=app.getHostContext();t=translator(context?.locale??"zh-CN");
     document.documentElement.lang=context?.locale??"zh-CN";document.documentElement.dataset.theme=context?.theme??"light";
