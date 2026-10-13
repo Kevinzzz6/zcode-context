@@ -21,6 +21,16 @@ jobs:
             echo "Tag $GITHUB_REF_NAME does not match package.json version v$version"
             exit 1
           fi
+      - name: Changelog must name this release and carry no unreleased changes
+        run: |
+          if grep -q '^## Unreleased' CHANGELOG.md; then
+            echo "CHANGELOG.md has an Unreleased section; bump the version and name the section before tagging."
+            exit 1
+          fi
+          if ! grep -q "^## ${GITHUB_REF_NAME#v} " CHANGELOG.md; then
+            echo "CHANGELOG.md has no section for $GITHUB_REF_NAME."
+            exit 1
+          fi
       - run: python3 scripts/package.py
       - run: gh release create "$GITHUB_REF_NAME" zcode-context-*-marketplace.zip zcode-context-*-marketplace.zip.sha256 --generate-notes --verify-tag
         env:
