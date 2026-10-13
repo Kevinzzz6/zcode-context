@@ -10,6 +10,11 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { usageDatabase } from "../test/fixtures.mjs";
 
 const port = Number(process.env.PORT ?? 4175);
+// FIXTURE_TAIL=n records only the latest n messages of each request, like ZCode's default rollout.
+const keep = Number(process.env.FIXTURE_TAIL ?? 0);
+const encode = messages => keep && messages.length > keep
+  ? { messages: messages.slice(-keep), messagesKind: "tail", messageOffset: messages.length - keep, messageCount: messages.length }
+  : { messages, messagesKind: "full", messageOffset: 0, messageCount: messages.length };
 const root = await mkdtemp(join(tmpdir(), "context-ui-fixture-"));
 const usage = usageDatabase(root);
 await mkdir(join(root, "rollout")); await mkdir(join(root, "log"));
@@ -44,7 +49,7 @@ function record(sessionId, querySource, messages, turnId, response, at) {
   for (const c of response.calls ?? []) usage.tool(sessionId, sessionId + "_" + c.id, c.name, c.name === "Bash" && /cache$/.test(c.input.command) ? "error" : "completed", Date.parse(at));
   lines.push(JSON.stringify({ type: "model_io", sessionId, requestId: id, attempt: 1, querySource, startedAt: at, turnId, traceId: "trace_" + turnId,
     model: { providerId: "deepseek", modelId: "deepseek-v4" },
-    request: { messages, messagesKind: "full", messageOffset: 0, messageCount: messages.length, toolNames: tools.map(x => x.function.name), body: { model: "deepseek-v4", tools: querySource === "main_turn" ? tools : [] } },
+    request: { ...encode(messages), toolNames: tools.map(x => x.function.name), body: { model: "deepseek-v4", tools: querySource === "main_turn" ? tools : [] } },
     response: { text: response.text ?? "", toolCalls: response.calls ?? [],
       usage: { inputTokens: input, outputTokens: output, cacheReadTokens: Math.floor(input * 0.92), totalTokens: input + output } } }));
 }
