@@ -1,140 +1,141 @@
 # ZCode Context
 
-[简体中文](README_CN.md)
+[English](README.en.md)
 
-An independent, read-only Context UI plugin for ZCode Desktop local workspaces.
+在 ZCode 会话侧栏里查看上下文：每次请求带了什么、哪类内容占得最多、这一步新进来了什么、压缩前后少了什么。
 
-- Binds to its own session through host MCP request metadata. No last-active-file guessing or hooks.
-- Reads 30-day SQLite model usage facts through a separate read-only connection, including live WAL.
-- Shows daily UTC usage separately from the bounded recent-request timeline.
-- Browses recorded model inputs, estimates their composition, and compares complete snapshots; added and removed elements open their respective captured content.
-- Shows how often this session called each tool schema (SQLite tool_usage) and the estimated size of schemas never called, with Size / Calls / Name ordering.
-- Stamps each recorded message with the turn and step it entered the context, or "earlier" when the continuous loaded history does not reach its entry.
-- Correlates explicit compaction log events. Observed changes are not presented as inferred causes.
-- Keeps usage available when trajectory content has rotated out. Missing usage and missing content are distinct.
+独立、只读、离线的 ZCode UI 插件，面向 Desktop 本地工作区。
 
-## Build and install
+<p>
+  <img src="docs/images/sidebar-overview.png" width="300" alt="请求概览与上下文趋势">
+  <img src="docs/images/sidebar-changes.png" width="300" alt="压缩后的仅变化视图">
+</p>
 
-Node.js 24+ is required. SDK versions match the upstream ZCode plugin examples.
-The host must also support the official UI plugin contract; the source baseline is ZCode 3.15.1.
-The current 3.15.1.8093 client has basic Electron integration evidence for 0.2.0. The 0.3.0 interface has not yet been re-accepted in the real desktop client.
+## 它能回答什么
+
+- **上下文为什么这么大？** 每次请求的大小、按类别（系统指令、工具定义、用户消息、助手消息、工具结果）的组成，以及随步骤的变化趋势。
+- **这一步新进来了什么？** 上一步回复之后进入上下文的内容，通常是工具结果，可以直接展开查看参数和正文。
+- **哪些工具定义白占 token？** 每个工具定义本会话被调用了几次，以及从未调用的工具定义每次请求占多少。
+- **压缩前后少了什么？** 压缩事件、压缩前后两步的跳转，以及被移除的具体内容（需要完整记录，见下文）。
+- **某条内容在上下文里待了多久？** 每条消息标出它从第几轮第几步进入上下文。
+
+## 界面一览
+
+从上到下：
+
+| 区域 | 内容 |
+|---|---|
+| 步骤选择 | ‹ › 或 ←/→ 在主请求之间切换；下拉框另列出标题生成、压缩等辅助请求。默认跟随最新，展开内容阅读时暂停跟随，选中历史请求时提示有几个新请求 |
+| 请求概览 | 输入大小、较上一步的变化、实际输入/输出/缓存；按类别的堆叠条与图例；「本轮 / 输入 / 回复」三行摘要 |
+| 上下文趋势 | 每个主请求一根柱，带纵轴、回合带和 ✂ 压缩标记；可切换总量/变化、步骤/轮次；「自适应」按可见范围缩放；悬停查看各类别数值，悬停类别会在各处同步高亮 |
+| 上下文浏览器 | 按类别折叠和分页；对比基线可选上一步、上一轮或更早任一步；「仅变化」只看新增和移除；条目按工具名和关键参数命名，如 `Read · src/cache.ts` |
+| 条目详情 | 行内展开：工具卡片（参数表、成功/错误）、工具定义的参数表、正文（可读 / Markdown / 原始、复制、查找、分段） |
+| 压缩事件 | 日志记录的压缩类型、状态、原因和节省量，可跳到压缩前后两步 |
+| 用量 | 次级页面：近 30 天的逻辑用量、每日汇总和最近请求 |
+
+<p>
+  <img src="docs/images/sidebar-tool-card.png" width="300" alt="展开的工具结果卡片">
+  <img src="docs/images/sidebar-schemas.png" width="300" alt="工具定义的调用次数">
+</p>
+
+## 默认记录与完整保留
+
+ZCode 默认只记录每次请求的**最近 64 条消息**（长会话一次请求常有几百条）。插件会如实区分两种情况：
+
+| | 默认设置 | 打开「完整保留模型 I/O」 |
+|---|---|---|
+| 请求大小 | 以 provider 上报的实际输入为准，标出已记录部分，其余显示为斜纹的「更早消息（未记录）」 | 完整的分类估算 |
+| 按类别组成 | 只覆盖已记录的消息和工具定义 | 完整 |
+| 「输入」行、新增内容 | 可用（由入场标记推出） | 可用 |
+| 移除了什么、按类别的变化量 | 无法得知，界面会说明 | 可用 |
+| 替换内容的正文 Diff | 不可用 | 可用（仅限有唯一身份的工具结果和工具定义） |
+| 工具调用次数、入场标记 | 可用 | 可用 |
+
+<img src="docs/images/sidebar-partial.png" width="300" alt="默认设置下的请求概览">
+
+需要完整对比时，在 ZCode「设置 → 通用」打开「完整保留模型 I/O」。它会增加磁盘占用，只对之后的请求生效，已经淘汰的记录无法恢复；插件不会自动修改这个设置。
+
+## 安装
+
+需要 ZCode Desktop（适配基线 3.15.1，需支持官方 UI 插件接口）和系统 PATH 中的 Node.js 24+。
 
 ```sh
 npm ci
-npm run check
-npm test
 npm run build
-npm run smoke
 ```
 
-After a successful build, add the absolute path of **dist/local-marketplace** in ZCode's plugin marketplace.
-Install and enable **zcode-context**, then open **Context** from the session side pane.
+1. 在 ZCode 插件市场中添加本地市场，路径填 `dist/local-marketplace` 的绝对路径。
+2. 安装并启用 **zcode-context**，重启 ZCode。
+3. 打开一个会话，在右侧面板新增标签，选择「上下文」。
 
-The installed package contains bundled service dependencies, the worker, and one offline HTML page.
-It does not need this source checkout or node_modules at runtime; Node.js 24+ must remain on PATH.
+更新时重新构建，在插件市场刷新同一个市场源并更新插件，再重启 ZCode。安装产物自带服务依赖、worker 和离线页面，运行时不需要源码目录。
 
-On changes, rebuild, refresh the same marketplace source, and reinstall. The plugin is not hot-reloaded
-from its source directory. Version 0.3.0 is a development version; bump before publishing changed installable content.
+### 关于「授权两个只读工具」
 
-For interface work, run `npm run build && npm run fixture:ui` and open http://127.0.0.1:4175. It synthesizes a multi-turn
-session in the canonical ZCode shape (tool calls, a title request, an automatic compaction); `/append?session=sess_A` simulates a new request.
+插件开关只决定 ZCode 加载插件；面板取数据时要调用插件自带的两个工具，ZCode 对它们照常执行工具权限规则：
 
-MCP host permissions still apply. If detail reads wait or time out, authorize the two read-only
-`get_context_summary` and `get_context_request` tools in ZCode. The plugin never edits permission settings.
-The isolated Electron test encountered a pending approval that the main page did not display; exact conditions are in [Handoff](docs/handoff.md).
+- `mcp__plugin_zcode-context_context__get_context_summary`：概览和趋势，每 3 秒轮询
+- `mcp__plugin_zcode-context_context__get_context_request`：某一步的内容、对比和正文
 
-## Configuration
+这两个工具只读，只有面板能调用，模型看不到。如果面板一直显示「读取中」或「读取时间较长」，请在 ZCode 中允许这两个工具（授权按项目保存）。插件不会自行修改权限。
 
-The defaults read **~/.zcode/cli/db/db.sqlite**, **~/.zcode/cli/rollout**, **~/.zcode/cli/debug**, and **~/.zcode/cli/log**.
-In the plugin settings, use **dataRoot** for a custom CLI directory containing db/, rollout/ and log/.
-Use **dbPath** only when the database lives elsewhere. Both overrides must be absolute (~/ is expanded).
+## 数字怎么读
 
-Do not add ZCODE_SESSION_ID to the manifest environment. The service binds each tool call independently
-from **_meta["com.zcode/request-context"].session_id**.
-Only that namespace is accepted; the SDK transport's extra.sessionId is a different identifier.
+- **估算**：按序列化内容约 4 字符 ≈ 1 token，用来比较大小和变化，不等于模型的分词结果。带「≈」的都是估算。
+- **实际输入**：provider 上报的这次请求的输入 token，包含缓存读取。
+- **步序号和回合号**：从当前可读的第一条记录开始计数，不是整个会话的绝对序号。ZCode 会定期重置长会话的记录文件，之后历史会从头开始，趋势图下方会说明。
+- **入场标记 `T2 S7`**：按消息的绝对位置追溯得到。追到已加载的最早记录、记录缺口、重置或压缩时仍然存在的消息，显示「更早」，不猜步骤。
+- **工具调用次数**：来自整个会话的调用记录，包括所选步骤之后的调用和已被压缩掉的调用。读不到调用记录时显示未知，不显示 ×0。
+- **压缩**：以日志为准，只读最近 3 天的日志。内容变少不代表发生了压缩，没读到事件也不能证明没有压缩。
+- **用量页**：来自 ZCode 数据库的逻辑请求统计，包含标题、压缩等辅助调用，和趋势中的记录分开计算，不做强行对应。
+- 面板属于打开它的会话，不会因为同一工作区里其他会话发消息而切换。
 
-If binding is missing, the plugin returns an explicit error and never switches to a different session.
-A draft without a materialized host session may not have a usable panel binding. An identified session
-without a Model I/O record displays an empty state until the request finishes.
+## 隐私与安全
 
-## What the figures mean
+- 只读：不修改 ZCode 的代码、设置、数据库或权限，不运行迁移，数据库连接为只读。
+- 离线：不联网，不调用模型；所有数据留在本机。
+- 每次读取都按宿主传入的会话身份绑定，拿不到有效身份时明确报错，不会去读别的会话。
+- 捕获的 HTML 不会执行，正文按纯文本或受限的 Markdown 显示。
 
-- Usage totals: recorded model_usage facts in the last 30 days, including main, compact and sidecar sources
-  for this session. They are not a permanent billing ledger or a price estimate.
-  Partial input/output reporting sums known values only and displays the number of requests missing each field.
-- Daily usage: UTC date buckets across all model-request sources for the session, independent of the recent-request cap.
-- Primary chart: stacked trajectory composition estimates for agent requests (main turn, subagent, workflow child), numbered as steps and turns
-  from the first record read in the current file. Title and compaction requests remain selectable but are not part of the series.
-  Network retry attempts in traj are shown separately, not automatically joined to SQLite request IDs.
-- Composition: a deliberately approximate 4-characters/token heuristic over serialized recorded messages.
-  Tool schema estimates are added only when request.body.tools was captured. Images/video payloads may be redacted.
-- Diff: category changes, added/removed navigation and order changes between complete snapshots in the same file, continuous segment and query source.
-  Missing schemas are not treated as removed tools. This compares captured input, not unrecorded provider processing.
-- Schema call counts: tool_usage rows for the whole session, including calls after the selected step and calls already compacted out of context.
-  Without a readable tool_usage table the counts are unknown and no ×0 is shown.
-- Entry stamps: a message at absolute index i entered with the earliest snapshot of an unbroken chain (same file, segment and source,
-  non-decreasing message count, identical recorded content at that index) whose message count exceeds i. Schemas carry no stamp.
-- Events: selected explicit compression events from the last 3 local calendar log files.
-  Missing events do not establish that no compaction happened.
-- Canonical input snapshots are recorded after model attempts; this is not the exact live next-request context.
+## 配置
 
-The cache rate includes only requests that report both input and cache-read usage; absent fields stay unknown.
+默认读取 `~/.zcode/cli` 下的 `db/db.sqlite`、`rollout/`、`debug/` 和 `log/`。在插件配置里可以用 **dataRoot** 指向其他 CLI 数据目录，数据库单独放置时再设置 **dbPath**。两者都需为绝对路径，支持 `~/`。
 
-The Context panel stays with its owning session, including when another conversation is selected.
-It does not silently follow the last submitted message.
+## 开发
 
-For greater content coverage, ZCode's General settings offer **complete Model I/O retention**.
-It increases diagnostic disk use and cannot restore previously deleted data. The plugin does not change it.
-Readers remain bounded even in that mode: a 24 MiB cold file window, 8 MiB scan batches/lines,
-limited session caches and on-demand paginated text. Coverage warnings remain visible.
+```sh
+npm ci
+npm run check        # 语法与清单检查
+npm test             # 单元测试
+npm run build        # 构建 dist/ 与本地市场
+npm run smoke        # 构建产物 + 真实 MCP stdio 通信
+npm run verify       # 以上全部，结果写入 output/verification
+```
 
-## Sidebar workflow (0.3)
+| 命令 | 用途 |
+|---|---|
+| `npm run fixture:ui` | 合成的多轮会话（工具调用、标题请求、自动压缩），打开 http://127.0.0.1:4175；`FIXTURE_TAIL=12` 模拟默认的只记录最近消息；`/append?session=sess_A` 模拟新请求到达 |
+| `npm run preview:session -- <sessionId>` | 用构建产物只读地预览一个真实会话，打开 http://127.0.0.1:4177，无需安装插件 |
+| `npm run preview` | 演示数据页面，打开 http://127.0.0.1:4173/?demo=1 |
+| `npm run fixture:browser` + `npm run test:browser -- <playwright/index.mjs 的绝对路径>` | 浏览器交互回归（25 组），使用已有的 Playwright 和本机 Chrome，不下载浏览器 |
 
-The sidebar follows dsh-context's card layout, top to bottom:
+浏览器测试验证官方 App/AppBridge 握手、真实 stdio/SQLite 和双会话隔离，但不代替在 ZCode 桌面侧栏中的验收。
 
-- **Step selector**: ‹ › move between agent requests; the menu also lists auxiliary title and compaction requests. It follows
-  the latest request by default. Choosing an earlier one shows "Jump to latest" with the number of newer requests; following pauses while an element is open. Left/right arrows move between steps when focus is not in a field.
-- **Request summary**: estimated input, change versus the previous step, actual provider input/output/cache, a category bar and legend
-  (click to jump to the category), and a Turn / In / Reply brief: the turn's opening message, what entered the context after the previous reply (usually tool results; click to open), and this step's calls or text. Hovering a category lights it across the trend and summary.
-- **Context trend**: one bar per agent request with a Y axis, a turn band and ✂ compaction markers; Total or Delta, Steps or Turns; scrolls horizontally, and Adaptive rescales the axis to the bars in view. Hovering shows per-category values.
-- **Context browser**: fixed categories (system prompt, tool schemas, user, assistant, tool results), each with count, added/removed badges,
-  change, estimate, share and its own pagination. The baseline is the previous step, the previous turn's last step, or any earlier step. Elements are named by tool and key argument (for example `Read · src/cache.ts`) and expand
-  inline into a tool card with argument table and status, a schema parameter table, or the body (readable / Markdown / raw, copy, find with Enter / Shift+Enter / Esc, 12k parts).
-  Changes mode lists added and removed elements per category against the baseline; removed ones come from the baseline and are struck through.
-  A replacement with unique recorded identity offers its body Diff inside the expanded element.
-- **Compaction events**: logged kind, status, reason and savings, with Before / After step navigation.
-- **Usage**: a secondary page with 30-day SQLite logical usage, UTC daily totals and recent requests.
+## 当前状态
 
-All sizes are estimated tokens (characters / 4). Method and coverage notes sit under "About these numbers" at the bottom.
-Polling never rebuilds the page when nothing changed, and background updates wait while a select is open or text is selected.
-Captured HTML is never executed. Markdown supports headings, paragraphs, lists, quotes and code, not a complete renderer.
-Session-scoped view storage restores selection, preferences, filter, expansion, baseline and the open element after a guest rebuild;
-this requires available localStorage and never supplies session authority. A restored selection that left the read window falls back to the latest request.
+- 0.3.x 已用真实会话（约 60 万 token、默认记录模式）在只读预览中验证，单元测试与浏览器交互测试全部通过。
+- 0.3.x 在 ZCode 桌面侧栏中的验收尚未完成；0.2.0 曾完成基础 Electron 接入。
+- 上游内部存储格式变化时，读取适配可能需要更新。
 
-## Verification
+## 文档
 
-- `npm test`: identity isolation, unknown versus zero usage, token normalization, baseline gaps,
-  duplicate-message diffs, readonly WAL, JSONL append/reset behavior and session-scoped content keys.
-- `npm run smoke`: built stdio service and real MCP SDK, app-only tool visibility, HTML resource,
-  concurrent A/B calls, missing identity, cross-session key rejection and a session with no trajectory.
-- `npm run preview`: open http://127.0.0.1:4173/?demo=1 for clearly labelled demo data.
-  This does not validate the real Desktop sandbox.
-- Optional browser test: start `npm run fixture:browser`, then `npm run test:browser -- /absolute/path/to/playwright/index.mjs`.
-  Uses existing Playwright and installed Chrome; no browser is downloaded. It verifies official App/AppBridge communication,
-  real stdio/SQLite and A/B page isolation across 25 interaction groups, but not Electron sandbox behavior.
-- [Desktop acceptance](docs/desktop-acceptance.md) must be completed in an isolated ZCode copy.
-  Code and protocol tests do not prove released-client integration.
-- [Handoff](docs/handoff.md) records current state, paths, validation evidence and rollout acceptance steps.
+- [更新日志](CHANGELOG.md)
+- [架构](docs/architecture.md)
+- [交接与接续步骤](docs/handoff.md)
+- [桌面验收](docs/desktop-acceptance.md)（只在隔离的 ZCode 副本中进行）
+- [验证记录](docs/verification.md)
+- [与 dsh-context 的对比](docs/dsh-comparison.md)
 
-## Data boundaries
+## 许可
 
-No changes to ZCode code, settings, conversation rows, journal mode or migrations. No source database
-constructor is reused. No public network connections, model calls, prompt injections or automatic pruning.
-Source rows and diagnostic content remain local. SQLite reads run in short transactions in a worker;
-the worker has a memory limit and explicit failures. Slow or unsupported sources degrade the panel.
-
-This plugin uses documented UI surfaces plus currently implemented ZCode metadata and storage formats.
-Upstream storage changes may require an adapter update. The checked baseline is ZCode 3.15.1
-(aac4755666d09fdcd70272fcf063c077a639015f).
-
-MIT licensed. The implementation is original; dsh-context inspired the product direction.
+MIT。实现为原创，产品方向受 [dsh-context](https://github.com/bowenliang123/dsh-context) 启发。

@@ -40,7 +40,7 @@ await mkdir(plugin,{recursive:true});await cp(path(".zcode-plugin"),new URL(".zc
 await mkdir(new URL("dist/",plugin),{recursive:true});
 for(const file of ["server.mjs","worker.mjs","context.html"])await cp(path("dist/"+file),new URL("dist/"+file,plugin));
 await cp(path("dist/THIRD_PARTY_NOTICES.txt"),new URL("THIRD_PARTY_NOTICES.txt",plugin));
-for(const file of ["README.md","README_CN.md","CHANGELOG.md","LICENSE"])await cp(path(file),new URL(file,plugin));
+for(const file of ["README.md","README.en.md","CHANGELOG.md","LICENSE"])await cp(path(file),new URL(file,plugin));
 await cp(path("docs"),new URL("docs/",plugin),{recursive:true});
 const manifest=JSON.parse(await readFile(path(".zcode-plugin/plugin.json"),"utf8"));
 await writeFile(new URL("marketplace.json",base),JSON.stringify({name:"zcode-context-local",description:"Independent Context UI plugin for local development.",owner:{name:"Kevinzzz6"},plugins:[{name:manifest.name,version:manifest.version,source:"./plugins/zcode-context",description:manifest.description,description_i18n:manifest.description_i18n,category:"developer-tools"}]},null,2)+"\n");
