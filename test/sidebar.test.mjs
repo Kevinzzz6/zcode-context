@@ -4,7 +4,7 @@ import {mkdtemp,mkdir,writeFile,rm} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {ContextDataService} from "../src/data/service.mjs";
-import {foldRecord,diffRecords,inputElements,toolEvidence,attemptUsage,textDifference,elementSummary,trajectorySummary} from "../src/domain/trajectory.mjs";
+import {expandCollection,foldRecord,diffRecords,inputElements,toolEvidence,attemptUsage,textDifference,elementSummary,trajectorySummary} from "../src/domain/trajectory.mjs";
 import {modelRecord,usageDatabase} from "./fixtures.mjs";
 async function fixture(records,callback,events=[],tools=null) {
   const root=await mkdtemp(join(tmpdir(),"context-sidebar-"));
@@ -194,4 +194,46 @@ test("without a tool_usage table call counts are unknown, never zero",()=>fixtur
     assert.equal(o.toolCalls.available,false);
     const d=await service.request("sess_A",{key:o.trajectories[0].key,schemaSort:"calls"});
     assert.equal(d.groups.schema.items[0].callCount,null);assert.equal(d.schemaCalls.available,false);
+  }));
+test("collections report the absolute offset of their first recorded item",()=>{
+  const full=expandCollection([1,2,3],"full",0,3);assert.equal(full.offset,0);
+  assert.equal(expandCollection([4,5],"tail",3,5).offset,3);assert.equal(expandCollection([4,5],"tail",undefined,5).offset,null);
+  assert.equal(expandCollection([4],"delta",3,4,full).offset,0);assert.equal(expandCollection([4],"delta",3,4,full).items.length,4);
+  const partial=expandCollection([4,5],"tail",3,5);assert.equal(expandCollection([6],"delta",5,6,partial).offset,5);
+  assert.equal(expandCollection([1],"weird",0,1).offset,null);
+  assert.equal(foldRecord(tail("r",[1,2,3,4].map(n=>({role:"user",content:String(n)})),2)).messages.offset,2);
+});
+const message=n=>({role:n%2?"assistant":"user",content:"m"+n});
+const chat=(n,extra={})=>Array.from({length:n},(_,i)=>extra[i]??message(i));
+const stamps=d=>Object.fromEntries(Object.values(d.groups).flatMap(g=>g.items).filter(x=>x.key.startsWith("message:"))
+  .map(x=>[Number(x.key.slice(8)),x.entered?"S"+x.entered.step+"T"+x.entered.turn:x.enteredBefore?"before:S"+x.tracedTo.step:null]));
+const same={role:"user",content:"identical"};
+test("entry stamps follow absolute indices across tail and delta records, including identical messages",()=>fixture([
+  tail("r1",chat(5),3,{turnId:"t1"}),tail("r2",chat(7),3,{turnId:"t1"}),
+  tail("r3",chat(8,{7:same}),3,{turnId:"t2"}),tail("r4",chat(10,{7:same,8:same}),3,{turnId:"t2"}),
+  modelRecord("sess_A","r5",[],{turnId:"t2",request:{messages:[message(10)],messagesKind:"delta",messageOffset:10,messageCount:11}})],async(service,o)=>{
+    const keys=o.trajectories.map(x=>x.key);
+    assert.deepEqual(stamps(await service.request("sess_A",{key:keys[3]})),{0:"S3T2",1:"S4T2",2:"S4T2"});
+    assert.deepEqual(stamps(await service.request("sess_A",{key:keys[1]})),{0:"before:S1",1:"S2T1",2:"S2T1"});
+    assert.deepEqual(stamps(await service.request("sess_A",{key:keys[0]})),{0:"before:S1",1:"before:S1",2:"before:S1"});
+    assert.deepEqual(stamps(await service.request("sess_A",{key:keys[4]})),{0:"S5T2"});
+    const d=await service.request("sess_A",{key:keys[3],search:"identical"});
+    assert.deepEqual(d.elements.map(x=>x.entered.step),[3,4]);
+  }));
+test("entry stamps never cross a history gap, a compaction or a changed message",()=>fixture([
+  tail("a1",chat(6),3),tail("a2",chat(8),3),"INVALID ROW",tail("a3",chat(9),3),tail("a4",chat(10),3),
+  tail("b1",chat(4),3),tail("b2",chat(5,{3:{role:"user",content:"rewritten"}}),3)],async(service,o)=>{
+    const keys=o.trajectories.map(x=>x.key);
+    // a4 holds indices 7..9: 7 and 8 were already present at a3, whose predecessor lies across the malformed row.
+    assert.deepEqual(stamps(await service.request("sess_A",{key:keys[3]})),{0:"before:S3",1:"before:S3",2:"S4Tnull"});
+    // b1 has fewer messages than a4 (compaction), so nothing traces past it; b2 rewrote index 3.
+    assert.deepEqual(stamps(await service.request("sess_A",{key:keys[4]})),{0:"before:S5",1:"before:S5",2:"before:S5"});
+    assert.deepEqual(stamps(await service.request("sess_A",{key:keys[5]})),{0:"before:S5",1:"before:S6",2:"S6Tnull"});
+  }));
+test("auxiliary snapshots and schemas carry no entry stamps",()=>fixture([
+  modelRecord("sess_A","title",[{role:"user",content:"x"}],{querySource:"session_title"}),
+  modelRecord("sess_A","r",[{role:"user",content:"x"}],{request:{messages:[{role:"user",content:"x"}],body:{tools:[tool("Read",5)]}}})],async(service,o)=>{
+    const aux=await service.request("sess_A",{key:o.trajectories[0].key});assert.ok(!("entered" in aux.groups.user.items[0])&&!("enteredBefore" in aux.groups.user.items[0]));
+    const agent=await service.request("sess_A",{key:o.trajectories[1].key});
+    assert.equal(agent.groups.user.items[0].enteredBefore,true);assert.ok(!("enteredBefore" in agent.groups.schema.items[0]));
   }));
