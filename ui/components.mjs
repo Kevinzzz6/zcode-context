@@ -12,7 +12,8 @@ export function compact(n) {
 const approx=n=>"≈"+compact(n);
 const signed=n=>(n>0?"+":n<0?"−":"±")+compact(Math.abs(n));
 const pct=ratio=>ratio>0&&ratio<0.005?"<1%":Math.round(ratio*100)+"%";
-const tokensOf=chars=>Math.round(chars/4);
+// Token deltas come estimated by the server; chars/4 only covers payloads from before it sent them.
+const tokensOf=delta=>!delta?0:delta.tokensDelta??delta.tokens??Math.round((delta.charsDelta??delta.chars??0)/4);
 export const clock=ms=>ms?new Date(ms).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit",second:"2-digit",hour12:false}):"—";
 const utcDate=day=>new Date(day*86400000).toISOString().slice(0,10);
 
@@ -128,7 +129,7 @@ function summaryCard(ctx) {
     node("div",{class:"eyebrow"},node("b",{},itemName(t,s)),s.turn!=null?muted(t("turn",{n:s.turn})):null),
     node("div",{class:"head-meta"},live?node("span",{class:"live"},node("i",{class:"live-dot"}),t("following")):null,muted(clock(s.startedAt))));
   const partial=partialOf(s),prev=partial?previousAgent(ctx.items,s):null,actualDelta=partial&&actualOf(prev)!=null?partial.actual-actualOf(prev):null;
-  const deltaTokens=s.delta?tokensOf(s.delta.chars):actualDelta;
+  const deltaTokens=s.delta?tokensOf(s.delta):actualDelta;
   const badge=deltaTokens!=null
     ?node("span",{class:"badge "+(deltaTokens>0?"up":deltaTokens<0?"down":"flat"),id:"selected-delta",title:s.delta?"":t("actualDeltaTip")},signed(deltaTokens)+" "+t("vsPrevious"))
     :node("span",{class:"badge flat",id:"selected-delta",title:t(s.deltaReason??"no_previous_snapshot")},t("notComparable"));
@@ -228,8 +229,8 @@ function trendColumns(series,turns) {
   for(const c of columns) {
     if(c.items.some(x=>!x.delta)){c.delta=null;continue;}
     const sums=new Map();
-    for(const x of c.items)for(const cat of x.delta.categories)sums.set(cat.role,(sums.get(cat.role)??0)+cat.charsDelta);
-    c.delta={chars:c.items.reduce((n,x)=>n+x.delta.chars,0),categories:[...sums].map(([role,charsDelta])=>({role,charsDelta}))};
+    for(const x of c.items)for(const cat of x.delta.categories){const sum=sums.get(cat.role)??{role:cat.role,charsDelta:0,tokensDelta:0};sum.charsDelta+=cat.charsDelta;sum.tokensDelta+=tokensOf(cat);sums.set(cat.role,sum);}
+    c.delta={chars:c.items.reduce((n,x)=>n+x.delta.chars,0),tokens:c.items.reduce((n,x)=>n+tokensOf(x.delta),0),categories:[...sums.values()]};
   }
   return columns;
 }
@@ -238,9 +239,9 @@ function trendTip(ctx,column,deltaMode) {
   const title=column.items.length>1||ctx.view.granularity==="turn"
     ?t("turn",{n:s.turn??"?"})+" · "+t("stepsIn",{n:column.items.length})
     :itemLong(t,s);
-  const partial=column.partial,change=column.delta?tokensOf(column.delta.chars):partial?column.actualDelta:null;
+  const partial=column.partial,change=column.delta?tokensOf(column.delta):partial?column.actualDelta:null;
   for(const role of ORDER) {
-    const value=deltaMode?tokensOf(column.delta?.categories.find(c=>c.role===role)?.charsDelta??0):bucketsOf(s).find(b=>b.role===role)?.estimatedTokens;
+    const value=deltaMode?tokensOf(column.delta?.categories.find(c=>c.role===role)):bucketsOf(s).find(b=>b.role===role)?.estimatedTokens;
     if(!value)continue;
     rows.append(node("div",{class:"tip-row",dataset:{role}},dot(role),node("span",{class:"spacer"},t(role)),node("span",{class:"num"},deltaMode?signed(value):approx(value))));
   }
@@ -289,7 +290,7 @@ function trendCard(ctx) {
     let pos=[],neg=[],missing=false;
     if(!delta){pos=bucketsOf(s).map(b=>({role:b.role,v:b.estimatedTokens}));if(c.partial)pos.push({role:"unrecorded",v:c.partial.unrecorded});}
     else if(c.delta)for(const role of ORDER) {
-      const v=tokensOf(c.delta.categories.find(x=>x.role===role)?.charsDelta??0);
+      const v=tokensOf(c.delta.categories.find(x=>x.role===role));
       if(v)(v>0?pos:neg).push({role,v:Math.abs(v)});
     }
     else if(c.partial&&c.actualDelta!=null){if(c.actualDelta)(c.actualDelta>0?pos:neg).push({role:"actual",v:Math.abs(c.actualDelta)});}
@@ -375,7 +376,7 @@ function category(ctx,role,bucket,change,total,open,searching,matched) {
   const head=button([node("span",{class:"chev"},expanded?"▾":"▸"),dot(role),node("span",{class:"cat-name"},t(role)),
     node("span",{class:"cat-count"},searching&&!changes?t("matchedItems",{m:group?.count??0,n:count}):t("items",{n:count})),
     plus?node("span",{class:"badge up"},"+"+plus):null,change?.removedCount?node("span",{class:"badge down"},"−"+change.removedCount):null,spacer(),
-    change?.charsDelta?node("span",{class:"delta "+(change.charsDelta>0?"up":"down")},signed(tokensOf(change.charsDelta))):null,
+    tokensOf(change)?node("span",{class:"delta "+(tokensOf(change)>0?"up":"down")},signed(tokensOf(change))):null,
     node("span",{class:"num"},approx(size)),node("span",{class:"pct"},pct(size/total))],()=>a.toggleRole(role),{class:"cat-head",ariaExpanded:String(expanded),disabled:dim,...hoverRole(role)});
   const section=node("section",{class:"category"+(expanded?" open":"")+(dim?" dim":""),dataset:{role}},head);
   if(!expanded)return section;

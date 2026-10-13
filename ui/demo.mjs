@@ -12,7 +12,7 @@ function elements(i) {
 }
 const buckets=list=>["system","schema","user","assistant","tool"].map(role=>{const xs=list.filter(x=>x.role===role);return {role,count:xs.length,chars:xs.reduce((n,x)=>n+x.chars,0),estimatedTokens:xs.reduce((n,x)=>n+x.estimatedTokens,0)};}).filter(b=>b.count);
 const steps=Array.from({length:count},(_,i)=>{
-  const list=elements(i),composition={buckets:buckets(list),tokenMethod:"chars/4",complete:true,schemasRecorded:true};
+  const list=elements(i),composition={buckets:buckets(list),tokenMethod:"script_weighted",complete:true,schemasRecorded:true};
   const total=composition.buckets.reduce((n,b)=>n+b.estimatedTokens,0);
   return {key:String(i).padStart(24,"a"),requestId:"demo_"+i,attempt:1,startedAt:now-(count-i)*45000,turnId:i<4?"t1":"t2",step:i+1,turn:i<4?1:2,
     querySource:"main_turn",complete:true,model:{modelId:"demo-model"},usage:{inputTokens:Math.round(total*1.04),outputTokens:120+i*20,cacheReadTokens:Math.round(total*0.9)},
