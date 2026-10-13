@@ -50,15 +50,26 @@ remains missing. No fake context-window percentage or per-plugin provenance is d
 
 Do not import upstream source packages at runtime. Do not instantiate SqliteSessionStore.
 
-## Sidebar state and query boundaries (0.2)
+## Sidebar state and query boundaries (0.3)
 
 The generic HTML first obtains a host-bound summary, then restores preferences for that verified session.
-Selection/follow state, baseline, category expansion, search, layout and detail cursor are owned by ui/state.mjs;
-components only render safe DOM nodes, and app.mjs coordinates SDK calls with independent result generations.
-Persisted view keys never authorize a session. Missing host identity clears visible data.
+Selection/follow state, baseline, category expansion, filter, browser mode and the open element are owned by ui/state.mjs;
+components only render safe DOM nodes, and app.mjs coordinates SDK calls with independent result sequences.
+Persisted view keys never authorize a session. Missing host identity clears visible data. A restored selection absent
+from the summary's loaded keys falls back to the latest request.
 
-Summary returns 60 cached trajectory summaries at a time; the chart windows ten. Search has explicit selected
-and loaded-snapshot scopes, covers all elements before a 40-row page is sliced, and never escapes the session cache.
+Rendering is a full rebuild of the root, but only when data or view state changed: an unchanged revision does not render,
+and background renders are deferred while a native select has focus or text inside the panel is selected. Element scroll
+positions keyed by `data-scroll` survive rebuilds; a new body part or element gets a new key and starts at the top.
+
+The service numbers agent requests (`step`) and their turns (`turn`) at ingestion, per file generation, so labels do not
+shift when the 120-record cache slides. Auxiliary sources have no step and are excluded from the trend series.
+Summary returns 60 cached trajectory summaries at a time. Detail returns `groups` (each category's first 40 elements,
+sorted as requested); `role` plus `page` loads further pages of one category. Diff additionally returns added/removed
+groups per category, added keys and verified replacement pairs. Search has explicit selected and loaded-snapshot scopes
+and never escapes the session cache.
+Element summaries carry a chip and title derived from the recorded call (canonical `toolCalls`, OpenAI `tool_calls`
+and AI SDK parts); a call ID recorded more than once is ambiguous and pairs nothing.
 Canonical element estimates share the composition measure. Actual response usage remains an independent field.
 Body/Raw and body Diff return at most 12k characters; body search counts all matches and bounds navigation to 100 offsets.
 Comparison requires continuous file segment, complete messages and matching querySource. Unknown schemas are excluded

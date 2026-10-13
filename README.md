@@ -15,7 +15,7 @@ An independent, read-only Context UI plugin for ZCode Desktop local workspaces.
 
 Node.js 24+ is required. SDK versions match the upstream ZCode plugin examples.
 The host must also support the official UI plugin contract; the source baseline is ZCode 3.15.1.
-The current 3.15.1.8093 client has basic Electron integration evidence. Full multi-window, restart and compaction acceptance remains incomplete.
+The current 3.15.1.8093 client has basic Electron integration evidence for 0.2.0. The 0.3.0 interface has not yet been re-accepted in the real desktop client.
 
 ```sh
 npm ci
@@ -32,7 +32,10 @@ The installed package contains bundled service dependencies, the worker, and one
 It does not need this source checkout or node_modules at runtime; Node.js 24+ must remain on PATH.
 
 On changes, rebuild, refresh the same marketplace source, and reinstall. The plugin is not hot-reloaded
-from its source directory. Version 0.2.0 is a development version; bump before publishing changed installable content.
+from its source directory. Version 0.3.0 is a development version; bump before publishing changed installable content.
+
+For interface work, run `npm run build && npm run fixture:ui` and open http://127.0.0.1:4175. It synthesizes a multi-turn
+session in the canonical ZCode shape (tool calls, a title request, an automatic compaction); `/append?session=sess_A` simulates a new request.
 
 MCP host permissions still apply. If detail reads wait or time out, authorize the two read-only
 `get_context_summary` and `get_context_request` tools in ZCode. The plugin never edits permission settings.
@@ -58,7 +61,8 @@ without a Model I/O record displays an empty state until the request finishes.
   for this session. They are not a permanent billing ledger or a price estimate.
   Partial input/output reporting sums known values only and displays the number of requests missing each field.
 - Daily usage: UTC date buckets across all model-request sources for the session, independent of the recent-request cap.
-- Primary chart: stacked trajectory composition estimates, with 10 clickable attempts per window and bounded history navigation.
+- Primary chart: stacked trajectory composition estimates for agent requests (main turn, subagent, workflow child), numbered as steps and turns
+  from the first record read in the current file. Title and compaction requests remain selectable but are not part of the series.
   Network retry attempts in traj are shown separately, not automatically joined to SQLite request IDs.
 - Composition: a deliberately approximate 4-characters/token heuristic over serialized recorded messages.
   Tool schema estimates are added only when request.body.tools was captured. Images/video payloads may be redacted.
@@ -78,18 +82,28 @@ It increases diagnostic disk use and cannot restore previously deleted data. The
 Readers remain bounded even in that mode: a 24 MiB cold file window, 8 MiB scan batches/lines,
 limited session caches and on-demand paginated text. Coverage warnings remain visible.
 
-## Sidebar workflow (0.2)
+## Sidebar workflow (0.3)
 
-Choose a recorded attempt to inspect composition, changes and logged events together. Historical selection
-pins the input; refresh and content navigation preserve that choice. Browse-first is an optional preference.
-Categories collapse, sort by size or original order, and expose summaries. Search covers every loaded element
-in the selected snapshot, or explicitly all bounded loaded snapshots. Search results can select their owning snapshot.
-Readable tool details pair arguments only through a unique recorded toolCallId. Raw and basic Markdown remain available.
-Body text and unified replacement-block Diff use 12k character chunks. Full-body search navigates the first 100 matches;
-copy applies to the displayed block. Replacement identity is restricted to unique tool-result IDs or schema names.
-Captured HTML is never executed. Markdown supports headings, paragraphs and code, not a complete renderer.
-Session-scoped view storage restores selection, preferences, search, expansion, baseline and content cursor after a guest rebuild;
-this requires available localStorage and never supplies session authority.
+The sidebar follows dsh-context's card layout, top to bottom:
+
+- **Step selector**: ‹ › move between agent requests; the menu also lists auxiliary title and compaction requests. It follows
+  the latest request by default. Choosing an earlier one shows "Jump to latest" with the number of newer requests; following pauses while an element is open.
+- **Request summary**: estimated input, change versus the previous step, actual provider input/output/cache, a category bar and legend
+  (click to jump to the category), and a User / Added / Response brief. Clicking Added opens that element.
+- **Context trend**: one bar per agent request with a Y axis, a turn band and ✂ compaction markers; Total or Delta; scrolls horizontally.
+- **Context browser**: fixed categories (system prompt, tool schemas, user, assistant, tool results), each with count, added/removed badges,
+  change, estimate, share and its own pagination. Elements are named by tool and key argument (for example `Read · src/cache.ts`) and expand
+  inline into a tool card with argument table and status, a schema parameter table, or the body (readable / Markdown / raw, copy, find, 12k parts).
+  Changes mode lists added and removed elements per category against the baseline; removed ones come from the baseline and are struck through.
+  A replacement with unique recorded identity offers its body Diff inside the expanded element.
+- **Compaction events**: logged kind, status, reason and savings, with Before / After step navigation.
+- **Usage**: a secondary page with 30-day SQLite logical usage, UTC daily totals and recent requests.
+
+All sizes are estimated tokens (characters / 4). Method and coverage notes sit under "About these numbers" at the bottom.
+Polling never rebuilds the page when nothing changed, and background updates wait while a select is open or text is selected.
+Captured HTML is never executed. Markdown supports headings, paragraphs, lists, quotes and code, not a complete renderer.
+Session-scoped view storage restores selection, preferences, filter, expansion, baseline and the open element after a guest rebuild;
+this requires available localStorage and never supplies session authority. A restored selection that left the read window falls back to the latest request.
 
 ## Verification
 
@@ -101,7 +115,7 @@ this requires available localStorage and never supplies session authority.
   This does not validate the real Desktop sandbox.
 - Optional browser test: start `npm run fixture:browser`, then `npm run test:browser -- /absolute/path/to/playwright/index.mjs`.
   Uses existing Playwright and installed Chrome; no browser is downloaded. It verifies official App/AppBridge communication,
-  real stdio/SQLite and A/B page isolation, but not Electron sandbox behavior.
+  real stdio/SQLite and A/B page isolation across 18 interaction groups, but not Electron sandbox behavior.
 - [Desktop acceptance](docs/desktop-acceptance.md) must be completed in an isolated ZCode copy.
   Code and protocol tests do not prove released-client integration.
 - [Handoff](docs/handoff.md) records current state, paths, validation evidence and rollout acceptance steps.
