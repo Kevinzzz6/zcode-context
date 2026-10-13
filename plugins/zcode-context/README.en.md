@@ -41,7 +41,7 @@ An independent, read-only, offline ZCode UI plugin for Desktop local workspaces.
     <td width="50%" valign="top">
       <img src="docs/images/frame-changes.png" alt="Changes view after a compaction">
       <h4>What did a compaction remove?</h4>
-      Logged compaction events, before/after navigation and the removed items. Changes mode lists only additions and removals (requires complete recording, see <a href="#default-recording-versus-complete-retention">below</a>).
+      Context events such as compaction; clicking one compares the steps before and after it in the browser, down to the removed items. Changes mode lists only additions and removals (requires complete recording, see <a href="#default-recording-versus-complete-retention">below</a>).
     </td>
   </tr>
   <tr>
@@ -69,17 +69,23 @@ From top to bottom:
   <tr><td nowrap><b>Context trend</b></td><td>One bar per agent request with an axis, a turn band and ✂ compaction markers; Total/Delta, Steps/Turns, Adaptive scaling; hover for per-category values, and hovering a category highlights it everywhere</td></tr>
   <tr><td nowrap><b>Context browser</b></td><td>Collapsible, paged categories; compare with the previous step, the previous turn or any earlier step; Changes mode shows only additions and removals; elements are named by tool and key argument, such as <code>Read · src/cache.ts</code></td></tr>
   <tr><td nowrap><b>Element details</b></td><td>Inline tool cards (argument table, OK/error), schema parameter tables and bodies (readable / Markdown / raw, copy, find, parts)</td></tr>
-  <tr><td nowrap><b>Compaction events</b></td><td>Logged kind, status, reason and savings, with before/after step navigation</td></tr>
+  <tr><td nowrap><b>Context events</b></td><td>Logged compactions (kind, status, duration, reason, savings), rewinds and edited questions, model switches and MCP tool registrations, filterable by kind; clicking one selects the step after it and opens the browser, comparing with the step before for compactions and rewinds. The ✂ markers in the trend are clickable too</td></tr>
   <tr><td nowrap><b>Usage</b></td><td>Secondary page with 30-day logical usage, daily totals and recent requests</td></tr>
   <tr><td nowrap><b>About</b></td><td>Secondary page (<kbd>ⓘ</kbd> in the toolbar): version, author, licence, source repository, and the read-only local-data, no-network statement</td></tr>
 </table>
 
 ## Default recording versus complete retention
 
-By default ZCode records only the **latest 64 messages** of each request, while a long session's request often has several hundred. The plugin keeps the two cases apart instead of guessing at missing data:
+Under its default settings, ZCode discards model I/O recordings at **two levels**:
+
+- **Message level**: only the **latest 64 messages** of each request are recorded, while a long session's request often has several hundred.
+- **Session level**: when a new session starts recording, existing recording files are pruned down to the 2 most recently written — so besides the current session, usually only the 3 most recent sessions keep recordings, and everything earlier is gone. This is why a conversation from a few hours ago shows nothing at all: the plugin cannot read what is no longer on disk.
+
+The plugin keeps these cases apart instead of guessing at missing data:
 
 | | Default | Complete Model I/O retention |
 |---|---|---|
+| Recordings of earlier sessions | ❌ Only the 3 most recent sessions keep recording files; earlier ones are already deleted and unrecoverable | ✅ Kept, with no per-session-count cleanup |
 | Request size | ⚠️ Provider-reported actual input; the recorded part is marked and the rest is shown hatched as "earlier messages (not recorded)" | ✅ Full category estimate |
 | Composition by category | ⚠️ Recorded messages and tool schemas only | ✅ Complete |
 | In row, additions | ✅ Available (derived from entry stamps) | ✅ Available |
@@ -92,8 +98,8 @@ By default ZCode records only the **latest 64 messages** of each request, while 
   <sub>Under default recording, earlier unrecorded messages are hatched in the bar and the trend</sub>
 </p>
 
-> [!TIP]
-> For complete comparisons, turn on complete Model I/O retention in ZCode <kbd>Settings</kbd> → <kbd>General</kbd>. It uses more disk space, applies to later requests only and cannot restore records already discarded; the plugin never changes this setting.
+> [!IMPORTANT]
+> **Turn on complete Model I/O retention as soon as the plugin is installed, not when you first want to look back — records discarded by default cannot be recovered.** To enable it: ZCode <kbd>Settings</kbd> → <kbd>General</kbd>, find "Complete Model I/O retention" and switch it on. It only applies to requests made after it is turned on; the trade-off is faster disk growth, since the per-session-count cleanup and the 64 MB per-file reset no longer apply. The plugin only reads local data and never changes this setting.
 
 ## Install
 
@@ -189,7 +195,7 @@ flowchart LR
   subgraph local["This machine: ~/.zcode/cli (read-only)"]
     db[("db/db.sqlite<br/>usage · tool call counts")]
     traj["rollout/ · debug/<br/>Model I/O records"]
-    log["log/<br/>compaction events"]
+    log["log/<br/>context events"]
   end
   panel -- "two read-only tools<br/>bound to the session" --> server --> worker
   worker --> db

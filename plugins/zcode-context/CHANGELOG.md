@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- A compaction shows as one row instead of two. ZCode logs `compact.started` and `compact.completed` under one span, and each used to get its own row with identical before/after steps; they are now merged by `spanId` into one row with its status (completed, failed or in progress) and duration. An edited question and the rewind it triggers merge the same way.
+- The compaction card is now **Context events**: besides compactions it lists rewinds and edited questions (with messages kept), model switches (previous → new model) and MCP tool registrations, all from ZCode's own logs, with kind filters when more than one kind is present. Injections are not listed: ZCode logs none, and guessing them from message text would contradict the no-guessed-sources rule.
+- Clicking an event selects the first step after it and scrolls the context browser into view. For a compaction or rewind the browser compares with the step before: when both records are complete it switches to Changes and expands the categories that gained or lost items; otherwise it stays on All and says why the two steps cannot be compared. The ✂ (and ↶ rewind) markers in the trend do the same.
+- An event older than the first loaded step is labelled "before the loaded steps" instead of being pinned to the first loaded step.
+
 ## 0.3.5 — 2026-10-13
 
 - An About page (ⓘ in the toolbar) shows the plugin's version, author, licence, source repository, a pointer to the bundled dependency notices and the read-only/local-data privacy statement. The version it shows is the same literal the app announces to the host, so `npm run check` still catches drift.

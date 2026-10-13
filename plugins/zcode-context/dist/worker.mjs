@@ -344,19 +344,19 @@ var TOKEN_METHOD = "script_weighted";
 var CACHE_KEYS = /* @__PURE__ */ new Set(["cacheControl", "cache_control"]);
 var withoutCache = (value) => Array.isArray(value) ? value.map(withoutCache) : value && typeof value === "object" ? Object.fromEntries(Object.entries(value).filter(([k]) => !CACHE_KEYS.has(k)).map(([k, v]) => [k, withoutCache(v)])) : value;
 var contentKey = (value) => canonical(withoutCache(value));
-function expandCollection(items, kind, offset, count, previous) {
+function expandCollection(items, kind, offset, count2, previous) {
   const at = Number.isInteger(offset) && offset >= 0 ? offset : null;
   if (!Array.isArray(items)) return { items: [], offset: 0, complete: false, reason: "not_recorded" };
   if (kind !== void 0 && !["full", "delta", "tail"].includes(kind)) return { items, offset: null, complete: false, reason: "unsupported_encoding" };
-  if (kind === "tail") return { items, offset: at, complete: offset === 0 && (count == null || count === items.length), reason: "tail" };
+  if (kind === "tail") return { items, offset: at, complete: offset === 0 && (count2 == null || count2 === items.length), reason: "tail" };
   if (kind === "delta") {
     if (at === null || !previous?.complete || previous.items.length < offset) {
       return { items, offset: at, complete: false, reason: "missing_baseline" };
     }
     const expanded = previous.items.slice(0, offset).concat(items);
-    return { items: expanded, offset: 0, complete: count == null || expanded.length === count, reason: count == null || expanded.length === count ? null : "count_mismatch" };
+    return { items: expanded, offset: 0, complete: count2 == null || expanded.length === count2, reason: count2 == null || expanded.length === count2 ? null : "count_mismatch" };
   }
-  return { items, offset: 0, complete: count == null || items.length === count, reason: count == null || items.length === count ? null : "count_mismatch" };
+  return { items, offset: 0, complete: count2 == null || items.length === count2, reason: count2 == null || items.length === count2 ? null : "count_mismatch" };
 }
 function foldRecord(raw, previous) {
   const request = raw.request ?? {};
@@ -654,7 +654,7 @@ function textDifference(before, after) {
 }
 
 // src/domain/events.mjs
-var ALLOWED = /* @__PURE__ */ new Set([
+var COMPACT = /* @__PURE__ */ new Set([
   "compact.started",
   "compact.completed",
   "compact.auto.started",
@@ -665,18 +665,70 @@ var ALLOWED = /* @__PURE__ */ new Set([
   "compact.reactive.failed",
   "compact.micro.applied"
 ]);
-function compactEvent(record, sessionId) {
-  if (record.sessionId !== sessionId || !ALLOWED.has(record.event)) return null;
+var OTHER = {
+  "session.model.updated": "model",
+  "rewind.conversation.completed": "rewind",
+  "conversation.command.edit_user_query.completed": "rewind",
+  "mcp.tools.registered": "tools"
+};
+var count = (value) => typeof value === "number" && Number.isFinite(value) ? value : null;
+function contextEvent(record, sessionId) {
+  if (record.sessionId !== sessionId) return null;
+  const kind = COMPACT.has(record.event) ? "compaction" : OTHER[record.event];
+  if (!kind) return null;
   const context = record.context ?? {};
-  return {
+  const base = {
+    kind,
     event: record.event,
     timestamp: Date.parse(record.timestamp) || 0,
     turnId: record.turnId ?? null,
-    reason: context.compactReason ?? context.trigger ?? null,
-    tokensSavedEstimate: typeof context.tokensSaved === "number" ? context.tokensSaved : null,
-    clearedMessageCount: typeof context.clearedMessageCount === "number" ? context.clearedMessageCount : null,
+    spanId: typeof record.spanId === "string" ? record.spanId : null,
     evidence: "logged"
   };
+  if (kind === "compaction") return {
+    ...base,
+    status: record.event.split(".").at(-1),
+    reason: context.compactReason ?? context.trigger ?? null,
+    durationMs: count(record.durationMs),
+    tokensSavedEstimate: count(context.tokensSaved),
+    clearedMessageCount: count(context.clearedMessageCount)
+  };
+  if (kind === "model") {
+    if (typeof context.model !== "string" || typeof context.previousModel !== "string" || context.model === context.previousModel) return null;
+    return { ...base, from: context.previousModel, to: context.model };
+  }
+  if (kind === "rewind") return {
+    ...base,
+    edited: record.event.startsWith("conversation.command.edit_user_query"),
+    keptMessageCount: count(context.keptMessageCount)
+  };
+  return { ...base, toolCount: count(context.registeredToolCount), serverCount: count(context.serverCount) };
+}
+var RANK = { started: 0, applied: 1, completed: 2, failed: 3 };
+function mergeEvents(events) {
+  const merged = /* @__PURE__ */ new Map();
+  for (const event of [...events].sort((a, b) => a.timestamp - b.timestamp)) {
+    const key = event.spanId && (event.kind === "compaction" || event.kind === "rewind") ? event.kind + ":" + event.spanId : event.kind + ":" + event.event + ":" + event.timestamp + ":" + event.turnId;
+    const last = merged.get(key);
+    if (!last) {
+      merged.set(key, { ...event, endedAt: event.kind === "compaction" && event.status === "started" ? null : event.timestamp });
+      continue;
+    }
+    const next = { ...last, endedAt: Math.max(last.endedAt ?? 0, event.timestamp), turnId: last.turnId ?? event.turnId };
+    if (event.kind === "compaction") {
+      if (RANK[event.status] >= RANK[last.status]) {
+        next.status = event.status;
+        next.event = event.event;
+      }
+      for (const field of ["reason", "durationMs", "tokensSavedEstimate", "clearedMessageCount"]) next[field] = event[field] ?? last[field];
+      next.durationMs ??= next.endedAt != null ? next.endedAt - last.timestamp : null;
+    } else {
+      next.edited = last.edited || event.edited;
+      next.keptMessageCount = event.keptMessageCount ?? last.keptMessageCount;
+    }
+    merged.set(key, next);
+  }
+  return [...merged.values()].sort((a, b) => a.timestamp - b.timestamp);
 }
 
 // src/data/service.mjs
@@ -789,9 +841,9 @@ var ContextDataService = class {
         state.logTails.set(path, tail);
       }
       await tail.scan(path, (raw) => {
-        const event = compactEvent(raw, sessionId);
-        if (event) state.events.set(event.event + ":" + event.timestamp + ":" + event.turnId, event);
-        while (state.events.size > 100) state.events.delete(state.events.keys().next().value);
+        const event = contextEvent(raw, sessionId);
+        if (event) state.events.set(event.event + ":" + event.timestamp + ":" + event.turnId + ":" + event.spanId, event);
+        while (state.events.size > 200) state.events.delete(state.events.keys().next().value);
       });
     }
     const records = this.records(state);
@@ -815,7 +867,7 @@ var ContextDataService = class {
         coverage: [...new Set(coverage.flatMap((item) => item.coverage))],
         errorCode: records.length ? null : coverage.every((item) => !item.available) ? "trajectory_missing" : "waiting_for_records"
       },
-      events: [...state.events.values()].sort((a, b) => a.timestamp - b.timestamp).slice(-30).map((event) => this.eventNavigation(records, event)),
+      events: mergeEvents(state.events.values()).slice(-30).map((event) => this.eventNavigation(records, event)),
       eventWindowDays: 3
     };
     overview.history = { loadedCount: records.length, loadedKeys: records.map((x) => x.key), page: 0, hasOlder: records.length > 60, scope: "bounded_loaded_window" };
@@ -909,7 +961,7 @@ var ContextDataService = class {
   eventNavigation(records, event) {
     const matching = event.turnId ? records.filter((x) => x.record.turnId === event.turnId) : [];
     const before = records.findLast((x) => x.record.startedAt <= event.timestamp);
-    const after = records.find((x) => x.record.startedAt > event.timestamp);
+    const after = records.find((x) => x.record.startedAt > (event.endedAt ?? event.timestamp));
     return { ...event, navigation: {
       evidence: matching.length ? "turn_range" : "time_range",
       turnKeys: matching.slice(0, 12).map((x) => x.key),
