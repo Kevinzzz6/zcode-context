@@ -1,0 +1,61 @@
+import { createServer } from "node:http";
+import { readFile, mkdtemp, mkdir, writeFile, appendFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { usageDatabase, modelRecord } from "../test/fixtures.mjs";
+const root=await mkdtemp(join(tmpdir(),"context-browser-fixture-"));const fixture=usageDatabase(root);
+await mkdir(join(root,"rollout"));await mkdir(join(root,"log"));
+let counter=0;
+async function append(sessionId, large = false, bulk = false, gap = false) {
+  const id="fixture_"+(++counter);fixture.add(sessionId,id,sessionId==="sess_A"?100:900,10);
+  const messages=[{role:"system",content:"Fixture rules. No real user data."},{role:"user",content:"Recorded input for "+sessionId+" "+id+(large?" "+"long fixture text ".repeat(1600)+" END_OF_LONG_INPUT":"")}];
+  messages.push({role:"assistant",tool_calls:[{id:"call_"+id,function:{name:"Read",arguments:'{"path":"src/cache.ts"}'}}]},
+    {role:"tool",tool_call_id:"call_"+id,toolName:"Read",content:"Tool output for "+sessionId+" "+id,status:"completed"});
+  if(bulk)for(let i=0;i<85;i++)messages.push({role:"tool",content:i===84?"SEARCH_BEYOND_FIRST_PAGE "+"big ".repeat(1000):"tiny tool "+i});
+  const record=modelRecord(sessionId,id,messages,{turnId:"turn_"+id,request:{messages,messagesKind:"full",messageCount:messages.length,
+    body:{tools:[{name:"Read",description:"Schema "+id,parameters:{type:"object",properties:{path:{type:"string"}}}}]}}});
+  await appendFile(join(root,"rollout","model-io-"+sessionId+".jsonl"),(gap?"INVALID ROW\n":"")+JSON.stringify(record)+"\n");
+}
+await append("sess_A");await append("sess_A");await append("sess_B");
+const client=new Client({name:"context-browser-fixture",version:"0.2.0"});
+await client.connect(new StdioClientTransport({command:process.execPath,args:[fileURLToPath(new URL("../dist/server.mjs",import.meta.url))],
+  env:{...process.env,ZCODE_CONTEXT_DATA_ROOT:root,ZCODE_CONTEXT_DB_PATH:fixture.path},stderr:"pipe"}));
+const panel=await readFile(new URL("../dist/context.html",import.meta.url));
+const host=await readFile(new URL("../dist/test/host.js",import.meta.url));
+const shell=`<!doctype html><html><head><meta charset="utf-8"><style>body{margin:0;font:14px system-ui;background:#eceef2}header{padding:12px}section{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;padding:8px}iframe{width:100%;height:1000px;border:0;background:white}</style></head><body><header>SDK test fixture · synthetic data · not the ZCode Desktop sandbox <button id="dark">Theme</button><button id="english">English</button></header><section><iframe id="sess_A"></iframe><iframe id="sess_B"></iframe></section><script type="module" src="/host.js"></script></body></html>`;
+const http=createServer(async(req,res)=>{
+  try{
+    const url=new URL(req.url,"http://127.0.0.1");
+    if(url.pathname==="/reset"){
+      fixture.db.exec("DELETE FROM model_usage");counter=0;
+      for(const id of ["sess_A","sess_B"])await writeFile(join(root,"rollout","model-io-"+id+".jsonl"),"");
+      await append("sess_A");await append("sess_A");await append("sess_B");res.writeHead(204);res.end();return;
+    }
+    if(url.pathname==="/favicon.ico"){res.writeHead(204);res.end();return;}
+    if(url.pathname==="/"){res.writeHead(200,{"content-type":"text/html"});res.end(shell);return;}
+    if(url.pathname==="/panel"){res.writeHead(200,{"content-type":"text/html"});res.end(panel);return;}
+    if(url.pathname==="/host.js"){res.writeHead(200,{"content-type":"text/javascript"});res.end(host);return;}
+    const sessionId=url.searchParams.get("session");if(!["sess_A","sess_B"].includes(sessionId)){res.writeHead(400);res.end();return;}
+    if(url.pathname==="/append"){await append(sessionId,url.searchParams.get("large")==="1",url.searchParams.get("bulk")==="1",url.searchParams.get("gap")==="1");res.writeHead(200,{"content-type":"application/json"});res.end('{"ok":true}');return;}
+    if(url.pathname==="/event"){
+      const date=new Date(),stamp=date.getFullYear()+"-"+String(date.getMonth()+1).padStart(2,"0")+"-"+String(date.getDate()).padStart(2,"0");
+      await appendFile(join(root,"log","zcode-"+stamp+".jsonl"),JSON.stringify({sessionId,event:"compact.auto.completed",timestamp:date.toISOString(),turnId:"turn_fixture_"+counter,context:{compactReason:"token_pressure",tokensSaved:120}})+"\n");res.writeHead(204);res.end();return;
+    }
+    if(url.pathname==="/call"&&req.method==="POST"){
+      const chunks=[];let size=0;
+      for await(const chunk of req){size+=chunk.length;if(size>65536)throw new Error("Too large");chunks.push(chunk);}
+      const params=JSON.parse(Buffer.concat(chunks));
+      if(!["get_context_summary","get_context_request"].includes(params.name))throw new Error("Unknown fixture tool");
+      const result=await client.callTool({name:params.name,arguments:params.arguments??{},
+        _meta:{"com.zcode/request-context":{session_id:sessionId}}});
+      res.writeHead(200,{"content-type":"application/json"});res.end(JSON.stringify(result));return;
+    }
+    res.writeHead(404);res.end();
+  }catch{res.writeHead(500);res.end("Fixture error");}
+});
+http.listen(4174,"127.0.0.1",()=>console.log("SDK fixture: http://127.0.0.1:4174"));
+let closing=false;const stop=async()=>{if(closing)return;closing=true;http.close();await client.close();fixture.db.close();await rm(root,{recursive:true,force:true});process.exit(0);};
+process.on("SIGTERM",stop);process.on("SIGINT",stop);

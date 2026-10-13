@@ -1,0 +1,155 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { mkdtemp, mkdir, writeFile, appendFile, rm } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { usageDatabase, modelRecord } from "./fixtures.mjs";
+import { readUsage } from "../src/data/sqlite.mjs";
+import { JsonlTail } from "../src/data/jsonl.mjs";
+import { ContextDataService } from "../src/data/service.mjs";
+async function temporary(callback){const path=await mkdtemp(join(tmpdir(),"zcode-context-test-"));try{await callback(path);}finally{await rm(path,{recursive:true,force:true});}}
+test("read-only SQLite observes uncheckpointed WAL and isolates sessions",()=>temporary(async root=>{
+  const fixture=usageDatabase(root);
+  try {
+    fixture.add("sess_A","a",100,10);fixture.add("sess_B","b",900,90);
+    assert.ok(existsSync(fixture.path+"-wal"));
+    assert.equal(readUsage(fixture.path,"sess_A").totals.inputTokens,100);
+    fixture.add("sess_A","c",200,20);
+    assert.equal(readUsage(fixture.path,"sess_A").totals.inputTokens,300);
+    assert.equal(readUsage(fixture.path,"sess_B").totals.inputTokens,900);
+    assert.equal(fixture.db.prepare("select count(*) as n from model_usage").get().n,3);
+  }finally{fixture.db.close();}
+}));
+test("retention window and overview totals are independent of the recent timeline cap",()=>temporary(async root=>{
+  const fixture=usageDatabase(root);const now=Date.now();
+  try {
+    fixture.add("sess_A","old",999,99,now-31*86400000);
+    for(let i=0;i<100;i++)fixture.add("sess_A","r"+i,100,10,now-i*1000);
+    const result=readUsage(fixture.path,"sess_A",now);
+    assert.equal(result.totals.requestCount,100);assert.equal(result.totals.inputTokens,10000);
+    assert.equal(result.facts.length,80);assert.equal(result.timelineLimited,true);
+  }finally{fixture.db.close();}
+}));
+test("missing databases are not created",()=>temporary(async root=>{
+  const path=join(root,"absent.sqlite");assert.equal(readUsage(path,"sess_A").available,false);assert.equal(existsSync(path),false);
+}));
+test("JSONL buffers partial UTF-8 lines and invalidates replaced file state",()=>temporary(async root=>{
+  const path=join(root,"model.jsonl");const bytes=Buffer.from(JSON.stringify({text:"你好🙂"})+"\n");
+  await writeFile(path,bytes.subarray(0,bytes.length-3));
+  const reader=new JsonlTail();const rows=[];let resets=0;
+  await reader.scan(path,row=>rows.push(row),()=>resets++);
+  assert.equal(rows.length,0);await appendFile(path,bytes.subarray(bytes.length-3));
+  await reader.scan(path,row=>rows.push(row),()=>resets++);assert.equal(rows[0].text,"你好🙂");
+  await writeFile(path,'{"text":"new"}\n');await reader.scan(path,row=>rows.push(row),()=>resets++);
+  assert.equal(rows.at(-1).text,"new");assert.ok(resets>=2);
+}));
+test("malformed complete rows are marked; unfinished rows are not",()=>temporary(async root=>{
+  const path=join(root,"model.jsonl");await writeFile(path,'bad json\n{"text":"unfinished"');
+  const reader=new JsonlTail();const result=await reader.scan(path,()=>{});
+  assert.deepEqual(result.coverage,["malformed_line"]);assert.equal(result.pendingLine,true);
+}));
+test("retained usage survives trajectory loss; request keys cannot cross sessions",()=>temporary(async root=>{
+  const fixture=usageDatabase(root);fixture.add("sess_A","a",100,10);fixture.add("sess_B","b",900,90);
+  await mkdir(join(root,"rollout"));await mkdir(join(root,"log"));
+  await writeFile(join(root,"rollout","model-io-sess_A.jsonl"),JSON.stringify(modelRecord("sess_A","reqA",[{role:"user",content:"only A"}]))+"\n");
+  const service=new ContextDataService({db:fixture.path,trajectoryDirs:[join(root,"rollout")],logDir:join(root,"log")});
+  try{
+    const a=await service.overview("sess_A");const b=await service.overview("sess_B");
+    assert.equal(a.sessionId,"sess_A");assert.equal(b.usage.totals.inputTokens,900);assert.equal(b.trajectory.available,false);
+    const key=a.trajectories[0].key;await assert.rejects(service.request("sess_B",{key}),{code:"request_expired"});
+    const detail=await service.request("sess_A",{key,elementKey:"message:0"});assert.match(detail.content.text,/only A/);
+  }finally{fixture.db.close();}
+}));
+test("a foreign session in the named trajectory file is never displayed",()=>temporary(async root=>{
+  await mkdir(join(root,"rollout"));
+  await writeFile(join(root,"rollout","model-io-sess_A.jsonl"),JSON.stringify(modelRecord("sess_B","reqB",[{role:"user",content:"secret B"}]))+"\n");
+  const service=new ContextDataService({db:join(root,"missing.sqlite"),trajectoryDirs:[join(root,"rollout")],logDir:join(root,"log")});
+  const result=await service.overview("sess_A");assert.equal(result.trajectories.length,0);
+}));
+
+test("SQLite aggregates preserve field-level missing usage",()=>temporary(async root=>{
+  const fixture=usageDatabase(root);
+  try {
+    fixture.add("sess_partial","partial",100,0,Date.now(),{inputTokens:100});
+    fixture.db.prepare("UPDATE model_usage SET cache_read_input_tokens=0 WHERE id=?").run("partial");
+    const result=readUsage(fixture.path,"sess_partial");
+    assert.equal(result.totals.inputTokens,100);assert.equal(result.totals.outputTokens,null);assert.equal(result.totals.cacheHitRate,null);
+    fixture.add("sess_total","total",0,0,Date.now(),{totalTokens:50});
+    fixture.db.prepare("UPDATE model_usage SET provider_total_tokens=50 WHERE id=?").run("total");
+    const total=readUsage(fixture.path,"sess_total");
+    assert.equal(total.totals.inputTokens,null);assert.equal(total.totals.totalTokens,50);
+  } finally {fixture.db.close();}
+}));
+
+test("child sessions receive their own recorded-input composition",()=>temporary(async root=>{
+  await mkdir(join(root,"rollout"));
+  const record=modelRecord("sess_child","child_request",[{role:"user",content:"child input"}],{querySource:"subagent"});
+  await writeFile(join(root,"rollout","model-io-sess_child.jsonl"),JSON.stringify(record)+"\n");
+  const service=new ContextDataService({db:join(root,"missing.sqlite"),trajectoryDirs:[join(root,"rollout")],logDir:join(root,"log")});
+  const result=await service.overview("sess_child");assert.equal(result.composition.complete,true);assert.equal(result.composition.buckets[0].role,"user");
+}));
+
+test("old request handles cannot resolve a different snapshot after worker restart",()=>temporary(async root=>{
+  await mkdir(join(root,"rollout"));const path=join(root,"rollout","model-io-sess_A.jsonl");
+  const first=modelRecord("sess_A","req1",[{role:"user",content:"x"}]);
+  await writeFile(path,JSON.stringify(first)+"\n");
+  const paths={db:join(root,"missing.sqlite"),trajectoryDirs:[join(root,"rollout")],logDir:join(root,"log")};
+  const one=new ContextDataService(paths);const oldKey=(await one.overview("sess_A")).trajectories[0].key;
+  await writeFile(path,JSON.stringify({...first,requestId:"req2",request:{...first.request,messages:[{role:"user",content:"y"}]}})+"\n");
+  const two=new ContextDataService(paths);const newKey=(await two.overview("sess_A")).trajectories[0].key;
+  assert.notEqual(oldKey,newKey);await assert.rejects(two.request("sess_A",{key:oldKey}),{code:"request_expired"});
+}));
+
+test("replacing content with identical request metadata cannot reuse a request handle",()=>temporary(async root=>{
+  await mkdir(join(root,"rollout"));const path=join(root,"rollout","model-io-sess_A.jsonl");
+  const first=modelRecord("sess_A","same_request",[{role:"user",content:"before"}]);
+  const paths={db:join(root,"missing.sqlite"),trajectoryDirs:[join(root,"rollout")],logDir:join(root,"log")};
+  await writeFile(path,JSON.stringify(first)+"\n");
+  const oldKey=(await new ContextDataService(paths).overview("sess_A")).trajectories[0].key;
+  await writeFile(path,JSON.stringify({...first,request:{...first.request,messages:[{role:"user",content:"after!"}]}})+"\n");
+  const restarted=new ContextDataService(paths);const result=await restarted.overview("sess_A");
+  assert.notEqual(result.trajectories[0].key,oldKey);
+  await assert.rejects(restarted.request("sess_A",{key:oldKey}),{code:"request_expired"});
+}));
+
+test("repeated malformed rows keep coverage memory bounded",()=>temporary(async root=>{
+  const path=join(root,"model.jsonl");const reader=new JsonlTail();await writeFile(path,"bad\n".repeat(2000));
+  await reader.scan(path,()=>{});await appendFile(path,"bad\n".repeat(2000));await reader.scan(path,()=>{});
+  assert.deepEqual(reader.coverage,["malformed_line"]);
+}));
+
+test("a recorded file reset cannot borrow a pre-reset delta baseline",()=>temporary(async root=>{
+  await mkdir(join(root,"rollout"));const path=join(root,"rollout","model-io-sess_A.jsonl");
+  const first=modelRecord("sess_A","first",[{role:"user",content:"obsolete prefix"}]);
+  const reset=modelRecord("sess_A","reset",[],{modelIOReset:{reason:"session_file_size_limit"},request:{
+    messages:[{role:"user",content:"new tail"}],messagesKind:"delta",messageOffset:1,messageCount:2}});
+  await writeFile(path,[first,reset].map(JSON.stringify).join("\n")+"\n");
+  const service=new ContextDataService({db:join(root,"missing.sqlite"),trajectoryDirs:[join(root,"rollout")],logDir:join(root,"log")});
+  const result=await service.overview("sess_A");const detail=await service.request("sess_A",{key:result.trajectories.at(-1).key,elementKey:"message:0"});
+  assert.equal(detail.summary.complete,false);assert.equal(detail.diff.available,false);
+  assert.ok(result.trajectory.coverage.includes("history_reset"));assert.doesNotMatch(detail.content.text,/obsolete prefix/);
+}));
+
+test("mixed complete and partial usage marks incomplete aggregate fields",()=>temporary(async root=>{
+  const fixture=usageDatabase(root);
+  try {
+    fixture.add("sess_A","complete",100,10);fixture.add("sess_A","partial",200,0,Date.now(),{inputTokens:200});
+    const {totals}=readUsage(fixture.path,"sess_A");
+    assert.equal(totals.inputTokens,300);assert.equal(totals.outputTokens,10);
+    assert.equal(totals.inputMissingCount,0);assert.equal(totals.outputMissingCount,1);assert.equal(totals.totalMissingCount,0);
+  } finally {fixture.db.close();}
+}));
+
+test("removed diff elements resolve through the exact previous snapshot handle",()=>temporary(async root=>{
+  await mkdir(join(root,"rollout"));const path=join(root,"rollout","model-io-sess_A.jsonl");
+  const first=modelRecord("sess_A","first",[{role:"user",content:"removed text"}]);
+  const second=modelRecord("sess_A","second",[{role:"user",content:"added text"}]);
+  await writeFile(path,[first,second].map(JSON.stringify).join("\n")+"\n");
+  const service=new ContextDataService({db:join(root,"missing.sqlite"),trajectoryDirs:[join(root,"rollout")],logDir:join(root,"log")});
+  const result=await service.overview("sess_A");const selected=await service.request("sess_A",{key:result.trajectories.at(-1).key});
+  assert.equal(selected.diff.addedCount,1);assert.equal(selected.diff.removedCount,1);
+  const previous=await service.request("sess_A",{key:selected.diff.previousKey,elementKey:selected.diff.removed[0].key});
+  assert.match(previous.content.text,/removed text/);assert.doesNotMatch(previous.content.text,/added text/);
+  await assert.rejects(service.request("sess_B",{key:selected.diff.previousKey}),{code:"request_expired"});
+}));
