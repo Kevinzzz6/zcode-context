@@ -131,10 +131,10 @@ function summaryCard(ctx) {
   if(s.model?.modelId)facts.append(muted(s.model.modelId));
   if(!s.complete)facts.append(node("span",{class:"badge warn",title:s.incompleteReason??""},t("partial")));
   const stack=node("div",{class:"stackbar"});
-  for(const b of buckets)stack.append(node("span",{style:{flexGrow:String(Math.max(b.estimatedTokens,1)),background:palette[b.role]??palette.unknown},title:t(b.role)+" "+approx(b.estimatedTokens)}));
+  for(const b of buckets)stack.append(node("span",{dataset:{role:b.role},style:{flexGrow:String(Math.max(b.estimatedTokens,1)),background:palette[b.role]??palette.unknown},title:t(b.role)+" "+approx(b.estimatedTokens),...hoverRole(b.role)}));
   const legend=node("div",{class:"legend"});
   for(const b of buckets)legend.append(button([dot(b.role),node("span",{class:"legend-name"},t(b.role)),node("span",{class:"num"},approx(b.estimatedTokens)),node("span",{class:"pct"},pct(b.estimatedTokens/sum))],
-    ()=>a.focusRole(b.role),{class:"legend-item",dataset:{role:b.role}}));
+    ()=>a.focusRole(b.role),{class:"legend-item",dataset:{role:b.role},...hoverRole(b.role)}));
   const brief=node("div",{class:"brief"});
   if(s.userPreview)brief.append(briefRow(t("briefUser"),node("span",{class:"brief-text"},s.userPreview)));
   const added=d?.summary?.key===s.key&&d.diff?.available?Object.values(d.diff.addedGroups??{}).flatMap(g=>g.items).reduce((m,x)=>!m||x.chars>m.chars?x:m,null):null;
@@ -157,63 +157,131 @@ function niceStep(max,count) {
   const raw=Math.max(max,1)/count,mag=10**Math.floor(Math.log10(raw)),norm=raw/mag;
   return (norm<=1?1:norm<=2?2:norm<=2.5?2.5:norm<=5?5:10)*mag;
 }
+const H=120,TOP=14;
+// Scales bars to all of them, or to those currently visible in the scroller.
+export function layoutTrend(card,{visibleOnly=false}={}) {
+  const scroller=card?.querySelector(".trend-scroll");if(!scroller)return;
+  const bars=[...scroller.querySelectorAll(".bar")],delta=card.dataset.mode==="delta";
+  let scope=bars;
+  if(visibleOnly&&scroller.clientWidth) {
+    const left=scroller.scrollLeft,right=left+scroller.clientWidth;
+    scope=bars.filter(b=>b.offsetLeft+b.offsetWidth>left&&b.offsetLeft<right);
+    if(!scope.length)scope=bars;
+  }
+  const maxPos=Math.max(0,...scope.map(b=>Number(b.dataset.pos))),maxNeg=Math.max(0,...scope.map(b=>Number(b.dataset.neg)));
+  const step=niceStep(Math.max(maxPos,maxNeg),delta?2:3);
+  const top=Math.max(step,Math.ceil(maxPos/step)*step),bottom=delta?Math.ceil(maxNeg/step)*step:0;
+  const posH=Math.round(H*top/(top+bottom)),negH=H-posH,axis=[],lines=[];
+  for(let v=top;v>=-bottom-1e-9;v-=step) {
+    const y=v>=0?posH*(1-v/top):posH+negH*(-v/bottom);
+    axis.push(node("span",{style:{top:TOP+y+"px"}},(delta&&v>0?"+":v<0?"−":"")+compact(Math.abs(v))));
+    lines.push(node("i",{class:v===0?"zero":"",style:{top:y+"px"}}));
+  }
+  card.querySelector(".y-axis").replaceChildren(...axis);
+  card.querySelector(".grid-lines").replaceChildren(...lines);
+  card.dataset.scale=compact(top)+(bottom?"/"+compact(bottom):"");
+  for(const bar of bars) {
+    const up=bar.querySelector(".stack.up"),down=bar.querySelector(".stack.down");
+    up.style.height=posH+"px";down.style.height=negH+"px";
+    for(const seg of up.querySelectorAll("[data-v]"))seg.style.height=Math.min(posH,Number(seg.dataset.v)/top*posH)+"px";
+    for(const seg of down.querySelectorAll("[data-v]"))seg.style.height=bottom?Math.min(negH,Number(seg.dataset.v)/bottom*negH)+"px":"0";
+  }
+}
+// One column per agent step, or per turn (the turn's last step; its change sums the turn's step changes).
+function trendColumns(series,turns) {
+  if(!turns)return series.map(s=>({s,items:[s],turn:s.turn,delta:s.delta}));
+  const columns=[];
+  for(const s of series) {
+    const last=columns.at(-1);
+    if(last&&s.turn!=null&&last.turn===s.turn){last.items.push(s);last.s=s;}
+    else columns.push({s,items:[s],turn:s.turn});
+  }
+  for(const c of columns) {
+    if(c.items.some(x=>!x.delta)){c.delta=null;continue;}
+    const sums=new Map();
+    for(const x of c.items)for(const cat of x.delta.categories)sums.set(cat.role,(sums.get(cat.role)??0)+cat.charsDelta);
+    c.delta={chars:c.items.reduce((n,x)=>n+x.delta.chars,0),categories:[...sums].map(([role,charsDelta])=>({role,charsDelta}))};
+  }
+  return columns;
+}
+function trendTip(ctx,column,deltaMode) {
+  const {t}=ctx,s=column.s,rows=node("div",{class:"tip-rows"});
+  const title=column.items.length>1||ctx.view.granularity==="turn"
+    ?t("turn",{n:s.turn??"?"})+" · "+t("stepsIn",{n:column.items.length})
+    :itemLong(t,s);
+  const change=column.delta?tokensOf(column.delta.chars):null;
+  for(const role of ORDER) {
+    const value=deltaMode?tokensOf(column.delta?.categories.find(c=>c.role===role)?.charsDelta??0):bucketsOf(s).find(b=>b.role===role)?.estimatedTokens;
+    if(!value)continue;
+    rows.append(node("div",{class:"tip-row",dataset:{role}},dot(role),node("span",{class:"spacer"},t(role)),node("span",{class:"num"},deltaMode?signed(value):approx(value))));
+  }
+  return node("div",{class:"trend-tip"},node("div",{class:"tip-title"},title),
+    node("div",{class:"tip-total"},node("b",{},approx(totalOf(s))),change!=null?node("span",{class:"delta "+(change>0?"up":change<0?"down":"")},signed(change)):muted(t("notComparable"))),
+    rows,s.userPreview?node("div",{class:"tip-user muted"},s.userPreview):null);
+}
+function showTip(ctx,bar,column,deltaMode) {
+  const main=bar.closest(".chart-main"),scroller=main.querySelector(".trend-scroll");
+  main.querySelector(".trend-tip")?.remove();
+  const tip=trendTip(ctx,column,deltaMode);
+  main.append(tip);
+  const center=bar.offsetLeft-scroller.scrollLeft+bar.offsetWidth/2,gap=bar.offsetWidth/2+6;
+  const left=center>main.clientWidth/2?center-gap-tip.offsetWidth:center+gap;
+  tip.style.left=Math.max(0,Math.min(main.clientWidth-tip.offsetWidth,left))+"px";
+}
+// Hovering a category anywhere lights that category's segments in every bar and in the summary bar.
+export function highlight(role) {
+  if(role)document.documentElement.dataset.hl=role;else delete document.documentElement.dataset.hl;
+}
+const hoverRole=role=>({onmouseenter:()=>highlight(role),onmouseleave:()=>highlight(null)});
 function trendCard(ctx) {
   const {t,view,items,overview:o,actions:a}=ctx;
   let series=items.filter(isAgent);
   if(!series.length)series=items;
-  const delta=view.trend==="delta",H=120,TOP=14;
-  const rows=series.map(s=>{
-    if(!delta)return {s,pos:bucketsOf(s).map(b=>({role:b.role,v:b.estimatedTokens})),neg:[]};
-    if(!s.delta)return {s,missing:true,pos:[],neg:[]};
-    const pos=[],neg=[];
-    for(const role of ORDER){
-      const v=tokensOf(s.delta.categories.find(c=>c.role===role)?.charsDelta??0);
-      if(v)(v>0?pos:neg).push({role,v:Math.abs(v)});
-    }
-    return {s,pos,neg};
-  });
-  const sum=list=>list.reduce((n,x)=>n+x.v,0);
-  const maxPos=Math.max(0,...rows.map(r=>sum(r.pos))),maxNeg=Math.max(0,...rows.map(r=>sum(r.neg)));
-  const step=niceStep(Math.max(maxPos,maxNeg),delta?2:3);
-  const top=Math.max(step,Math.ceil(maxPos/step)*step),bottom=delta?Math.ceil(maxNeg/step)*step:0;
-  const posH=Math.round(H*top/(top+bottom)),negH=H-posH;
-  const axis=node("div",{class:"y-axis",style:{height:TOP+H+"px"}}),lines=node("div",{class:"grid-lines",style:{top:TOP+"px",height:H+"px"}});
-  for(let v=top;v>=-bottom-1e-9;v-=step) {
-    const y=v>=0?posH*(1-v/top):posH+negH*(-v/bottom);
-    axis.append(node("span",{style:{top:TOP+y+"px"}},(delta&&v>0?"+":v<0?"−":"")+compact(Math.abs(v))));
-    lines.append(node("i",{class:v===0?"zero":"",style:{top:y+"px"}}));
-  }
+  const delta=view.trend==="delta",turns=view.granularity==="turn",columns=trendColumns(series,turns);
+  const selectedItem=items.find(x=>x.key===view.selectedKey);
   const cuts=new Map();
   for(const event of o.events??[]){const after=anchors(items,event).after;if(after)cuts.set(after.key,event);}
-  const plot=node("div",{class:"plot"}),dense=series.length>14;
+  const plot=node("div",{class:"plot",onmouseleave:e=>e.currentTarget.closest(".chart-main")?.querySelector(".trend-tip")?.remove()});
+  const dense=columns.length>14;
   let lastTurn,parity=0;
-  for(const [i,r] of rows.entries()) {
-    const s=r.s,selected=s.key===view.selectedKey,first=i===0||s.turn!==lastTurn;
-    if(i>0&&s.turn!==lastTurn)parity^=1;
-    lastTurn=s.turn;
-    const total=totalOf(s),change=s.delta?" ("+signed(tokensOf(s.delta.chars))+")":"";
-    const bar=button([],()=>a.select(s.key),{class:"bar"+(selected?" selected":""),dataset:{key:s.key},title:itemLong(t,s)+"\n"+approx(total)+change,ariaLabel:itemLong(t,s)});
-    bar.setAttribute("aria-pressed",String(selected));
-    const area=node("span",{class:"bar-area",style:{height:H+"px"}}),up=node("span",{class:"stack up",style:{height:posH+"px"}});
-    for(const x of r.pos)up.append(node("span",{style:{height:x.v/top*posH+"px",background:palette[x.role]}}));
-    if(r.missing)up.append(node("span",{class:"missing",title:t("deltaUnknown")},"?"));
-    area.append(up);
-    if(bottom) {
-      const down=node("span",{class:"stack down",style:{height:negH+"px"}});
-      for(const x of r.neg)down.append(node("span",{style:{height:x.v/bottom*negH+"px",background:palette[x.role]}}));
-      area.append(down);
+  for(const [i,c] of columns.entries()) {
+    const s=c.s,first=i===0||c.turn!==lastTurn;
+    const selected=turns?selectedItem?.turn!=null&&selectedItem.turn===c.turn&&isAgent(selectedItem):s.key===view.selectedKey;
+    if(i>0&&c.turn!==lastTurn)parity^=1;
+    lastTurn=c.turn;
+    let pos=[],neg=[],missing=false;
+    if(!delta)pos=bucketsOf(s).map(b=>({role:b.role,v:b.estimatedTokens}));
+    else if(!c.delta)missing=true;
+    else for(const role of ORDER) {
+      const v=tokensOf(c.delta.categories.find(x=>x.role===role)?.charsDelta??0);
+      if(v)(v>0?pos:neg).push({role,v:Math.abs(v)});
     }
-    const cut=cuts.get(s.key);
+    const sum=list=>list.reduce((n,x)=>n+x.v,0);
+    const bar=button([],()=>a.select(s.key),{class:"bar"+(selected?" selected":""),dataset:{key:s.key,pos:sum(pos),neg:sum(neg)},ariaLabel:turns?t("turn",{n:c.turn??"?"}):itemLong(t,s),
+      onmouseenter:e=>showTip(ctx,e.currentTarget,c,delta),onfocus:e=>showTip(ctx,e.currentTarget,c,delta)});
+    bar.setAttribute("aria-pressed",String(selected));
+    const up=node("span",{class:"stack up"}),down=node("span",{class:"stack down"});
+    for(const x of pos)up.append(node("span",{dataset:{v:x.v,role:x.role},style:{background:palette[x.role]},...hoverRole(x.role)}));
+    for(const x of neg)down.append(node("span",{dataset:{v:x.v,role:x.role},style:{background:palette[x.role]},...hoverRole(x.role)}));
+    if(missing)up.append(node("span",{class:"missing",title:t("deltaUnknown")},"?"));
+    const cut=c.items.map(x=>cuts.get(x.key)).find(Boolean);
     if(cut)bar.append(node("span",{class:"cut",title:t(compactKind(cut.event))+" · "+clock(cut.timestamp)},"✂"));
-    const showLabel=!dense||selected||i===0||(s.step??i+1)%5===0,joined=rows[i+1]&&rows[i+1].s.turn===s.turn;
-    bar.append(area,node("span",{class:"bar-x"},showLabel?String(s.step??i+1):""),
-      node("span",{class:"bar-turn"+(parity?" alt":"")+(joined?" joined":"")},first&&s.turn!=null?t("turnShort",{n:s.turn}):""));
+    const number=turns?c.turn:s.step??i+1,showLabel=!dense||selected||i===0||number%5===0;
+    bar.append(node("span",{class:"bar-area",style:{height:H+"px"}},up,down),node("span",{class:"bar-x"},showLabel?(turns?t("turnShort",{n:number}):String(number)):""));
+    if(!turns)bar.append(node("span",{class:"bar-turn"+(parity?" alt":"")+(columns[i+1]?.turn===c.turn?" joined":"")},first&&c.turn!=null?t("turnShort",{n:c.turn}):""));
     plot.append(bar);
   }
-  const head=node("div",{class:"card-head"},node("h2",{},t("trend")),seg([["total",t("total")],["delta",t("delta")]],view.trend,v=>a.set({trend:v}),{id:"trend",small:true}));
-  const chart=node("div",{class:"chart"},axis,node("div",{class:"chart-main"},lines,node("div",{class:"trend-scroll",id:"trend-scroll",dataset:{scroll:"trend"}},plot)));
-  const foot=node("div",{class:"card-foot"},ctx.hasOlder?button("‹ "+t("older"),a.older,{class:"btn ghost small",id:"older"}):null,spacer(),muted(t("loadedSteps",{n:series.length})));
-  return node("section",{class:"card trend-card"},head,chart,foot);
+  const head=node("div",{class:"card-head"},node("h2",{},t("trend")),node("div",{class:"head-tools"},
+    button(t("adaptive"),()=>a.set({trendAdaptive:!view.trendAdaptive}),{class:"toggle"+(view.trendAdaptive?" on":""),id:"trend-adaptive",title:t("adaptiveTip"),ariaPressed:String(view.trendAdaptive)}),
+    seg([["step",t("granStep")],["turn",t("granTurn")]],view.granularity,v=>a.set({granularity:v}),{id:"gran",small:true}),
+    seg([["total",t("total")],["delta",t("delta")]],view.trend,v=>a.set({trend:v}),{id:"trend",small:true})));
+  const chart=node("div",{class:"chart"},node("div",{class:"y-axis",style:{height:TOP+H+"px"}}),
+    node("div",{class:"chart-main"},node("div",{class:"grid-lines",style:{top:TOP+"px",height:H+"px"}}),node("div",{class:"trend-scroll",id:"trend-scroll",dataset:{scroll:"trend"}},plot)));
+  const foot=node("div",{class:"card-foot"},ctx.hasOlder?button("‹ "+t("older"),a.older,{class:"btn ghost small",id:"older"}):null,spacer(),
+    muted(turns?t("loadedTurns",{n:columns.length}):t("loadedSteps",{n:series.length})));
+  const card=node("section",{class:"card trend-card",dataset:{mode:view.trend}},head,chart,foot);
+  layoutTrend(card);
+  return card;
 }
 
 function browserCard(ctx) {
@@ -258,7 +326,7 @@ function category(ctx,role,bucket,change,total,open,searching,matched) {
     node("span",{class:"cat-count"},searching&&!changes?t("matchedItems",{m:group?.count??0,n:count}):t("items",{n:count})),
     change?.addedCount?node("span",{class:"badge up"},"+"+change.addedCount):null,change?.removedCount?node("span",{class:"badge down"},"−"+change.removedCount):null,spacer(),
     change?.charsDelta?node("span",{class:"delta "+(change.charsDelta>0?"up":"down")},signed(tokensOf(change.charsDelta))):null,
-    node("span",{class:"num"},approx(size)),node("span",{class:"pct"},pct(size/total))],()=>a.toggleRole(role),{class:"cat-head",ariaExpanded:String(expanded),disabled:dim});
+    node("span",{class:"num"},approx(size)),node("span",{class:"pct"},pct(size/total))],()=>a.toggleRole(role),{class:"cat-head",ariaExpanded:String(expanded),disabled:dim,...hoverRole(role)});
   const section=node("section",{class:"category"+(expanded?" open":"")+(dim?" dim":""),dataset:{role}},head);
   if(!expanded)return section;
   const body=node("div",{class:"cat-body"});

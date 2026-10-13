@@ -1,7 +1,7 @@
 import { App } from "@modelcontextprotocol/ext-apps";
 import { initialView, restoreView, saveView, mergeSnapshots } from "./state.mjs";
 import { translator } from "./i18n.mjs";
-import { renderApp, isAgent, CHUNK } from "./components.mjs";
+import { renderApp, isAgent, CHUNK, layoutTrend, highlight } from "./components.mjs";
 import { demoCall } from "./demo.mjs";
 const root=document.getElementById("root");
 const demo=new URLSearchParams(location.search).get("demo")==="1";
@@ -21,7 +21,7 @@ function interacting() {
 }
 function render(background=false) {
   if(background&&interacting()){pendingRender=true;return;}
-  pendingRender=false;
+  pendingRender=false;highlight(null);
   const focus=document.activeElement,focusId=focus&&root.contains(focus)?focus.id:null,caret=focus?.selectionStart;
   const scrolls=new Map([...root.querySelectorAll("[data-scroll]")].map(el=>[el.dataset.scroll,[el.scrollLeft,el.scrollTop,el.scrollWidth]]));
   const y=window.scrollY,agents=items.filter(isAgent),index=agents.findIndex(x=>x.key===view.selectedKey);
@@ -33,6 +33,7 @@ function render(background=false) {
     el.scrollTop=saved[1];el.scrollLeft=keepRightEdge&&el.dataset.scroll==="trend"?el.scrollWidth-keepRightEdge:saved[0];
   }
   keepRightEdge=null;
+  adaptTrend();
   if(focusId) {
     const el=document.getElementById(focusId);
     if(el&&el!==document.activeElement){el.focus({preventScroll:true});if(caret!=null&&el.setSelectionRange)try{el.setSelectionRange(caret,caret);}catch{}}
@@ -44,6 +45,13 @@ function render(background=false) {
     const body=document.getElementById("content"),mark=body?.querySelector("mark.current");
     if(mark){jumpToMatch=false;body.scrollTop=mark.offsetTop-body.clientHeight/3;}
   }
+}
+function adaptTrend() {
+  const card=root.querySelector(".trend-card"),scroller=card?.querySelector(".trend-scroll");
+  if(!scroller||!view.trendAdaptive)return;
+  let pending=null;
+  layoutTrend(card,{visibleOnly:true});
+  scroller.addEventListener("scroll",()=>{pending??=setTimeout(()=>{pending=null;layoutTrend(card,{visibleOnly:true});},40);},{passive:true});
 }
 function centerSelectedBar() {
   const scroller=document.getElementById("trend-scroll"),bar=scroller?.querySelector(".bar.selected");
