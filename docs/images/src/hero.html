@@ -1,9 +1,7 @@
 <!doctype html>
 <!--
-  README hero, rendered by docs/images/src/render.sh. Equivalent single command from the repository root:
-    chrome --headless=new --hide-scrollbars --force-device-scale-factor=2 --default-background-color=00000000 \
-      --window-size=1200,560 --screenshot=docs/images/hero.png "file:///<repo>/docs/images/src/hero.html"
-  Append ?lang=en for docs/images/hero.en.png.
+  README hero, rendered by docs/images/src/render.sh at 1200 x 560, device scale factor 2.
+  Query: raw=<directory URL of the raw shots, ending in />, lang=zh|en.
 -->
 <html>
 <head>
@@ -21,9 +19,10 @@
   .card {
     position: relative; width: 1200px; height: 560px; border-radius: 28px; overflow: hidden; isolation: isolate;
     background:
-      radial-gradient(620px 420px at -4% -8%, rgba(99,102,241,.34), transparent 62%),
-      radial-gradient(560px 460px at 104% 108%, rgba(20,184,166,.30), transparent 60%),
-      radial-gradient(420px 300px at 62% 18%, rgba(59,130,246,.14), transparent 70%),
+      radial-gradient(640px 440px at -4% -10%, rgba(99,102,241,.36), transparent 62%),
+      radial-gradient(600px 480px at 106% 110%, rgba(20,184,166,.30), transparent 60%),
+      radial-gradient(460px 320px at 74% 6%, rgba(249,115,22,.10), transparent 70%),
+      radial-gradient(420px 300px at 58% 30%, rgba(59,130,246,.12), transparent 70%),
       linear-gradient(160deg, #111729 0%, #0b0f1c 55%, #080b14 100%);
   }
   .card::before {
@@ -63,23 +62,28 @@
   .legend span::before { content: ""; width: 9px; height: 9px; border-radius: 3px; background: var(--c); }
 
   /* product shots */
-  .shots { position: absolute; left: 672px; top: 0; width: 600px; height: 560px; }
-  .shot { position: absolute; width: 330px; border-radius: 18px; overflow: hidden; background: #fff;
+  .shots { position: absolute; left: 652px; top: 0; width: 548px; height: 560px; }
+  .shot { position: absolute; border-radius: 18px; overflow: hidden; background: #fff;
     box-shadow: 0 0 0 1px rgba(255,255,255,.14), 0 2px 6px rgba(0,0,0,.25), 0 32px 70px -12px rgba(0,0,0,.75); }
   .shot img { display: block; width: 100%; }
-  .shot.back { left: 250px; top: 104px; transform: scale(.92); transform-origin: top left; filter: saturate(.9) brightness(.86); }
-  .shot.back::after { content: ""; position: absolute; inset: 0; background: linear-gradient(90deg, rgba(8,11,20,.55) 0%, rgba(8,11,20,.12) 38%, transparent 60%); }
-  .shot.front { left: 0; top: 46px; }
+  .shot.back { left: 0; top: 44px; width: 318px; filter: saturate(.92) brightness(.88); }
+  .shot.back::after { content: ""; position: absolute; inset: 0; background: linear-gradient(180deg, transparent 40%, rgba(8,11,20,.35) 100%); }
+  .shot.front { left: 228px; top: 132px; width: 296px; }
 
   .chip { position: absolute; z-index: 3; display: inline-flex; align-items: center; gap: 8px; padding: 9px 14px; border-radius: 12px;
     font-size: 15px; font-weight: 650; color: #eef1f7; white-space: nowrap;
-    background: rgba(17,23,41,.78); backdrop-filter: blur(12px);
+    background: rgba(17,23,41,.80); backdrop-filter: blur(12px);
     box-shadow: inset 0 0 0 1px rgba(255,255,255,.14), 0 14px 30px -8px rgba(0,0,0,.6); }
-  .chip .k { color: #8f98ab; font-weight: 500; }
+  .chip .k { color: #a3abbd; font-weight: 500; }
   .chip .up { color: #4ade80; font-family: var(--mono); }
   .chip .down { color: #fb923c; font-family: var(--mono); }
-  .chip.c1 { left: -74px; top: 478px; }
-  .chip.c2 { left: 346px; top: 404px; }
+  .chip .glyph { color: #fb923c; font-size: 15px; }
+  .chip.new { gap: 9px; padding: 8px 14px 8px 8px; }
+  .chip.new .tag { padding: 3px 8px; border-radius: 7px; font-size: 12px; font-weight: 750; letter-spacing: .06em; color: #0b0f1c;
+    background: linear-gradient(100deg, #a5b4fc, #5eead4); }
+  .chip.c1 { left: -62px; top: 468px; }
+  .chip.c2 { left: 268px; top: 84px; }
+  .chip.c3 { left: 36px; top: 404px; }
 </style>
 </head>
 <body>
@@ -108,10 +112,11 @@
   </div>
 
   <div class="shots">
-    <div class="shot back"><img src="../sidebar-changes.png" alt=""></div>
-    <div class="shot front"><img src="../sidebar-overview.png" alt=""></div>
+    <div class="shot back"><img data-src="sidebar-overview" alt=""></div>
+    <div class="shot front"><img data-src="sidebar-events" alt=""></div>
     <div class="chip c1"><span class="up">+1.8k</span><span class="k" data-i18n="chip1"></span></div>
-    <div class="chip c2"><span class="k" data-i18n="chip2"></span><span class="up">+3</span><span class="down">−32</span></div>
+    <div class="chip new c2"><span class="tag">NEW</span><span data-i18n="chip2"></span></div>
+    <div class="chip c3"><span class="glyph">✂</span><span class="k" data-i18n="chip3"></span><span class="down">−12.1k</span></div>
   </div>
 </div>
 <script>
@@ -119,21 +124,22 @@
     zh: {
       eyebrow1: "ZCode UI 插件", eyebrow2: "只读 · 离线 · 本地",
       tagline: "看清每一次请求里，<br>到底装了什么。",
-      sub: "请求组成、逐步变化、压缩差异与工具定义开销，<br>就在会话侧栏里。",
+      sub: "请求组成、逐步变化、上下文事件与压缩前后，<br>就在会话侧栏里。",
       system: "系统指令", schema: "工具定义", user: "用户消息", assistant: "助手消息", tool: "工具结果",
-      chip1: "较上一步", chip2: "仅变化",
+      chip1: "较上一步", chip2: "上下文事件", chip3: "自动压缩",
     },
     en: {
       eyebrow1: "ZCode UI plugin", eyebrow2: "Read-only · Offline · Local",
       tagline: "See exactly what goes into<br>every model request.",
-      sub: "Composition, step-by-step changes, compaction diffs<br>and tool-schema cost — right in the session side pane.",
+      sub: "Composition, step-by-step changes, context events<br>and compactions — right in the session side pane.",
       system: "System", schema: "Tool schemas", user: "User", assistant: "Assistant", tool: "Tool results",
-      chip1: "vs previous step", chip2: "Changes",
+      chip1: "vs previous step", chip2: "Context events", chip3: "Auto compaction",
     },
   };
-  const lang = new URLSearchParams(location.search).get("lang") === "en" ? "en" : "zh";
+  const q = new URLSearchParams(location.search), lang = q.get("lang") === "en" ? "en" : "zh";
   document.documentElement.lang = lang === "en" ? "en" : "zh-CN";
   for (const el of document.querySelectorAll("[data-i18n]")) el.innerHTML = text[lang][el.dataset.i18n];
+  for (const img of document.querySelectorAll("img[data-src]")) img.src = (q.get("raw") ?? "") + img.dataset.src + (lang === "en" ? ".en" : "") + ".png";
 </script>
 </body>
 </html>

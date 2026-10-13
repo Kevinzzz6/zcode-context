@@ -1,0 +1,132 @@
+<!doctype html>
+<!--
+  "How it works" data-flow diagram, rendered by docs/images/src/render.sh at 1200 x 520, device scale factor 2.
+  Query: lang=zh|en, theme=light|dark.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  :root {
+    --sans: "Segoe UI Variable Display", "Segoe UI", -apple-system, "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+    --mono: "Cascadia Mono", Consolas, ui-monospace, monospace;
+    --bg1: #f8f9fc; --bg2: #eef1f6; --ring: rgba(16,24,40,.09); --ink: #1d2129; --muted: #667085; --faint: #98a2b3;
+    --node: #fff; --node-ring: rgba(16,24,40,.08); --box: rgba(255,255,255,.55); --line: #b4bccb; --dots: rgba(16,24,40,.07);
+    --shadow: 0 1px 2px rgba(16,24,40,.06), 0 14px 30px -16px rgba(16,24,40,.30);
+    --indigo: #6366f1; --teal: #14b8a6; --blue: #3b82f6; --amber: #f59e0b; --orange: #f97316; --green: #16a34a;
+  }
+  .dark {
+    --bg1: #141821; --bg2: #0d1016; --ring: rgba(255,255,255,.08); --ink: #e8eaf0; --muted: #a0a8b8; --faint: #6b7385;
+    --node: #1a1d24; --node-ring: rgba(255,255,255,.09); --box: rgba(255,255,255,.03); --line: #4a5263; --dots: rgba(255,255,255,.06);
+    --shadow: 0 2px 6px rgba(0,0,0,.35), 0 20px 40px -18px rgba(0,0,0,.8);
+    --indigo: #818cf8; --teal: #2dd4bf; --blue: #60a5fa; --amber: #fbbf24; --orange: #fb923c; --green: #4ade80;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { width: 1200px; height: 520px; background: transparent; overflow: hidden; font-family: var(--sans); -webkit-font-smoothing: antialiased; }
+  .canvas { position: relative; width: 1200px; height: 520px; border-radius: 26px; overflow: hidden; isolation: isolate; color: var(--ink);
+    background: radial-gradient(520px 360px at 0% 0%, color-mix(in srgb, var(--indigo) 12%, transparent), transparent 70%),
+      radial-gradient(560px 400px at 100% 100%, color-mix(in srgb, var(--teal) 12%, transparent), transparent 70%),
+      linear-gradient(180deg, var(--bg1), var(--bg2));
+    box-shadow: inset 0 0 0 1px var(--ring); }
+  .canvas::before { content: ""; position: absolute; inset: 0; z-index: -1;
+    background-image: radial-gradient(var(--dots) 1px, transparent 1.2px); background-size: 22px 22px;
+    -webkit-mask-image: radial-gradient(760px 420px at 50% 50%, #000 30%, transparent 80%); }
+
+  .node { position: absolute; top: 142px; height: 150px; padding: 20px 18px; border-radius: 18px; background: var(--node);
+    box-shadow: inset 0 0 0 1px var(--node-ring), var(--shadow); display: flex; flex-direction: column; gap: 6px; }
+  .node .icon { width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; font-size: 17px; font-weight: 700; color: #fff;
+    background: var(--c); box-shadow: 0 6px 14px -6px var(--c); margin-bottom: 6px; }
+  .node .name { font-size: 17px; font-weight: 650; letter-spacing: -.01em; }
+  .node .desc { font-size: 13px; line-height: 1.45; color: var(--muted); }
+  .n1 { left: 44px; width: 196px; --c: var(--indigo); }
+  .n2 { left: 286px; width: 176px; --c: var(--blue); }
+  .n3 { left: 508px; width: 188px; --c: var(--teal); }
+
+  .edge { position: absolute; top: 216px; height: 2px; background: var(--line); }
+  .edge::after { content: ""; position: absolute; right: -1px; top: -5px; border: 6px solid transparent; border-left: 8px solid var(--line); border-right: 0; }
+  .e1 { left: 242px; width: 42px; } .e2 { left: 464px; width: 42px; } .e3 { left: 698px; width: 38px; }
+  .label { position: absolute; font-size: 12.5px; line-height: 1.35; color: var(--muted); text-align: center; white-space: nowrap; }
+  .l1 { left: 196px; width: 136px; top: 92px; }
+  .l1 b { display: block; color: var(--ink); font-weight: 650; font-size: 13px; }
+  .l1::after { content: ""; position: absolute; left: 67px; top: 40px; width: 1px; height: 76px; border-left: 1.5px dashed var(--line); }
+
+  .box { position: absolute; left: 738px; top: 50px; width: 418px; padding: 18px 16px 14px; border-radius: 22px;
+    background: var(--box); box-shadow: inset 0 0 0 1.5px var(--node-ring); border: 1.5px dashed color-mix(in srgb, var(--line) 70%, transparent); }
+  .box h3 { display: flex; align-items: center; gap: 8px; font-size: 14.5px; font-weight: 650; padding: 0 4px 12px; }
+  .box h3 code { font: 600 13.5px var(--mono); color: var(--ink); }
+  .box h3 .ro { margin-left: auto; padding: 2px 9px; border-radius: 999px; font-size: 12px; font-weight: 650; color: var(--green);
+    background: color-mix(in srgb, var(--green) 14%, transparent); }
+  .src { display: grid; grid-template-columns: 6px 1fr; gap: 0 12px; padding: 11px 12px; border-radius: 13px; background: var(--node);
+    box-shadow: inset 0 0 0 1px var(--node-ring); margin-bottom: 9px; }
+  .src::before { content: ""; grid-row: span 2; border-radius: 3px; background: var(--c); }
+  .src .path { display: flex; align-items: center; gap: 8px; font: 600 13px var(--mono); }
+  .src .path span { font: 500 12.5px var(--sans); color: var(--muted); }
+  .src .feeds { margin-top: 3px; font-size: 13px; color: var(--ink); }
+  .src .feeds::before { content: "→ "; color: var(--faint); }
+  .src .path .new { padding: 1px 7px; border-radius: 6px; font: 750 10.5px var(--sans); letter-spacing: .06em; color: #fff;
+    background: linear-gradient(100deg, var(--indigo), var(--teal)); }
+
+  .facts { position: absolute; left: 44px; bottom: 34px; display: flex; gap: 10px; }
+  .fact { display: inline-flex; align-items: center; gap: 8px; padding: 8px 13px; border-radius: 11px; font-size: 13px; color: var(--muted);
+    background: var(--node); box-shadow: inset 0 0 0 1px var(--node-ring); }
+  .fact b { color: var(--ink); font-weight: 650; }
+  .fact::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--c); }
+</style>
+</head>
+<body>
+<div class="canvas">
+  <div class="node n1"><div class="icon">◧</div><div class="name" data-i18n="panel"></div><div class="desc" data-i18n="panelDesc"></div></div>
+  <div class="edge e1"></div>
+  <div class="label l1"><b data-i18n="tools"></b><span data-i18n="toolsDesc"></span></div>
+  <div class="node n2"><div class="icon">⇄</div><div class="name" data-i18n="server"></div><div class="desc" data-i18n="serverDesc"></div></div>
+  <div class="edge e2"></div>
+  <div class="node n3"><div class="icon">⚙</div><div class="name" data-i18n="worker"></div><div class="desc" data-i18n="workerDesc"></div></div>
+  <div class="edge e3"></div>
+  <div class="box">
+    <h3><span data-i18n="local"></span><code>~/.zcode/cli</code><span class="ro" data-i18n="readonly"></span></h3>
+    <div class="src" style="--c:var(--orange)"><div class="path">db.sqlite · message / part <span class="new">NEW</span></div><div class="feeds" data-i18n="store"></div></div>
+    <div class="src" style="--c:var(--amber)"><div class="path">db.sqlite · model_usage / tool_usage</div><div class="feeds" data-i18n="usage"></div></div>
+    <div class="src" style="--c:var(--teal)"><div class="path">rollout/ · debug/ <span data-i18n="io"></span></div><div class="feeds" data-i18n="ioFeeds"></div></div>
+    <div class="src" style="--c:var(--blue)"><div class="path">log/ <span data-i18n="logs"></span></div><div class="feeds" data-i18n="logFeeds"></div></div>
+  </div>
+  <div class="facts">
+    <span class="fact" style="--c:var(--green)" data-i18n="f1"></span>
+    <span class="fact" style="--c:var(--blue)" data-i18n="f2"></span>
+    <span class="fact" style="--c:var(--indigo)" data-i18n="f3"></span>
+    <span class="fact" style="--c:var(--teal)" data-i18n="f4"></span>
+  </div>
+</div>
+<script>
+  const text = {
+    zh: {
+      panel: "上下文面板", panelDesc: "ZCode 会话侧栏<br>随会话实时更新",
+      tools: "两个只读工具", toolsDesc: "按会话身份绑定 · 模型不可见",
+      server: "插件服务", serverDesc: "MCP · stdio<br>随插件启动",
+      worker: "数据 worker", workerDesc: "串行 · 限时 · 限内存<br>只取需要的 JSON 字段",
+      local: "本机", readonly: "只读",
+      store: "会话记录：上下文事件、被摘要的内容，覆盖整个会话",
+      usage: "用量页、工具调用次数",
+      io: "模型 I/O 记录", ioFeeds: "请求组成、逐步对比、正文与 Diff",
+      logs: "最近 3 天日志", logFeeds: "回退、编辑提问、MCP 工具注册",
+      f1: "<b>只读</b>不改设置、数据库与权限", f2: "<b>离线</b>不联网、不调用模型", f3: "<b>会话隔离</b>不读别的会话", f4: "<b>安全渲染</b>不执行捕获的 HTML",
+    },
+    en: {
+      panel: "Context panel", panelDesc: "ZCode session side pane<br>updates with the session",
+      tools: "Two read-only tools", toolsDesc: "bound to the session · hidden from the model",
+      server: "Plugin service", serverDesc: "MCP · stdio<br>started with the plugin",
+      worker: "Data worker", workerDesc: "serialized · time-boxed<br>memory-bounded",
+      local: "This machine", readonly: "read-only",
+      store: "Conversation store: context events and summaries, whole session",
+      usage: "Usage page, tool call counts",
+      io: "model I/O records", ioFeeds: "Composition, step comparison, bodies and Diff",
+      logs: "last 3 days of logs", logFeeds: "Rewinds, edited questions, MCP registrations",
+      f1: "<b>Read-only</b>settings, DB and permissions untouched", f2: "<b>Offline</b>no network, no model calls", f3: "<b>Isolated</b>never reads another session", f4: "<b>Safe</b>captured HTML never runs",
+    },
+  };
+  const q = new URLSearchParams(location.search), lang = q.get("lang") === "en" ? "en" : "zh";
+  if (q.get("theme") === "dark") document.body.classList.add("dark");
+  document.documentElement.lang = lang === "en" ? "en" : "zh-CN";
+  for (const el of document.querySelectorAll("[data-i18n]")) el.innerHTML = text[lang][el.dataset.i18n];
+</script>
+</body>
+</html>
