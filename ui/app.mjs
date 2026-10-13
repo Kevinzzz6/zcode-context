@@ -182,6 +182,24 @@ function baselineArgs(key) {
   const previous=items.filter(x=>isAgent(x)&&x.querySource===item.querySource&&x.turn!=null&&x.turn<item.turn&&x.startedAt<item.startedAt).at(-1);
   return previous?{baselineKey:previous.key}:{};
 }
+function jumpMatch(direction) {
+  const hits=content?.content?.hits??[];if(!hits.length)return;
+  const current=view.open.matchIndex??-1,index=current<0&&direction<0?hits.length-1:(current+direction+hits.length)%hits.length;
+  const offset=Math.floor(hits[index]/CHUNK)*CHUNK;
+  jumpToMatch=true;updateOpen({matchIndex:index,offset});
+  if(offset!==content.content.offset)loadContent();else render();
+}
+// Left/right arrows move between agent steps unless a field has focus.
+function stepBy(direction) {
+  const agents=items.filter(isAgent),selected=items.find(x=>x.key===view.selectedKey),index=agents.findIndex(x=>x.key===view.selectedKey);
+  const target=index>=0?agents[index+direction]:selected?(direction<0?agents.findLast(x=>x.startedAt<selected.startedAt):agents.find(x=>x.startedAt>selected.startedAt)):null;
+  if(target)actions.select(target.key);
+}
+document.addEventListener("keydown",e=>{
+  if(e.defaultPrevented||e.altKey||e.ctrlKey||e.metaKey||e.shiftKey||view.page!=="context")return;
+  if(e.target?.closest?.("input,textarea,select,[contenteditable]"))return;
+  if(e.key==="ArrowLeft"||e.key==="ArrowRight"){e.preventDefault();stepBy(e.key==="ArrowLeft"?-1:1);}
+});
 const updateOpen=patch=>{view={...view,open:{...view.open,...patch}};persist();};
 const actions={
   select(key) {
@@ -239,14 +257,11 @@ const actions={
   chunk(offset){updateOpen({offset});loadContent();},
   bodySearch(value) {
     updateOpen({search:value,matchIndex:-1});
+    if(!value)render();
     clearTimeout(bodyTimer);bodyTimer=setTimeout(loadContent,200);
   },
-  nextMatch() {
-    const hits=content?.content?.hits??[];if(!hits.length)return;
-    const index=((view.open.matchIndex??-1)+1)%hits.length,offset=Math.floor(hits[index]/CHUNK)*CHUNK;
-    jumpToMatch=true;updateOpen({matchIndex:index,offset});
-    if(offset!==content.content.offset)loadContent();else render();
-  },
+  nextMatch(){jumpMatch(1);},
+  prevMatch(){jumpMatch(-1);},
   toggleDiff(before) {
     updateOpen(view.open.diff?{diff:false,diffBefore:null,offset:0}:{diff:true,diffBefore:before,offset:0});
     render();loadContent();

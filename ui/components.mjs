@@ -90,8 +90,8 @@ function toolbar(ctx) {
     if(main.children.length)select.append(main);
     if(aux.children.length)select.append(aux);
     bar.append(node("div",{class:"stepper"},
-      button("‹",()=>a.select(prev?.key),{class:"icon-btn",id:"snapshot-previous",disabled:!prev,title:t("previous"),ariaLabel:t("previous")}),select,
-      button("›",()=>a.select(next?.key),{class:"icon-btn",id:"snapshot-next",disabled:!next,title:t("next"),ariaLabel:t("next")})));
+      button("‹",()=>a.select(prev?.key),{class:"icon-btn",id:"snapshot-previous",disabled:!prev,title:t("previous")+" (←)",ariaLabel:t("previous")}),select,
+      button("›",()=>a.select(next?.key),{class:"icon-btn",id:"snapshot-next",disabled:!next,title:t("next")+" (→)",ariaLabel:t("next")})));
   } else bar.append(spacer());
   bar.append(button(t("usage"),()=>a.page("usage"),{class:"btn",id:"show-usage"}),refresh);
   return bar;
@@ -436,9 +436,15 @@ function bodyText(ctx,c) {
 }
 function bodyFoot(ctx,c) {
   const {t,view,actions:a}=ctx,p=view.open,parts=Math.ceil(c.totalChars/CHUNK),part=Math.floor(c.offset/CHUNK)+1;
-  const find=node("div",{class:"find"},node("input",{id:"body-search",type:"search",placeholder:t("findInBody"),value:p.search??"",maxLength:200,autocomplete:"off",oninput:e=>a.bodySearch(e.target.value)}),
-    p.search?muted(t("matches",{n:full(c.matchCount)})+(c.matchCount>100?" · "+t("firstMatches"):"")):null,
-    p.search?button(t("nextMatch"),a.nextMatch,{class:"btn small",id:"next-match",disabled:!c.hits.length}):null);
+  const keys=e=>{
+    if(e.key==="Enter"){e.preventDefault();e.shiftKey?a.prevMatch():a.nextMatch();}
+    else if(e.key==="Escape"&&e.target.value){e.preventDefault();e.target.value="";a.bodySearch("");}
+  };
+  const position=p.matchIndex>=0&&c.matchCount?t("matchOf",{i:p.matchIndex+1,n:full(c.matchCount)}):t("matches",{n:full(c.matchCount)});
+  const find=node("div",{class:"find"},node("input",{id:"body-search",type:"search",placeholder:t("findInBody"),value:p.search??"",maxLength:200,autocomplete:"off",title:t("findKeys"),oninput:e=>a.bodySearch(e.target.value),onkeydown:keys}),
+    p.search?muted(position+(c.matchCount>100?" · "+t("firstMatches"):"")):null,
+    p.search?button("‹",a.prevMatch,{class:"icon-btn",id:"prev-match",title:t("prevMatch"),ariaLabel:t("prevMatch"),disabled:!c.hits.length}):null,
+    p.search?button("›",a.nextMatch,{class:"icon-btn",id:"next-match",title:t("nextMatch"),ariaLabel:t("nextMatch"),disabled:!c.hits.length}):null);
   const foot=node("div",{class:"body-foot"},find);
   if(parts>1)foot.append(chunks(ctx,c.offset,parts,c.hasMore));
   return foot;
