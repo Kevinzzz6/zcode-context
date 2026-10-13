@@ -314,9 +314,12 @@ function trendCard(ctx) {
     seg([["total",t("total")],["delta",t("delta")]],view.trend,v=>a.set({trend:v}),{id:"trend",small:true})));
   const chart=node("div",{class:"chart"},node("div",{class:"y-axis",style:{height:TOP+H+"px"}}),
     node("div",{class:"chart-main"},node("div",{class:"grid-lines",style:{top:TOP+"px",height:H+"px"}}),node("div",{class:"trend-scroll",id:"trend-scroll",dataset:{scroll:"trend"}},plot)));
+  const coverage=o.trajectory?.coverage??[];
+  const history=coverage.includes("history_reset")||coverage.includes("source_rotated")?t("trendReset"):coverage.includes("history_window")?t("trendWindow"):null;
   const foot=node("div",{class:"card-foot"},ctx.hasOlder?button("‹ "+t("older"),a.older,{class:"btn ghost small",id:"older"}):null,spacer(),
     muted(turns?t("loadedTurns",{n:columns.length}):t("loadedSteps",{n:series.length})));
-  const card=node("section",{class:"card trend-card",dataset:{mode:view.trend}},head,chart,foot);
+  const card=node("section",{class:"card trend-card",dataset:{mode:view.trend}},head,chart,foot,
+    history?node("p",{class:"trend-history muted small",id:"trend-history",title:t("trendNumbering")},history):null);
   layoutTrend(card);
   return card;
 }

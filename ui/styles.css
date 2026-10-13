@@ -231,3 +231,4 @@ html[data-hl] .tip-row{opacity:.4}
 html[data-hl=system] .tip-row[data-role=system],html[data-hl=schema] .tip-row[data-role=schema],html[data-hl=user] .tip-row[data-role=user],
 html[data-hl=assistant] .tip-row[data-role=assistant],html[data-hl=tool] .tip-row[data-role=tool],html[data-hl=unknown] .tip-row[data-role=unknown]{opacity:1;font-weight:600}
 .tip-user{margin-top:4px;padding-top:4px;border-top:1px solid var(--soft);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.trend-history{margin:6px 0 0;line-height:1.45;cursor:help}
