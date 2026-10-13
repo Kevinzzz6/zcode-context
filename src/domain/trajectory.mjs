@@ -5,6 +5,12 @@ export function canonical(value) {
   if (value && typeof value === "object") return "{" + Object.keys(value).sort().map(k => JSON.stringify(k) + ":" + canonical(value[k])).join(",") + "}";
   return JSON.stringify(value) ?? "null";
 }
+// Identity of recorded content for matching across requests. Prompt-cache breakpoints move to the newest message on
+// every request, so they are not part of a message's identity.
+const CACHE_KEYS = new Set(["cacheControl", "cache_control"]);
+const withoutCache = value => Array.isArray(value) ? value.map(withoutCache)
+  : value && typeof value === "object" ? Object.fromEntries(Object.entries(value).filter(([k]) => !CACHE_KEYS.has(k)).map(([k, v]) => [k, withoutCache(v)])) : value;
+export const contentKey = value => canonical(withoutCache(value));
 // `offset` is the absolute index of items[0] in the full message list, or null when the encoding does not say.
 export function expandCollection(items, kind, offset, count, previous) {
   const at = Number.isInteger(offset) && offset >= 0 ? offset : null;
@@ -183,10 +189,10 @@ export function diffRecords(before, after) {
   const a=inputElements(before).filter(x=>schemasComparable || x.role!=="schema");
   const b=inputElements(after).filter(x=>schemasComparable || x.role!=="schema");
   const queues=new Map();
-  a.forEach((item,i)=>{const k=canonical(item.value);const q=queues.get(k)??[];q.push(i);queues.set(k,q);});
+  a.forEach((item,i)=>{const k=contentKey(item.value);const q=queues.get(k)??[];q.push(i);queues.set(k,q);});
   const removed=new Set(a.map((_,i)=>i));const added=[];const matches=[];
   for(const [i,item] of b.entries()) {
-    const q=queues.get(canonical(item.value));
+    const q=queues.get(contentKey(item.value));
     if(q?.length){const j=q.shift();removed.delete(j);matches.push([j,i]);}else added.push(item);
   }
   const removedItems=[...removed].map(i=>a[i]);
