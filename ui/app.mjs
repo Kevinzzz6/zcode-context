@@ -9,7 +9,7 @@ let app=null,t=translator(),view=initialView(),boundSession=null,overview=null,i
 let detail=null,content=null,more={},notice=null,busy=false,activeLoads=0;
 let generation=0,detailSequence=0,contentSequence=0,moreSequence=0;
 let pendingRender=false,renderedSelection=null,scrollTarget=null,jumpToMatch=false,keepRightEdge=null;
-let timer,searchTimer,bodyTimer,slowTimer,noticeTimer,scrollTimer;
+let timer,searchTimer,bodyTimer,slowTimer,noticeTimer,scrollTimer,idlePolls=0,stopped=false;
 const persist=()=>saveView(boundSession,view);
 const latestKey=()=>items.filter(isAgent).at(-1)?.key??items.at(-1)?.key??null;
 
@@ -94,8 +94,8 @@ async function refresh(force=false) {
     if(expected!==generation)return;
     const fresh=next.sessionId!==boundSession;
     if(fresh){generation++;boundSession=next.sessionId;view=restoreView(boundSession);items=[];detail=null;content=null;more={};historyPage=0;overview=null;}
-    if(next.unchanged){if(notice?.kind==="error"){notice=null;render(true);}return;}
-    overview=next;
+    if(next.unchanged){idlePolls++;if(notice?.kind==="error"){notice=null;render(true);}return;}
+    idlePolls=0;overview=next;
     items=mergeSnapshots(items.filter(x=>!next.history?.loadedKeys||next.history.loadedKeys.includes(x.key)),next.trajectories);
     hasOlder=historyPage<4&&(next.history?.loadedCount??items.length)>items.length;
     const previous=view.selectedKey,loaded=next.history?.loadedKeys;
@@ -269,10 +269,22 @@ const actions={
   }
 };
 window.addEventListener("scroll",()=>{view.scroll=window.scrollY;clearTimeout(scrollTimer);scrollTimer=setTimeout(persist,250);},{passive:true});
-document.addEventListener("visibilitychange",()=>{clearInterval(timer);if(!document.hidden){refresh();timer=setInterval(()=>refresh(),3000);}});
+// Polling slows down while nothing changes and returns to full speed as soon as the panel is looked at again.
+const pollDelay=()=>idlePolls>=20?10000:idlePolls>=10?6000:3000;
+function schedule() {
+  clearTimeout(timer);
+  if(!stopped&&!document.hidden)timer=setTimeout(async()=>{await refresh();schedule();},pollDelay());
+}
+function wake() {
+  if(stopped||pollDelay()===3000||document.hidden)return;
+  idlePolls=0;refresh().then(schedule);
+}
+document.addEventListener("visibilitychange",()=>{clearTimeout(timer);if(!stopped&&!document.hidden){idlePolls=0;refresh().then(schedule);}});
+document.documentElement.addEventListener("pointerenter",wake);
+window.addEventListener("focus",wake);
 render();
 if(!demo) {
-  app=new App({name:"zcode-context",version:"0.3.2"},{availableDisplayModes:["fullscreen"]});
+  app=new App({name:"zcode-context",version:"0.3.4"},{availableDisplayModes:["fullscreen"]});
   const applyHostContext=()=>{
     const context=app.getHostContext();t=translator(context?.locale??"zh-CN");
     document.documentElement.lang=context?.locale??"zh-CN";document.documentElement.dataset.theme=context?.theme??"light";
@@ -280,7 +292,7 @@ if(!demo) {
     render();
   };
   app.onhostcontextchanged=applyHostContext;
-  app.onteardown=async()=>{persist();clearInterval(timer);clearTimeout(searchTimer);clearTimeout(bodyTimer);};
+  app.onteardown=async()=>{stopped=true;persist();clearTimeout(timer);clearTimeout(searchTimer);clearTimeout(bodyTimer);};
   try{await app.connect();applyHostContext();await refresh();}catch(error){showError(error);}
 }else await refresh();
-timer=setInterval(()=>{if(!document.hidden)refresh();},3000);
+schedule();
