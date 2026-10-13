@@ -190,6 +190,19 @@ export class ContextDataService {
     const stampOf=key=>{const e=key.startsWith("message:")?entries?.[Number(key.slice(8))]:null;return !e?{}:e.entered?{entered:e.entered}:{enteredBefore:true,tracedTo:e.before};};
     const decorate=(x,own=true)=>x.role==="schema"?{...x,callCount:callCount(x)}:own?{...x,...stampOf(x.key)}:x;
     const order=(list,own)=>arrange(list.map(x=>decorate(x,own)),args.sort,args.schemaSort);
+    // Partial (tail) records cannot be diffed, but entry stamps still tell what entered after the baseline step.
+    // Messages whose trace stops after the baseline are counted as unknown rather than guessed.
+    let arrivals=null;
+    if(!diff.available&&entries&&selected.summary.step!=null) {
+      const base=args.baselineKey?all.find(x=>x.key===args.baselineKey):this.previous(all,selected);
+      const since=base&&base.path===selected.path&&base.segment===selected.segment&&base.summary.step!=null&&all.indexOf(base)<all.indexOf(selected)?base.summary.step:null;
+      if(since!=null) {
+        const stamped=elements.filter(x=>x.key.startsWith("message:")).map(x=>({item:x,entry:entries[Number(x.key.slice(8))]})).filter(x=>x.entry);
+        const list=stamped.filter(x=>x.entry.entered&&x.entry.entered.step>since).map(x=>elementSummary(x.item));
+        arrivals={available:true,sinceStep:since,count:list.length,keys:list.map(x=>x.key),groups:groupByRole(order(list,true)),
+          unknownCount:stamped.filter(x=>!x.entry.entered&&x.entry.before&&x.entry.before.step>since).length};
+      }
+    }
     if(diff.available)diff={...diff,addedCount:diff.added.length,removedCount:diff.removed.length,changedCount:diff.changed.length,
       addedKeys:diff.added.slice(0,2000).map(x=>x.key),changedPairs:diff.changed.map(x=>({before:x.before.key,after:x.after.key})),
       addedGroups:groupByRole(order(diff.added,true)),removedGroups:groupByRole(order(diff.removed,false)),
@@ -233,7 +246,7 @@ export class ContextDataService {
       bodyDiff={text:unified.slice(offset,offset+12000),offset,totalChars:unified.length,hasMore:offset+12000<unified.length,
         beforeKey:previous.key,afterKey:selected.key,method:"common_prefix_suffix_block"};
     }
-    return {sessionId,revision:state.overview.revision,summary:selected.summary,composition:selected.summary.composition,diff,
+    return {sessionId,revision:state.overview.revision,summary:selected.summary,composition:selected.summary.composition,diff,arrivals,
       baselineOptions:all.filter(x=>x.path===selected.path&&x.record.querySource===record.querySource&&all.indexOf(x)<all.indexOf(selected)).slice(-60).map(x=>({key:x.key,startedAt:x.record.startedAt,turnId:x.record.turnId,complete:x.record.messages.complete})),
       elementCount:elements.length,filteredCount:filtered.length,page,searchScope:args.searchScope==="loaded"&&search?"all_loaded_snapshots":"all_elements_in_selected_loaded_snapshot",loadedSnapshotCount:all.length,
       largest:filtered.length?filtered.reduce((largest,x)=>x.chars>largest.chars?x:largest):null,
