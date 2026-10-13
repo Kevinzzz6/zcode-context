@@ -5,16 +5,17 @@ import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {ContextDataService} from "../src/data/service.mjs";
 import {expandCollection,foldRecord,diffRecords,inputElements,toolEvidence,attemptUsage,textDifference,elementSummary,trajectorySummary} from "../src/domain/trajectory.mjs";
-import {modelRecord,usageDatabase} from "./fixtures.mjs";
-async function fixture(records,callback,events=[],tools=null) {
+import {modelRecord,usageDatabase,conversationStore} from "./fixtures.mjs";
+async function fixture(records,callback,events=[],tools=null,conversation=null) {
   const root=await mkdtemp(join(tmpdir(),"context-sidebar-"));
   try {
     await mkdir(join(root,"rollout"));await mkdir(join(root,"log"));
     await writeFile(join(root,"rollout","model-io-sess_A.jsonl"),records.map(x=>typeof x==="string"?x:JSON.stringify(x)).join("\n")+"\n");
     const date=new Date(),stamp=date.getFullYear()+"-"+String(date.getMonth()+1).padStart(2,"0")+"-"+String(date.getDate()).padStart(2,"0");
     await writeFile(join(root,"log","zcode-"+stamp+".jsonl"),events.map(JSON.stringify).join("\n")+"\n");
-    const db=tools?usageDatabase(root):null;
+    const db=tools||conversation?usageDatabase(root):null;
     for(const [i,[sessionId,name,status]] of (tools??[]).entries())db.tool(sessionId,"t"+i,name,status);
+    if(conversation)conversation(conversationStore(db.db));
     const service=new ContextDataService({db:db?db.path:join(root,"absent.sqlite"),trajectoryDirs:[join(root,"rollout")],logDir:join(root,"log")});
     try{await callback(service,await service.overview("sess_A"));}finally{db?.db.close();}
   }finally{await rm(root,{recursive:true,force:true});}
@@ -262,3 +263,68 @@ test("partial records list what entered after the baseline step from entry stamp
     assert.equal(since.arrivals.sinceStep,1);assert.deepEqual([...since.arrivals.keys].sort(),["message:0","message:1","message:2"]);
     assert.equal((await service.request("sess_A",{key:keys[0]})).arrivals,null);
   }));
+test("a compaction points at the continuation summary of the first agent request after it",()=>{
+  const now=Date.now(),at=ms=>new Date(now+ms).toISOString(),span={sessionId:"sess_A",turnId:"turn_c",spanId:"span_c"};
+  return fixture([
+    modelRecord("sess_A","before",[{role:"user",content:"long history"}],{startedAt:at(-5000)}),
+    modelRecord("sess_A","compact",[{role:"user",content:"summarize"}],{startedAt:at(-3500),querySource:"compact"}),
+    modelRecord("sess_A","after",[{role:"system",content:"rules"},{role:"user",content:"This session is being continued from a previous conversation that ran out of context. Summary…"}],{startedAt:at(-1000)})],
+    async(service,o)=>{
+      const event=o.events.find(e=>e.kind==="compaction");
+      assert.equal(event.navigation.summaryStepKey,o.trajectories[2].key);assert.equal(event.navigation.summaryKey,"message:1");
+    },[{...span,event:"compact.started",timestamp:at(-4000)},{...span,event:"compact.completed",timestamp:at(-3000),durationMs:1000}]);
+});
+test("the element being opened stays in its category's first page",()=>fixture([
+  modelRecord("sess_A","many",Array.from({length:60},(_,i)=>({role:"tool",content:i===59?"tiny":"bigger tool output "+i})))],async(service,o)=>{
+    const key=o.trajectories[0].key,plain=await service.request("sess_A",{key});
+    assert.ok(!plain.groups.tool.items.some(x=>x.key==="message:59"));
+    const d=await service.request("sess_A",{key,focusKey:"message:59"});assert.ok(d.groups.tool.items.some(x=>x.key==="message:59"));
+  }));
+test("recorded injections are matched to the item of the first agent request that carried them",()=>{
+  const now=Date.now(),at=ms=>new Date(now+ms).toISOString(),reminder="The TodoWrite tool hasn't been used recently.";
+  return fixture([
+    modelRecord("sess_A","before",[{role:"user",content:"start"}],{startedAt:at(-9000)}),
+    modelRecord("sess_A","carrier",[{role:"user",content:"start"},{role:"system",content:reminder},{role:"tool",toolCallId:"call_skill",toolName:"Skill",content:"<skill_content name=\"demo\">"}],{startedAt:at(-5000)}),
+    modelRecord("sess_A","later",[{role:"user",content:"start"},{role:"system",content:reminder},{role:"system",content:reminder}],{startedAt:at(-1000)})],
+    async(service,o)=>{
+      const [todo,skill]=o.events.filter(e=>e.kind==="inject");
+      assert.equal(todo.evidence,"recorded");assert.equal(todo.form,"todo_reminder");assert.equal(todo.stepKey,o.trajectories[1].key);assert.equal(todo.elementKey,"message:1");
+      assert.ok(!("needle" in todo));assert.equal(todo.text,reminder);
+      assert.equal(skill.form,"skill");assert.equal(skill.name,"demo-skill");assert.equal(skill.stepKey,o.trajectories[1].key);assert.equal(skill.elementKey,"message:2");
+      const late=o.events.find(e=>e.id==="m:r2");assert.equal(late.stepKey,o.trajectories[2].key);assert.equal(late.elementKey,"message:2");
+      assert.ok(!o.events.some(e=>e.kind==="model"&&e.evidence==="logged"));assert.equal(o.events.find(e=>e.kind==="model").to,"p/b");
+    },[{sessionId:"sess_A",event:"session.model.updated",timestamp:at(-8000),context:{model:"p/b",previousModel:"p/a"}}],null,store=>{
+      store.prompt("sess_A","u1",now-9500,"start");
+      store.reminder("sess_A","r1",now-7000,reminder);
+      store.reply("sess_A","a1",now-6500,"loading a skill",[["Skill",{skill:"demo-skill"},"<skill_content name=\"demo\">","call_skill"]]);
+      store.modelChange("sess_A","mc",now-8000,"p/a","p/b");
+      store.reminder("sess_A","r2",now-2000,reminder);
+    });
+});
+test("an injection whose request is not readable keeps its text and no step",()=>{
+  const now=Date.now(),at=ms=>new Date(now+ms).toISOString();
+  return fixture([modelRecord("sess_A","only",[{role:"user",content:"x"}],{startedAt:at(-1000)})],async(service,o)=>{
+    const e=o.events.find(x=>x.kind==="inject");assert.equal(e.stepKey,null);assert.equal(e.elementKey,null);assert.equal(e.text,"notice from before the records");
+  },[],null,store=>store.reminder("sess_A","r0",now-60000,"notice from before the records","background_notification","background_task"));
+});
+test("a recorded compaction carries exact figures, replaces its log records and lists what it summarized",()=>{
+  const now=Date.now(),at=ms=>new Date(now+ms).toISOString(),span={sessionId:"sess_A",turnId:"turn_c",spanId:"span_c"};
+  return fixture([
+    modelRecord("sess_A","before",[{role:"user",content:"history"}],{startedAt:at(-9000)}),
+    modelRecord("sess_A","after",[{role:"user",content:"This session is being continued from a previous conversation. Summary body"}],{startedAt:at(-1000)})],
+    async(service,o)=>{
+      const compactions=o.events.filter(e=>e.kind==="compaction");
+      assert.equal(compactions.length,1);const c=compactions[0];
+      assert.equal(c.evidence,"recorded");assert.equal(c.event,"compact.auto.completed");assert.equal(c.preTokens,90000);assert.equal(c.postTokens,11000);
+      assert.equal(c.tokensSavedEstimate,79000);assert.equal(c.summarizedCount,3);assert.equal(c.durationMs,40);assert.equal(c.navigation.summaryKey,"message:0");
+      const {eventDetail:d}=await service.eventDetail("sess_A",c.id);
+      assert.equal(d.messageCount,3);assert.deepEqual(d.items.map(x=>x.role+":"+(x.chip??"")+":"+x.title),
+        ["user::fix the cache","assistant::Reading it.","tool:Read:src/cache.ts","inject:todo_reminder:keep a todo list"]);
+      await assert.rejects(service.eventDetail("sess_A","c:missing"),{code:"event_missing"});
+    },[{...span,event:"compact.auto.started",timestamp:at(-6000)},{...span,event:"compact.auto.completed",timestamp:at(-5950)}],null,store=>{
+      store.prompt("sess_A","u1",now-9500,"fix the cache");
+      store.reply("sess_A","a1",now-9200,"Reading it.",[["Read",{file_path:"src/cache.ts"},"x".repeat(400)]]);
+      store.reminder("sess_A","r1",now-8000,"keep a todo list");
+      store.compaction("sess_A","one",now-6000,{summaryId:"sum1",lastSummarizedId:"r1"});
+    });
+});

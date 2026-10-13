@@ -1,12 +1,14 @@
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { readUsage, readToolCalls } from "./sqlite.mjs";
+import { readConversation, readSummarizedMessages } from "./conversation.mjs";
 import { JsonlTail } from "./jsonl.mjs";
 import { sanitizeSessionSegment, ContextError, isAgentSource } from "../domain/session.mjs";
-import { foldRecord, inputElements, composition, diffRecords, trajectorySummary, canonical, contentKey, elementSummary, toolEvidence, textDifference } from "../domain/trajectory.mjs";
-import { contextEvent, mergeEvents } from "../domain/events.mjs";
+import { foldRecord, inputElements, composition, diffRecords, trajectorySummary, canonical, contentKey, elementSummary, toolEvidence, textDifference, isContinuation } from "../domain/trajectory.mjs";
+import { contextEvent, mergeEvents, conversationEvents, combineEvents, summarizedItems } from "../domain/events.mjs";
 const digest = value => createHash("sha256").update(value).digest("hex").slice(0,24);
 const MAX_CACHE_CHARS = 32 * 1024 * 1024;
+const TRUNCATED = ["history_window", "display_window", "history_reset", "source_rotated"];
 // Each category returns its own bounded first page, so a grouped view never depends on a global page.
 function groupByRole(items, limit = 40) {
   const groups = {};
@@ -27,13 +29,19 @@ function arrange(list, sort, schemaSort) {
   slots.forEach((slot, i) => { result[slot] = schemas[i]; });
   return result;
 }
+// The element being opened stays listed even when it falls outside its category's first page.
+function focused(groups,ordered,key) {
+  const item=key?ordered.find(x=>x.key===key):null,group=item&&groups[item.role];
+  if(group&&!group.items.some(x=>x.key===key))group.items.push(item);
+  return groups;
+}
 export class ContextDataService {
   constructor(paths) { this.paths = paths; this.sessions = new Map(); }
   state(sessionId) {
     let state = this.sessions.get(sessionId);
     if (!state) {
       if (this.sessions.size >= 8) this.sessions.delete(this.sessions.keys().next().value);
-      state = { ledgers: new Map(), events: new Map(), logTails: new Map(), overview: null };
+      state = { ledgers: new Map(), events: new Map(), logTails: new Map(), overview: null, conversation: null, recorded: [], targets: new Map() };
       this.sessions.set(sessionId, state);
     }
     return state;
@@ -80,6 +88,10 @@ export class ContextDataService {
     }
     const records = this.records(state);
     const usage = readUsage(this.paths.db, sessionId); state.toolCalls = readToolCalls(this.paths.db, sessionId);
+    // A busy database keeps the last events; any other failure falls back to the logs alone.
+    const conversation = readConversation(this.paths.db, sessionId, state.conversation);
+    if (conversation.available) { if (conversation.changed || !state.conversation) state.recorded = conversationEvents(conversation.cache); state.conversation = conversation.cache; }
+    else if (conversation.code !== "database_busy") { state.conversation = null; state.recorded = []; }
     if (records.length && coverage.every(item => !item.available)) coverage.push({ coverage: ["source_rotated"], scanning: false });
     const cutoff = Date.now() - 3 * 86400000;
     for (const [key,event] of state.events) if (event.timestamp < cutoff) state.events.delete(key);
@@ -90,7 +102,8 @@ export class ContextDataService {
       trajectory: { available: records.length > 0, scanning: coverage.some(item => item.scanning),
         pendingLine: coverage.some(item => item.pendingLine), coverage: [...new Set(coverage.flatMap(item => item.coverage))],
         errorCode: records.length ? null : coverage.every(item => !item.available) ? "trajectory_missing" : "waiting_for_records" },
-      events: mergeEvents(state.events.values()).slice(-30).map(event=>this.eventNavigation(records,event)), eventWindowDays: 3 };
+      events: this.contextEvents(state, records, !coverage.some(item => (item.coverage ?? []).some(code => TRUNCATED.includes(code)))), eventWindowDays: 3,
+      conversation: { available: conversation.available || Boolean(state.conversation), code: conversation.available ? null : conversation.code } };
     overview.history = {loadedCount:records.length, loadedKeys:records.map(x=>x.key), page:0, hasOlder:records.length>60, scope:"bounded_loaded_window"};
     overview.revision = digest(JSON.stringify(overview)); state.overview = overview; return overview;
   }
@@ -159,15 +172,55 @@ export class ContextDataService {
     }
     return item.timeline;
   }
+  // Recorded events cover the whole session; the list keeps the newest injections and the newest of everything else.
+  contextEvents(state,records,complete) {
+    const all=combineEvents(state.recorded,mergeEvents(state.events.values()));
+    const kept=[...all.filter(e=>e.kind==="inject").slice(-150),...all.filter(e=>e.kind!=="inject").slice(-60)].sort((a,b)=>a.timestamp-b.timestamp);
+    while(state.targets.size>400)state.targets.delete(state.targets.keys().next().value);
+    return kept.map(e=>e.kind==="inject"?this.locate(state,records,e,complete):this.eventNavigation(records,e)).map(({needle,...e})=>e);
+  }
+  // An injected message is first sent with the next agent request; it is found there by tool-call id or by its exact text,
+  // the newest occurrence, since reminders repeat. When that request is not readable, or does not contain it, the event keeps no step.
+  locate(state,records,event,complete) {
+    const agents=records.filter(x=>x.summary.step!=null),first=agents[0]?.key??null,memo=state.targets.get(event.id);
+    if(memo&&memo.first===first)return {...event,...memo.target};
+    const index=agents.findIndex(x=>x.record.startedAt>=event.timestamp);
+    if(index<0)return {...event,stepKey:null,elementKey:null,elementRole:null};
+    let target={stepKey:null,elementKey:null,elementRole:null};
+    if(index>0||complete) {
+      const record=agents[index],elements=inputElements(record.record);
+      const element=event.toolCallId?elements.find(x=>x.toolCallId===event.toolCallId)
+        :event.needle?elements.findLast(x=>x.key.startsWith("message:")&&x.readable.includes(event.needle)):null;
+      if(element)target={stepKey:record.key,elementKey:element.key,elementRole:element.role};
+    }
+    state.targets.set(event.id,{first,target});
+    return {...event,...target};
+  }
+  // The messages a recorded compaction summarized: after the previous compaction's summary, through its last summarized message.
+  async eventDetail(sessionId,id) {
+    const state=this.state(sessionId);if(!state.overview)await this.refresh(sessionId);
+    const compactions=state.recorded.filter(e=>e.kind==="compaction"),event=compactions.find(e=>e.id===id);
+    if(!event||event.lastSummarizedSequence==null)throw new ContextError("event_missing","Compaction details are unavailable.");
+    const previous=compactions.filter(e=>e.timestamp<event.timestamp&&e.summarySequence!=null).at(-1);
+    const read=readSummarizedMessages(this.paths.db,sessionId,previous?.summarySequence??-1,event.lastSummarizedSequence);
+    if(!read.available)throw new ContextError(read.code,"Compaction details are unavailable.");
+    const items=summarizedItems(read.messages);
+    return {sessionId,eventDetail:{id,messageCount:read.total,listedMessages:read.messages.length,items:items.slice(0,300),itemCount:items.length,
+      tokens:items.reduce((n,x)=>n+(x.tokens??0),0)}};
+  }
   eventNavigation(records,event) {
     // A turn ID supports a turn range, not an exact request association. Time-only navigation is labelled accordingly.
     const matching=event.turnId?records.filter(x=>x.record.turnId===event.turnId):[];
     // Before is the last request sent before the operation began; after is the first one sent once it ended.
     const before=records.findLast(x=>x.record.startedAt<=event.timestamp);
     const after=records.find(x=>x.record.startedAt>(event.endedAt??event.timestamp));
+    // The first agent request after a compaction carries its summary; found by ZCode's fixed preface, not by similarity.
+    const agent=event.kind==="compaction"?records.find(x=>x.summary.step!=null&&x.record.startedAt>(event.endedAt??event.timestamp)):null;
+    if(agent)agent.continuation??=inputElements(agent.record).find(isContinuation)?.key??null;
     return {...event,navigation:{evidence:matching.length?"turn_range":"time_range",
       turnKeys:matching.slice(0,12).map(x=>x.key),beforeKey:before?.key??null,afterKey:after?.key??null,
-      beforeTime:before?.record.startedAt??null,afterTime:after?.record.startedAt??null}};
+      beforeTime:before?.record.startedAt??null,afterTime:after?.record.startedAt??null,
+      summaryStepKey:agent?.key??null,summaryKey:agent?.continuation??null}};
   }
   async overview(sessionId, revision, historyPage=0) {
     const overview=await this.refresh(sessionId);
@@ -251,7 +304,7 @@ export class ContextDataService {
       baselineOptions:all.filter(x=>x.path===selected.path&&x.record.querySource===record.querySource&&all.indexOf(x)<all.indexOf(selected)).slice(-60).map(x=>({key:x.key,startedAt:x.record.startedAt,turnId:x.record.turnId,complete:x.record.messages.complete})),
       elementCount:elements.length,filteredCount:filtered.length,page,searchScope:args.searchScope==="loaded"&&search?"all_loaded_snapshots":"all_elements_in_selected_loaded_snapshot",loadedSnapshotCount:all.length,
       largest:filtered.length?filtered.reduce((largest,x)=>x.chars>largest.chars?x:largest):null,
-      groups:loadedSearch?null:groupByRole(ordered),schemaCalls,
+      groups:loadedSearch?null:focused(groupByRole(ordered),ordered,args.focusKey),schemaCalls,
       elements:ordered.slice(page*pageSize,(page+1)*pageSize),content,bodyDiff};
   }
 }

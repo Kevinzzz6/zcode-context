@@ -4,7 +4,9 @@ import { mkdtemp, mkdir, writeFile, appendFile, rm } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { usageDatabase, modelRecord } from "./fixtures.mjs";
+import { usageDatabase, modelRecord, conversationStore } from "./fixtures.mjs";
+import { readConversation } from "../src/data/conversation.mjs";
+import { conversationEvents } from "../src/domain/events.mjs";
 import { readUsage } from "../src/data/sqlite.mjs";
 import { JsonlTail } from "../src/data/jsonl.mjs";
 import { ContextDataService } from "../src/data/service.mjs";
@@ -153,3 +155,22 @@ test("removed diff elements resolve through the exact previous snapshot handle",
   assert.match(previous.content.text,/removed text/);assert.doesNotMatch(previous.content.text,/added text/);
   await assert.rejects(service.request("sess_B",{key:selected.diff.previousKey}),{code:"request_expired"});
 }));
+test("the conversation store is read incrementally, reloads after a deletion and fails closed on another schema",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"zcode-context-conversation-"));
+  try {
+    const fixture=usageDatabase(root),store=conversationStore(fixture.db),now=Date.now();
+    store.prompt("sess_A","u1",now-3000,"hello");store.reminder("sess_A","r1",now-2000,"reminder one");store.reminder("sess_B","rb",now-2000,"other session");
+    const first=readConversation(fixture.path,"sess_A");
+    assert.equal(first.available,true);assert.deepEqual(conversationEvents(first.cache).map(e=>e.id),["m:r1"]);
+    assert.equal(readConversation(fixture.path,"sess_A",first.cache).changed,false);
+    store.reminder("sess_A","r2",now-1000,"reminder two");
+    const second=readConversation(fixture.path,"sess_A",first.cache);
+    assert.equal(second.changed,true);assert.deepEqual(conversationEvents(second.cache).map(e=>e.id),["m:r1","m:r2"]);
+    store.remove("r1");
+    const third=readConversation(fixture.path,"sess_A",second.cache);
+    assert.deepEqual(conversationEvents(third.cache).map(e=>e.id),["m:r2"]);
+    fixture.db.exec("DROP TABLE part");
+    assert.equal(readConversation(fixture.path,"sess_A").code,"schema_unsupported");
+    fixture.db.close();
+  } finally { await rm(root,{recursive:true,force:true}); }
+});

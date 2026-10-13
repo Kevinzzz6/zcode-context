@@ -107,6 +107,9 @@ export function callIndex(record) {
   return index;
 }
 const REMINDER = /^\s*<system-reminder>\s*/;
+// ZCode opens the first request after a compaction with the summary under this fixed preface.
+const CONTINUATION = /^\s*This session is being continued from a previous conversation/;
+export const isContinuation = item => item.role === "user" && CONTINUATION.test(userText(item.readable));
 // Hosts prepend tagged context blocks (for example <in-app-browser-context>) to the user's own text.
 const INJECTED = /^\s*<([a-z][\w-]*)(\s[^>]*)?>[\s\S]*?<\/\1>\s*/i;
 export function userText(text) {
