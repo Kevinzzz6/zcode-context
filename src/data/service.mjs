@@ -4,7 +4,7 @@ import { readUsage, readToolCalls } from "./sqlite.mjs";
 import { JsonlTail } from "./jsonl.mjs";
 import { sanitizeSessionSegment, ContextError, isAgentSource } from "../domain/session.mjs";
 import { foldRecord, inputElements, composition, diffRecords, trajectorySummary, canonical, contentKey, elementSummary, toolEvidence, textDifference } from "../domain/trajectory.mjs";
-import { compactEvent } from "../domain/events.mjs";
+import { contextEvent, mergeEvents } from "../domain/events.mjs";
 const digest = value => createHash("sha256").update(value).digest("hex").slice(0,24);
 const MAX_CACHE_CHARS = 32 * 1024 * 1024;
 // Each category returns its own bounded first page, so a grouped view never depends on a global page.
@@ -73,9 +73,9 @@ export class ContextDataService {
       let tail = state.logTails.get(path);
       if (!tail) { tail = new JsonlTail(); state.logTails.set(path, tail); }
       await tail.scan(path, raw => {
-        const event = compactEvent(raw, sessionId);
-        if (event) state.events.set(event.event + ":" + event.timestamp + ":" + event.turnId, event);
-        while (state.events.size > 100) state.events.delete(state.events.keys().next().value);
+        const event = contextEvent(raw, sessionId);
+        if (event) state.events.set(event.event + ":" + event.timestamp + ":" + event.turnId + ":" + event.spanId, event);
+        while (state.events.size > 200) state.events.delete(state.events.keys().next().value);
       });
     }
     const records = this.records(state);
@@ -90,7 +90,7 @@ export class ContextDataService {
       trajectory: { available: records.length > 0, scanning: coverage.some(item => item.scanning),
         pendingLine: coverage.some(item => item.pendingLine), coverage: [...new Set(coverage.flatMap(item => item.coverage))],
         errorCode: records.length ? null : coverage.every(item => !item.available) ? "trajectory_missing" : "waiting_for_records" },
-      events: [...state.events.values()].sort((a,b) => a.timestamp-b.timestamp).slice(-30).map(event=>this.eventNavigation(records,event)), eventWindowDays: 3 };
+      events: mergeEvents(state.events.values()).slice(-30).map(event=>this.eventNavigation(records,event)), eventWindowDays: 3 };
     overview.history = {loadedCount:records.length, loadedKeys:records.map(x=>x.key), page:0, hasOlder:records.length>60, scope:"bounded_loaded_window"};
     overview.revision = digest(JSON.stringify(overview)); state.overview = overview; return overview;
   }
@@ -162,8 +162,9 @@ export class ContextDataService {
   eventNavigation(records,event) {
     // A turn ID supports a turn range, not an exact request association. Time-only navigation is labelled accordingly.
     const matching=event.turnId?records.filter(x=>x.record.turnId===event.turnId):[];
+    // Before is the last request sent before the operation began; after is the first one sent once it ended.
     const before=records.findLast(x=>x.record.startedAt<=event.timestamp);
-    const after=records.find(x=>x.record.startedAt>event.timestamp);
+    const after=records.find(x=>x.record.startedAt>(event.endedAt??event.timestamp));
     return {...event,navigation:{evidence:matching.length?"turn_range":"time_range",
       turnKeys:matching.slice(0,12).map(x=>x.key),beforeKey:before?.key??null,afterKey:after?.key??null,
       beforeTime:before?.record.startedAt??null,afterTime:after?.record.startedAt??null}};

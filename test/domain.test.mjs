@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import {readSessionContext,sanitizeSessionSegment} from "../src/domain/session.mjs";
 import {normalizeFact,summarizeFacts} from "../src/domain/usage.mjs";
 import {foldRecord,diffRecords,composition,estimateTokens} from "../src/domain/trajectory.mjs";
-import {compactEvent} from "../src/domain/events.mjs";
+import {contextEvent,mergeEvents} from "../src/domain/events.mjs";
 import {modelRecord} from "./fixtures.mjs";
 test("only the host namespace binds a session; transport IDs and arguments cannot bind it",()=>{
   assert.throws(()=>readSessionContext({session_id:"sess_wrong"}),{code:"binding_unavailable"});
@@ -57,8 +57,25 @@ test("composition clearly reports estimates and schema coverage",()=>{
 });
 test("compaction requires an explicit matching-session event; a size drop is not a cause",()=>{
   const record={sessionId:"sess_A",event:"compact.micro.applied",timestamp:"2026-10-12T12:00:00Z",context:{trigger:"token_pressure",tokensSaved:300}};
-  assert.equal(compactEvent(record,"sess_B"),null);assert.equal(compactEvent(record,"sess_A").evidence,"logged");
-  assert.equal(compactEvent({...record,event:"context_usage_snapshot"},"sess_A"),null);
+  assert.equal(contextEvent(record,"sess_B"),null);assert.equal(contextEvent(record,"sess_A").evidence,"logged");
+  assert.equal(contextEvent({...record,event:"context_usage_snapshot"},"sess_A"),null);
+});
+test("one compaction's started and completed records merge into one event by span",()=>{
+  const log=(event,timestamp,extra={})=>contextEvent({sessionId:"sess_A",event,timestamp,turnId:"turn_1",spanId:"span_1",context:{},...extra},"sess_A");
+  const [event,...rest]=mergeEvents([log("compact.completed","2026-10-13T09:08:42.556Z",{durationMs:71691}),log("compact.started","2026-10-13T09:07:30.866Z")]);
+  assert.equal(rest.length,0);assert.equal(event.status,"completed");assert.equal(event.event,"compact.completed");assert.equal(event.durationMs,71691);
+  assert.equal(event.timestamp,Date.parse("2026-10-13T09:07:30.866Z"));assert.equal(event.endedAt,Date.parse("2026-10-13T09:08:42.556Z"));
+  const [running]=mergeEvents([log("compact.auto.started","2026-10-13T09:07:30.866Z")]);assert.equal(running.status,"started");assert.equal(running.endedAt,null);
+  const other=log("compact.started","2026-10-13T10:00:00Z",{spanId:"span_2"});assert.equal(mergeEvents([log("compact.started","2026-10-13T09:07:30Z"),other]).length,2);
+});
+test("model switches, rewinds and tool registrations are context events; a first model selection is not",()=>{
+  const log=(event,context,extra={})=>contextEvent({sessionId:"sess_A",event,timestamp:"2026-10-13T09:00:00Z",spanId:"span_1",context,...extra},"sess_A");
+  const model=log("session.model.updated",{model:"p/b",previousModel:"p/a"});assert.equal(model.kind,"model");assert.equal(model.from,"p/a");assert.equal(model.to,"p/b");
+  assert.equal(log("session.model.updated",{model:"p/b"}),null);assert.equal(log("session.model.updated",{model:"p/b",previousModel:"p/b"}),null);
+  const merged=mergeEvents([log("rewind.conversation.completed",{keptMessageCount:97}),log("conversation.command.edit_user_query.completed",{},{timestamp:"2026-10-13T09:00:00.120Z"})]);
+  assert.equal(merged.length,1);assert.equal(merged[0].kind,"rewind");assert.equal(merged[0].edited,true);assert.equal(merged[0].keptMessageCount,97);
+  const tools=log("mcp.tools.registered",{registeredToolCount:3,serverCount:1});assert.equal(tools.kind,"tools");assert.equal(tools.toolCount,3);
+  assert.equal(log("session.reasoning_effort.updated",{thoughtLevel:"max"}),null);
 });
 test("filename normalization follows the official convention",()=>assert.equal(sanitizeSessionSegment("sess_a.b"),"sess_a-b"));
 
