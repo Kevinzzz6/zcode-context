@@ -39,7 +39,7 @@ function runJob(method, sessionId, args, signal) {
   });
 }
 export function createContextServer() {
-  const server = new McpServer({name:"zcode-context",version:"0.2.0"});
+  const server = new McpServer({name:"zcode-context",version:"0.3.0"});
   server.registerResource("context_panel", HTML_URI, { mimeType:"text/html;profile=mcp-app",
     _meta:{ui:{csp:{connectDomains:[],resourceDomains:[]}}} },
     async () => ({contents:[{uri:HTML_URI,mimeType:"text/html;profile=mcp-app",text:await readFile(new URL("./context.html",import.meta.url),"utf8")}]})

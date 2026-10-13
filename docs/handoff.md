@@ -1,6 +1,18 @@
 # ZCode Context 交接文档
 
-更新时间：2026-10-12，Asia/Shanghai。当前版本：0.2.0。
+更新时间：2026-10-13，Asia/Shanghai。当前版本：0.3.0。
+
+## 0.3.0 界面改版
+
+侧栏按 dsh-context 的卡片结构重做：请求概览、带 Y 轴和回合带的趋势、行内展开的上下文浏览器（含“仅变化”模式）、压缩事件卡片、底部说明收纳。
+修掉的逻辑问题：辅助请求混入趋势导致 Delta 柱与相邻柱无关；R 编号随窗口滑动变化；全局 40 条分页导致小类别展开为空；token 与字符混用；
+每 3 秒整页重绘两次（会关闭下拉框、清掉选中文字）；打开任意条目会永久取消跟随；规范 `toolCalls` 不能配对参数。
+服务端只做了增量字段（步序号/回合号、按类分组、按类增删、条目标题/芯片、规范 toolCalls、`isError:false` 视为成功），既有口径和测试不变。
+UI 开发用 `npm run fixture:ui`（端口 4175）；`npm run fixture:browser` + `npm run test:browser` 为 18 组交互回归。
+0.3.0 尚未在真实 Electron 客户端中重新验收；下面的桌面结论仍针对 0.2.0。`_sandbox/context-desktop-acceptance/guest-v02-check.mjs` 使用的
+`#back`、`.element-row` 详情页流程已改为行内展开，复验时需要按新选择器调整。
+
+以下为 0.2.0 时的记录。
 
 正式源码为 `D:\code\zai\zcode-context`（WSL `/mnt/d/code/zai/zcode-context`）。
 `/tmp/zcode-context` 是已安装依赖的构建缓存，两者源码已同步；不可将缓存当成唯一源码。
@@ -40,6 +52,7 @@ SQLite 与 traj 不强行关联 request ID。估算与实际 usage 分开，缺�
 | `ui/state.mjs` | 按会话保存视图状态；不授权 |
 | `ui/components.mjs` / `i18n.mjs` | 侧栏组件、纯文本安全渲染、固定配色与双语 |
 | `ui/app.mjs` | SDK 生命周期、共享选择、异步结果隔离与视图协调 |
+| `ui/demo.mjs` / `scripts/ui-fixture.mjs` | `npm run preview` 的演示数据；规范格式的多轮会话 UI 开发夹具 |
 | `scripts/browser-fixture.mjs` / `browser-smoke.mjs` | SDK + 真实 stdio/SQLite 的合成双会话交互验证 |
 | `scripts/package.py` | 本地 ZIP、逐文件核对、CRC 与 SHA-256 |
 

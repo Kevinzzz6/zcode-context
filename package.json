@@ -1,6 +1,6 @@
 {
   "name": "zcode-context",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "license": "MIT",
@@ -15,7 +15,8 @@
     "preview": "node scripts/preview.mjs",
     "fixture:browser": "node scripts/browser-fixture.mjs",
     "test:browser": "node scripts/browser-smoke.mjs",
-    "verify": "node scripts/verify.mjs"
+    "verify": "node scripts/verify.mjs",
+    "fixture:ui": "node scripts/ui-fixture.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.29.0",

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.0 — 2026-10-13
+
+- Redesign the sidebar after dsh-context's card layout: request summary with composition bar, legend and User / Added / Response brief; trend with a Y axis, turn band and ✂ compaction markers; a context browser with inline expansion; a compaction events card; collapsed explanations.
+- Number agent requests as stable steps and turns. Title and compaction requests stay selectable but no longer distort the trend or its Delta bars.
+- Show every size in estimated tokens with compact formatting; deltas no longer mix characters and tokens.
+- Give each category its own first page and "show more", replacing a global 40-row page that hid most items of small categories.
+- Merge the Changes tab into the browser as a "Changes" mode with per-category added and removed items, struck-through removals from the baseline, and the verified body Diff inside the expanded item.
+- Pair tool results with canonical ZCode `toolCalls` arguments, label elements by tool and key argument (for example `Read · src/cache.ts`), show tool cards with an argument table and status, and render schemas as description plus parameter table.
+- Stop rebuilding the page on every poll: unchanged revisions do not render, and background updates wait while a select is open or text is selected. Following pauses while an element is open and shows how many newer requests arrived.
+- Fall back to the latest request when a restored selection has left the read window.
+- Add `npm run fixture:ui`, a synthetic multi-turn session in the canonical shape for UI work; update the browser smoke test to 18 interaction groups.
+
 ## 0.2.0 — 2026-10-12
 
 - Make trajectory snapshot selection shared across the diagnostic sidebar; pin history and retain view state on refresh, return and guest reconstruction.

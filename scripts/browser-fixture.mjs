@@ -20,7 +20,7 @@ async function append(sessionId, large = false, bulk = false, gap = false) {
   await appendFile(join(root,"rollout","model-io-"+sessionId+".jsonl"),(gap?"INVALID ROW\n":"")+JSON.stringify(record)+"\n");
 }
 await append("sess_A");await append("sess_A");await append("sess_B");
-const client=new Client({name:"context-browser-fixture",version:"0.2.0"});
+const client=new Client({name:"context-browser-fixture",version:"0.3.0"});
 await client.connect(new StdioClientTransport({command:process.execPath,args:[fileURLToPath(new URL("../dist/server.mjs",import.meta.url))],
   env:{...process.env,ZCODE_CONTEXT_DATA_ROOT:root,ZCODE_CONTEXT_DB_PATH:fixture.path},stderr:"pipe"}));
 const panel=await readFile(new URL("../dist/context.html",import.meta.url));
