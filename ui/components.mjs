@@ -342,13 +342,14 @@ function category(ctx,role,bucket,change,total,open,searching,matched) {
   const section=node("section",{class:"category"+(expanded?" open":"")+(dim?" dim":""),dataset:{role}},head);
   if(!expanded)return section;
   const body=node("div",{class:"cat-body"});
+  if(role==="schema")body.append(schemaTools(ctx,changes));
   if(changes) {
     const query=view.search.toLowerCase(),keep=x=>!query||[x.title,x.chip,x.preview,x.toolName].some(v=>String(v??"").toLowerCase().includes(query));
     for(const item of (added?.items??[]).filter(keep))body.append(elementRow(ctx,item,{badge:"added"}));
     if(added&&added.count>added.items.length)body.append(node("p",{class:"muted pad"},t("moreNotListed",{n:added.count-added.items.length})));
     for(const item of (removed?.items??[]).filter(keep))body.append(elementRow(ctx,item,{badge:"removed",snapshotKey:d.diff.previousKey}));
     if(removed&&removed.count>removed.items.length)body.append(node("p",{class:"muted pad"},t("moreNotListed",{n:removed.count-removed.items.length})));
-    if(!body.children.length)body.append(node("p",{class:"muted pad"},t("noChanges")));
+    if(body.children.length===(role==="schema"?1:0))body.append(node("p",{class:"muted pad"},t("noChanges")));
   } else {
     const seen=new Set(),rows=[...(group?.items??[]),...(more[role]?.items??[])].filter(x=>!seen.has(x.key)&&seen.add(x.key));
     const addedKeys=new Set(d.diff.available?d.diff.addedKeys:[]);
@@ -359,6 +360,15 @@ function category(ctx,role,bucket,change,total,open,searching,matched) {
   }
   section.append(body);
   return section;
+}
+// Session-wide call counts: a schema never called still costs its size on every request.
+function schemaTools(ctx,changes) {
+  const {t,view,detail:d,actions:a}=ctx,s=d.schemaCalls;
+  const sort=seg([["size",t(view.sort==="order"?"byOrder":"bySize")],["calls",t("byCalls")],["name",t("byName")]],view.schemaSort,v=>a.schemaSort(v),{id:"schema-sort",small:true});
+  const line=changes?null:!s?.available?node("span",{class:"schema-unused muted",id:"schema-unused"},t("callsUnknown"))
+    :node("span",{class:"schema-unused",id:"schema-unused",title:t("unusedTip")},s.unusedCount?t("unusedSchemas",{n:s.unusedCount,tokens:approx(s.unusedEstimatedTokens)}):t("allSchemasCalled"),
+      s.unknownCount?muted(" · "+t("callsUnknownSome",{n:s.unknownCount})):null);
+  return node("div",{class:"schema-tools"},line,spacer(),sort);
 }
 function loadedResults(ctx) {
   const {t,detail:d,items}=ctx,wrap=node("div",{class:"loaded-results"},node("p",{class:"muted pad"},t("loadedResults",{n:d.loadedSnapshotCount,m:d.filteredCount})));
@@ -376,6 +386,7 @@ function elementRow(ctx,item,{badge=null,snapshotKey=null,prefix=null}={}) {
     item.status==="error"?node("i",{class:"err-dot",title:t("error")}):null,chip(label(t,item),item.role==="tool"||item.role==="assistant"?"tool-chip":""),
     node("span",{class:"el-title"},item.title||item.preview||item.key),
     badge?node("span",{class:"badge "+(badge==="added"?"up":"down")},t(badge==="added"?"addedBadge":"removedBadge")):null,
+    item.role==="schema"&&item.callCount!=null?node("span",{class:"calls"+(item.callCount?"":" zero"),title:t("callsTip",{n:item.callCount})},"×"+item.callCount):null,
     node("span",{class:"num"},approx(item.estimatedTokens))],()=>a.open(item,key),{class:"el-head",ariaExpanded:String(open)});
   const row=node("div",{class:"el element-row"+(open?" open":"")+(badge==="removed"?" removed":""),dataset:{element:item.key,snapshot:key,kind:badge??""}},head);
   if(item.subtitle&&!open)row.append(node("div",{class:"el-sub"},item.subtitle));

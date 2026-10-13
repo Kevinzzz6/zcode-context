@@ -139,6 +139,9 @@ html[lang^=zh] .brief-label{width:28px}
 .el-sub{padding:0 10px 6px 26px;margin-top:-4px;color:var(--muted);font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .err-dot{width:6px;height:6px;border-radius:50%;background:var(--err);flex:none}
 .more{width:100%;margin:2px 0}
+.schema-tools{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:6px 10px;border-bottom:1px solid var(--soft);font-size:11.5px}
+.schema-unused{cursor:help}.schema-tools+.el{border-top:0}
+.calls{font:11px var(--mono);color:var(--fg);white-space:nowrap;flex:none}.calls.zero{color:var(--muted);opacity:.6}
 
 .el-body{padding:8px 10px 10px;display:flex;flex-direction:column;gap:8px;background:var(--bg2);border-top:1px solid var(--soft)}
 .el-body>.btn{align-self:flex-start}

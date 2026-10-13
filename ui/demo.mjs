@@ -3,7 +3,7 @@ const now=Date.now(),count=9;
 const toolSize=i=>i<6?1200+i*2400:2400+(i-6)*1100;
 function elements(i) {
   const list=[{key:"message:0",role:"system",title:"You are a demo coding agent",estimatedTokens:1800},
-    ...["Read","Edit","Bash","Grep","Glob","Write","TodoWrite","WebFetch"].map((name,j)=>({key:"tool:"+j,role:"schema",title:name,subtitle:name+" demo schema",estimatedTokens:600+j*90})),
+    ...["Read","Edit","Bash","Grep","Glob","Write","TodoWrite","WebFetch"].map((name,j)=>({key:"tool:"+j,role:"schema",title:name,toolName:name,subtitle:name+" demo schema",estimatedTokens:600+j*90,callCount:[4,1,2,1,0,0,0,0][j]})),
     {key:"message:1",role:"user",title:"检查缓存过期逻辑",estimatedTokens:40}];
   for(let j=0;j<i;j++)list.push({key:"message:"+(2+j*2),role:"assistant",chip:"Read",title:"src/demo-"+j+".ts",estimatedTokens:30},
     {key:"message:"+(3+j*2),role:"tool",chip:"Read",title:"src/demo-"+j+".ts",estimatedTokens:j>=i-3||i<6?Math.round(toolSize(i)/Math.max(1,Math.min(i,3))):0,status:"ok",lines:120});
@@ -41,7 +41,9 @@ export function demoCall(name,args) {
     :{available:false,reason:"no_previous_snapshot"};
   const element=args.elementKey?(steps.find(x=>x.key===args.key)??s).list.find(x=>x.key===args.elementKey):null;
   const text=element?(element.role==="schema"?JSON.stringify({name:element.title,description:"Demo schema for **"+element.title+"**.",parameters:{type:"object",properties:{file_path:{type:"string",description:"Path to the file."}},required:["file_path"]}},null,2):"Synthetic preview content for "+element.title+".\nNo real data is read."):"";
-  return {sessionId:"sess_demo",summary:view(s),composition:s.composition,diff,groups:group(filtered),elements:filtered.slice((args.page??0)*40,(args.page??0)*40+40),elementCount:s.list.length,filteredCount:filtered.length,
+  const unused=s.list.filter(x=>x.callCount===0);
+  return {sessionId:"sess_demo",summary:view(s),composition:s.composition,diff,groups:group(filtered),
+    schemaCalls:{available:true,scope:"session",schemaCount:8,unusedCount:unused.length,unusedEstimatedTokens:unused.reduce((n,x)=>n+x.estimatedTokens,0),unknownCount:0},elements:filtered.slice((args.page??0)*40,(args.page??0)*40+40),elementCount:s.list.length,filteredCount:filtered.length,
     searchScope:"all_elements_in_selected_loaded_snapshot",loadedSnapshotCount:count,baselineOptions:steps.slice(0,index).map(x=>({key:x.key,startedAt:x.startedAt,complete:true})),
     content:element?{...element,offset:0,totalChars:text.length,lineCount:text.split("\n").length,text,hasMore:false,format:"readable",hits:[],matchCount:0,
       tool:element.role==="tool"?{name:"Read",arguments:'{"file_path":"'+element.title+'"}',fields:[{name:"file_path",value:element.title}],evidence:"tool_call_id"}:null}:null,bodyDiff:null};
