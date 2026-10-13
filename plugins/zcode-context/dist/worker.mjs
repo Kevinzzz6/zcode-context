@@ -211,6 +211,7 @@ function readToolCalls(dbPath, sessionId) {
 import { DatabaseSync as DatabaseSync2 } from "node:sqlite";
 import { statSync as statSync2 } from "node:fs";
 var TEXT_CHARS = 4e3;
+var SAMPLE_CHARS = 400;
 var DETAIL_ROWS = 400;
 var REQUIRED = ["id", "session_id", "time_created", "time_updated", "data"];
 function open(dbPath) {
@@ -273,7 +274,7 @@ function readConversation(dbPath, sessionId, cache = null) {
     }
     const messages = db.prepare("SELECT id," + sequence + " AS sequence,time_created AS created,time_updated AS updated," + select(MESSAGE_FIELDS) + ",CASE WHEN ok THEN substr(json_extract(data,'$.summary.body'),1," + TEXT_CHARS + ") END AS summary FROM (SELECT *,json_valid(data) AS ok FROM message WHERE session_id=? AND time_updated>=?)").all(sessionId, c.messageCursor);
     for (const row of messages) c.messages.set(row.id, row);
-    const parts = db.prepare("SELECT id,message_id AS messageId,time_created AS created,time_updated AS updated," + select(PART_FIELDS) + ",CASE WHEN ok AND json_extract(data,'$.type')='text' THEN substr(json_extract(data,'$.text'),1," + TEXT_CHARS + ") END AS text,CASE WHEN ok AND json_extract(data,'$.type')='text' THEN length(json_extract(data,'$.text')) END AS textChars,CASE WHEN ok AND json_extract(data,'$.tool')='Skill' THEN length(json_extract(data,'$.state.output')) END AS outputChars,CASE WHEN ok AND json_extract(data,'$.type') IN ('compaction','timeline') THEN data END AS raw FROM (SELECT *,json_valid(data) AS ok FROM part WHERE session_id=? AND time_updated>=?)").all(sessionId, c.partCursor);
+    const parts = db.prepare("SELECT id,message_id AS messageId,time_created AS created,time_updated AS updated," + select(PART_FIELDS) + ",CASE WHEN ok AND json_extract(data,'$.type')='text' THEN substr(json_extract(data,'$.text'),1," + TEXT_CHARS + ") END AS text,CASE WHEN ok AND json_extract(data,'$.type')='text' THEN length(json_extract(data,'$.text')) END AS textChars,CASE WHEN ok AND json_extract(data,'$.tool')='Skill' THEN length(json_extract(data,'$.state.output')) END AS outputChars,CASE WHEN ok AND json_extract(data,'$.tool')='Skill' THEN substr(json_extract(data,'$.state.output'),1," + SAMPLE_CHARS + ") END AS outputSample,CASE WHEN ok AND json_extract(data,'$.type') IN ('compaction','timeline') THEN data END AS raw FROM (SELECT *,json_valid(data) AS ok FROM part WHERE session_id=? AND time_updated>=?)").all(sessionId, c.partCursor);
     for (const row of parts) {
       const keep = row.type === "compaction" || row.type === "timeline" || row.type === "tool" && row.tool === "Skill" || row.type === "text" && row.synthetic === 1;
       if (keep) c.parts.set(row.id, row);
@@ -294,18 +295,39 @@ function readConversation(dbPath, sessionId, cache = null) {
     handle?.db.close();
   }
 }
-function readSummarizedMessages(dbPath, sessionId, after, through) {
+function activeSequences(db, sessionId) {
+  if (!new Set(db.prepare("PRAGMA table_info(session)").all().map((row) => row.name)).has("revert")) return null;
+  const raw = db.prepare("SELECT revert FROM session WHERE id=?").get(sessionId)?.revert;
+  let revert = null;
+  try {
+    revert = raw == null ? null : JSON.parse(raw);
+  } catch {
+    throw new ContextError("branch_unknown", "The rewind state is unreadable.");
+  }
+  if (!revert?.targetMessageID) return null;
+  const rows = db.prepare("SELECT id,sequence FROM message WHERE session_id=? ORDER BY sequence").all(sessionId);
+  const index = (id) => rows.findIndex((row) => row.id === id), target = index(revert.targetMessageID);
+  const keptIds = Array.isArray(revert.keptMessageIDs) ? new Set(revert.keptMessageIDs) : null;
+  if (!keptIds && target < 0) return null;
+  const kept = keptIds ? rows.filter((row) => keptIds.has(row.id)) : rows.slice(0, target);
+  const cut = revert.branchCutAfterMessageID ? index(revert.branchCutAfterMessageID) : -1, created = revert.createdMessageID ? index(revert.createdMessageID) : -1;
+  const from = revert.branchCutAfterMessageID ? cut < 0 ? rows.length : cut + 1 : created < 0 ? rows.length : created;
+  return new Set([...kept, ...rows.slice(from)].map((row) => row.sequence));
+}
+function readSummarizedMessages(dbPath, sessionId, { after = [], through, summary = null }) {
   let handle;
   try {
     handle = open(dbPath);
     const { db, sequence } = handle;
     if (sequence === "NULL") throw new ContextError("schema_unsupported", "Messages have no sequence.");
-    const messages = db.prepare("SELECT id,sequence," + select(MESSAGE_FIELDS) + " FROM (SELECT *,json_valid(data) AS ok FROM message WHERE session_id=? AND sequence>? AND sequence<=? ORDER BY sequence LIMIT " + (DETAIL_ROWS + 1) + ")").all(sessionId, after, through);
-    const total = db.prepare("SELECT count(*) AS n FROM message WHERE session_id=? AND sequence>? AND sequence<=?").get(sessionId, after, through).n;
-    const parts = db.prepare("SELECT message_id AS messageId,time_created AS created," + select(PART_FIELDS) + ",CASE WHEN ok THEN substr(json_extract(data,'$.text'),1,400) END AS text,CASE WHEN ok THEN length(json_extract(data,'$.text')) END AS textChars,CASE WHEN ok THEN json_extract(data,'$.state.input') END AS input,CASE WHEN ok THEN length(json_extract(data,'$.state.output')) END AS outputChars FROM (SELECT *,json_valid(data) AS ok FROM part WHERE session_id=? AND message_id=?) ORDER BY created");
-    const rows = messages.slice(0, DETAIL_ROWS).map((m) => ({ ...m, parts: parts.all(sessionId, m.id) }));
+    const active = activeSequences(db, sessionId), live = (value) => !active || active.has(value);
+    if (!live(through) || summary != null && !live(summary)) throw new ContextError("rewound_branch", "This compaction is on a rewound branch.");
+    const ids = db.prepare("SELECT id,sequence FROM message WHERE session_id=? AND sequence>? AND sequence<=? ORDER BY sequence").all(sessionId, after.find(live) ?? -1, through).filter((row) => live(row.sequence));
+    const message = db.prepare("SELECT id,sequence," + select(MESSAGE_FIELDS) + " FROM (SELECT *,json_valid(data) AS ok FROM message WHERE session_id=? AND id=?)");
+    const parts = db.prepare("SELECT message_id AS messageId,time_created AS created," + select(PART_FIELDS) + ",CASE WHEN ok THEN substr(json_extract(data,'$.text'),1,400) END AS text,CASE WHEN ok THEN length(json_extract(data,'$.text')) END AS textChars,CASE WHEN ok THEN json_extract(data,'$.state.input') END AS input,CASE WHEN ok THEN length(json_extract(data,'$.state.output')) END AS outputChars,CASE WHEN ok THEN substr(json_extract(data,'$.state.output'),1," + SAMPLE_CHARS + ") END AS outputSample FROM (SELECT *,json_valid(data) AS ok FROM part WHERE session_id=? AND message_id=?) ORDER BY created");
+    const rows = ids.slice(0, DETAIL_ROWS).map((row) => ({ ...message.get(sessionId, row.id), parts: parts.all(sessionId, row.id) }));
     db.exec("COMMIT");
-    return { available: true, messages: rows, total: Number(total) };
+    return { available: true, messages: rows, total: ids.length };
   } catch (error) {
     if (handle) {
       try {
@@ -771,6 +793,7 @@ function textDifference(before, after) {
 var COMPACT = /* @__PURE__ */ new Set([
   "compact.started",
   "compact.completed",
+  "compact.failed",
   "compact.auto.started",
   "compact.auto.completed",
   "compact.auto.failed",
@@ -801,7 +824,7 @@ function contextEvent(record, sessionId) {
   };
   if (kind === "compaction") return {
     ...base,
-    status: record.event.split(".").at(-1),
+    status: record.event === "compact.failed" && record.status === "cancelled" ? "interrupted" : record.event.split(".").at(-1),
     reason: context.compactReason ?? context.trigger ?? null,
     durationMs: count(record.durationMs),
     queryId: context.queryId ?? null,
@@ -819,7 +842,7 @@ function contextEvent(record, sessionId) {
   };
   return { ...base, toolCount: count(context.registeredToolCount), serverCount: count(context.serverCount) };
 }
-var RANK = { started: 0, applied: 1, completed: 2, failed: 3 };
+var RANK = { started: 0, applied: 1, completed: 2, failed: 3, interrupted: 3 };
 function mergeEvents(events) {
   const merged = /* @__PURE__ */ new Map();
   for (const event of [...events].sort((a, b) => a.timestamp - b.timestamp)) {
@@ -857,7 +880,8 @@ var parse = (text) => {
 };
 var number = (value) => typeof value === "number" && Number.isFinite(value) ? value : null;
 var modelLabel = (selection) => !selection ? null : selection.label ?? ([selection.providerId ?? selection.providerID, selection.modelId ?? selection.modelID].filter(Boolean).join("/") || null);
-var statusOf = (value) => /fail|error/i.test(String(value)) ? "failed" : /run|pend|progress|start/i.test(String(value)) ? "started" : "completed";
+var STATUSES = /* @__PURE__ */ new Set(["started", "retrying", "completed", "failed", "interrupted", "skipped"]);
+var statusOf = (value, boundary) => STATUSES.has(value) ? value : value == null && boundary ? "completed" : "unknown";
 var injected = (m) => m.role === "user" && m.visibility !== "hidden" && m.kind !== "compact_summary" && m.kind !== "user_prompt" && (m.origin === "agent_runtime" || m.synthetic === 1 || m.kind != null);
 function conversationEvents(cache) {
   const events = [], texts = /* @__PURE__ */ new Map(), groups = /* @__PURE__ */ new Map();
@@ -873,7 +897,7 @@ function conversationEvents(cache) {
       form: "skill",
       name: typeof part.skill === "string" ? part.skill : null,
       timestamp: number(part.toolEnd) ?? part.created,
-      tokens: part.outputChars != null ? Math.round(part.outputChars / 4) : null,
+      tokens: part.outputChars != null ? sampled(part.outputSample, part.outputChars) : null,
       toolCallId: part.callId ?? null
     });
     else if (part.type === "timeline" && part.timelineType === "model_change") {
@@ -914,14 +938,14 @@ function conversationEvents(cache) {
       form: m.kind ?? "context",
       source: m.source ?? m.metaSource ?? null,
       timestamp: m.created,
-      tokens: estimateTokens(text) + (chars > text.length ? Math.round((chars - text.length) / 4) : 0),
+      tokens: sampled(text, chars),
       text: text.slice(0, TEXT_CHARS2),
       truncated: chars > TEXT_CHARS2,
       needle: text.slice(0, NEEDLE_CHARS)
     });
   }
   for (const g of groups.values()) {
-    const start = number(g.start) ?? g.created, end = number(g.end), status = statusOf(g.status);
+    const start = number(g.start) ?? g.created, end = number(g.end), status = statusOf(g.status, g.lastSummarizedId != null || g.summarizedCount != null);
     const summary = g.summaryMessageId ? cache.messages.get(g.summaryMessageId) : null, last = g.lastSummarizedId ? cache.messages.get(g.lastSummarizedId) : null;
     events.push({
       kind: "compaction",
@@ -932,7 +956,7 @@ function conversationEvents(cache) {
       trigger: g.trigger ?? null,
       reason: g.reason ?? null,
       timestamp: start,
-      endedAt: status === "started" ? null : end ?? start,
+      endedAt: status === "started" || status === "retrying" ? null : end ?? start,
       durationMs: end != null ? end - start : null,
       preTokens: number(g.preTokens),
       postTokens: number(g.postTokens),
@@ -966,7 +990,7 @@ function summarizedItems(messages) {
           input = p.input == null ? null : JSON.parse(p.input);
         } catch {
         }
-        items.push({ role: "tool", chip: p.tool ?? null, title: inputSummary(input) ?? "", tokens: Math.round(((p.input?.length ?? 0) + (p.outputChars ?? 0)) / 4) });
+        items.push({ role: "tool", chip: p.tool ?? null, title: inputSummary(input) ?? "", tokens: estimateTokens(p.input ?? "") + sampled(p.outputSample, p.outputChars) });
       }
     }
   }
@@ -1019,11 +1043,14 @@ var ContextDataService = class {
   }
   state(sessionId) {
     let state = this.sessions.get(sessionId);
-    if (!state) {
-      if (this.sessions.size >= 8) this.sessions.delete(this.sessions.keys().next().value);
-      state = { ledgers: /* @__PURE__ */ new Map(), events: /* @__PURE__ */ new Map(), logTails: /* @__PURE__ */ new Map(), overview: null, conversation: null, recorded: [], targets: /* @__PURE__ */ new Map() };
+    if (state) {
+      this.sessions.delete(sessionId);
       this.sessions.set(sessionId, state);
+      return state;
     }
+    if (this.sessions.size >= 8) this.sessions.delete(this.sessions.keys().next().value);
+    state = { ledgers: /* @__PURE__ */ new Map(), events: /* @__PURE__ */ new Map(), logTails: /* @__PURE__ */ new Map(), overview: null, conversation: null, recorded: [], targets: /* @__PURE__ */ new Map() };
+    this.sessions.set(sessionId, state);
     return state;
   }
   async refresh(sessionId) {
@@ -1085,7 +1112,7 @@ var ContextDataService = class {
       });
       coverage.push(status);
     }
-    for (let day = 0; day < 3; day++) {
+    for (let day = 2; day >= 0; day--) {
       const date = /* @__PURE__ */ new Date();
       date.setDate(date.getDate() - day);
       const stamp = date.getFullYear() + "-" + String(date.getMonth() + 1).padStart(2, "0") + "-" + String(date.getDate()).padStart(2, "0");
@@ -1251,8 +1278,8 @@ var ContextDataService = class {
     if (!state.overview) await this.refresh(sessionId);
     const compactions = state.recorded.filter((e) => e.kind === "compaction"), event = compactions.find((e) => e.id === id);
     if (!event || event.lastSummarizedSequence == null) throw new ContextError("event_missing", "Compaction details are unavailable.");
-    const previous = compactions.filter((e) => e.timestamp < event.timestamp && e.summarySequence != null).at(-1);
-    const read = readSummarizedMessages(this.paths.db, sessionId, previous?.summarySequence ?? -1, event.lastSummarizedSequence);
+    const previous = compactions.filter((e) => e.timestamp < event.timestamp && e.summarySequence != null).map((e) => e.summarySequence).reverse();
+    const read = readSummarizedMessages(this.paths.db, sessionId, { after: previous, through: event.lastSummarizedSequence, summary: event.summarySequence });
     if (!read.available) throw new ContextError(read.code, "Compaction details are unavailable.");
     const items = summarizedItems(read.messages);
     return { sessionId, eventDetail: {
@@ -1309,6 +1336,9 @@ var ContextDataService = class {
     };
     const decorate = (x, own = true) => x.role === "schema" ? { ...x, callCount: callCount(x) } : own ? { ...x, ...stampOf(x.key) } : x;
     const order = (list, own) => arrange(list.map((x) => decorate(x, own)), args.sort, args.schemaSort);
+    const search = (args.search ?? "").toLowerCase(), role = args.role;
+    const loadedSearch = args.searchScope === "loaded" && Boolean(search), selectedSearch = Boolean(search) && !loadedSearch;
+    const hit = (item) => !search || [item.readable, item.toolName, item.toolCallId, item.key].some((v) => String(v ?? "").toLowerCase().includes(search));
     let arrivals = null;
     if (!diff.available && entries && selected.summary.step != null) {
       const base = args.baselineKey ? all.find((x) => x.key === args.baselineKey) : this.previous(all, selected);
@@ -1324,7 +1354,13 @@ var ContextDataService = class {
           groups: groupByRole(order(list, true)),
           unknownCount: stamped.filter((x) => !x.entry.entered && x.entry.before && x.entry.before.step > since).length
         };
+        if (selectedSearch) arrivals.searchGroups = groupByRole(order(stamped.filter((x) => x.entry.entered && x.entry.entered.step > since && hit(x.item)).map((x) => elementSummary(x.item)), true));
       }
+    }
+    if (diff.available && selectedSearch) {
+      const own = new Map(elements.map((x) => [x.key, x])), before = new Map(inputElements(all.find((x) => x.key === diff.previousKey).record).map((x) => [x.key, x]));
+      const matching = (list, map) => list.filter((x) => map.has(x.key) && hit(map.get(x.key)));
+      diff = { ...diff, searchAddedGroups: groupByRole(order(matching(diff.added, own), true)), searchRemovedGroups: groupByRole(order(matching(diff.removed, before), false)) };
     }
     if (diff.available) diff = {
       ...diff,
@@ -1339,13 +1375,11 @@ var ContextDataService = class {
       removed: diff.removed.slice((args.changePage ?? 0) * 40, (args.changePage ?? 0) * 40 + 40),
       changed: diff.changed.slice((args.changePage ?? 0) * 40, (args.changePage ?? 0) * 40 + 40)
     };
-    const search = (args.search ?? "").toLowerCase(), role = args.role;
-    const loadedSearch = args.searchScope === "loaded" && Boolean(search);
     const filtered = [];
     for (const snapshot of loadedSearch ? all : [selected]) {
       for (const item of snapshot === selected ? elements : inputElements(snapshot.record)) {
         if (role && item.role !== role) continue;
-        if (search && ![item.readable, item.toolName, item.toolCallId, item.key].some((v) => String(v ?? "").toLowerCase().includes(search))) continue;
+        if (!hit(item)) continue;
         filtered.push({ ...decorate(elementSummary(item), snapshot === selected), ...loadedSearch ? { snapshotKey: snapshot.key, snapshotTime: snapshot.record.startedAt } : {} });
       }
     }
