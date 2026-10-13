@@ -69,7 +69,7 @@
   <tr><td nowrap><b>上下文趋势</b></td><td>每个主请求一根柱，带纵轴、回合带和 ✂ 压缩标记；可切换总量/变化、步骤/轮次；「自适应」按可见范围缩放；悬停查看各类别数值，悬停类别会在各处同步高亮</td></tr>
   <tr><td nowrap><b>上下文浏览器</b></td><td>按类别折叠和分页；对比基线可选上一步、上一轮或更早任一步；「仅变化」只看新增和移除；条目按工具名和关键参数命名，如 <code>Read · src/cache.ts</code></td></tr>
   <tr><td nowrap><b>条目详情</b></td><td>行内展开：工具卡片（参数表、成功/错误）、工具定义的参数表、正文（可读 / Markdown / 原始、复制、查找、分段）</td></tr>
-  <tr><td nowrap><b>上下文事件</b></td><td>日志记录的压缩（类型、状态、用时、原因、节省量）、回退与编辑提问、模型切换、MCP 工具注册，可按类型筛选；点击事件选中之后的一步并打开浏览器，压缩和回退会与之前的一步对比。趋势里的 ✂ 标记也可点击</td></tr>
+  <tr><td nowrap><b>上下文事件</b></td><td>来自 ZCode 会话记录、覆盖整个会话：注入（TodoWrite 提醒、Agent 列表、恢复的上下文、后台任务通知、Skill 等，每条一行）、压缩（前后 token、被摘要的消息数和内容）、模型切换；回退与 MCP 工具注册来自最近 3 天日志。点击事件在浏览器里打开它对应的那一项，压缩与之前的一步对比并可展开被摘要的内容，请求记录不可读时直接显示原文。趋势里的 ✂ 标记也可点击</td></tr>
   <tr><td nowrap><b>用量</b></td><td>次级页面：近 30 天的逻辑用量、每日汇总和最近请求</td></tr>
   <tr><td nowrap><b>关于</b></td><td>次级页面（工具栏 <kbd>ⓘ</kbd>）：版本、作者、许可、源码仓库，以及只读本机数据、不联网的说明</td></tr>
 </table>
@@ -193,9 +193,9 @@ flowchart LR
   server["插件服务<br/>MCP · stdio"]
   worker["数据 worker<br/>串行 · 限时 · 限内存"]
   subgraph local["本机 ~/.zcode/cli（只读）"]
-    db[("db/db.sqlite<br/>用量 · 工具调用次数")]
+    db[("db/db.sqlite<br/>用量 · 工具调用次数 · 会话记录")]
     traj["rollout/ · debug/<br/>模型 I/O 记录"]
-    log["log/<br/>上下文事件"]
+    log["log/<br/>回退 · MCP 注册"]
   end
   panel -- "两个只读工具<br/>按会话身份绑定" --> server --> worker
   worker --> db
