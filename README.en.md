@@ -76,10 +76,16 @@ From top to bottom:
 
 ## Default recording versus complete retention
 
-By default ZCode records only the **latest 64 messages** of each request, while a long session's request often has several hundred. The plugin keeps the two cases apart instead of guessing at missing data:
+Under its default settings, ZCode discards model I/O recordings at **two levels**:
+
+- **Message level**: only the **latest 64 messages** of each request are recorded, while a long session's request often has several hundred.
+- **Session level**: when a new session starts recording, existing recording files are pruned down to the 2 most recently written — so besides the current session, usually only the 3 most recent sessions keep recordings, and everything earlier is gone. This is why a conversation from a few hours ago shows nothing at all: the plugin cannot read what is no longer on disk.
+
+The plugin keeps these cases apart instead of guessing at missing data:
 
 | | Default | Complete Model I/O retention |
 |---|---|---|
+| Recordings of earlier sessions | ❌ Only the 3 most recent sessions keep recording files; earlier ones are already deleted and unrecoverable | ✅ Kept, with no per-session-count cleanup |
 | Request size | ⚠️ Provider-reported actual input; the recorded part is marked and the rest is shown hatched as "earlier messages (not recorded)" | ✅ Full category estimate |
 | Composition by category | ⚠️ Recorded messages and tool schemas only | ✅ Complete |
 | In row, additions | ✅ Available (derived from entry stamps) | ✅ Available |
@@ -92,8 +98,8 @@ By default ZCode records only the **latest 64 messages** of each request, while 
   <sub>Under default recording, earlier unrecorded messages are hatched in the bar and the trend</sub>
 </p>
 
-> [!TIP]
-> For complete comparisons, turn on complete Model I/O retention in ZCode <kbd>Settings</kbd> → <kbd>General</kbd>. It uses more disk space, applies to later requests only and cannot restore records already discarded; the plugin never changes this setting.
+> [!IMPORTANT]
+> **Turn on complete Model I/O retention as soon as the plugin is installed, not when you first want to look back — records discarded by default cannot be recovered.** To enable it: ZCode <kbd>Settings</kbd> → <kbd>General</kbd>, find "Complete Model I/O retention" and switch it on. It only applies to requests made after it is turned on; the trade-off is faster disk growth, since the per-session-count cleanup and the 64 MB per-file reset no longer apply. The plugin only reads local data and never changes this setting.
 
 ## Install
 
