@@ -10,13 +10,13 @@ const root=await mkdtemp(join(tmpdir(),"context-browser-fixture-"));const fixtur
 await mkdir(join(root,"rollout"));await mkdir(join(root,"log"));
 let counter=0;
 async function append(sessionId, large = false, bulk = false, gap = false) {
-  const id="fixture_"+(++counter);fixture.add(sessionId,id,sessionId==="sess_A"?100:900,10);
+  const id="fixture_"+(++counter);fixture.add(sessionId,id,sessionId==="sess_A"?100:900,10);fixture.tool(sessionId,id,"Read");
   const messages=[{role:"system",content:"Fixture rules. No real user data."},{role:"user",content:"Recorded input for "+sessionId+" "+id+(large?" "+"long fixture text ".repeat(1600)+" END_OF_LONG_INPUT":"")}];
   messages.push({role:"assistant",tool_calls:[{id:"call_"+id,function:{name:"Read",arguments:'{"path":"src/cache.ts"}'}}]},
     {role:"tool",tool_call_id:"call_"+id,toolName:"Read",content:"Tool output for "+sessionId+" "+id,status:"completed"});
   if(bulk)for(let i=0;i<85;i++)messages.push({role:"tool",content:i===84?"SEARCH_BEYOND_FIRST_PAGE "+"big ".repeat(1000):"tiny tool "+i});
   const record=modelRecord(sessionId,id,messages,{turnId:"turn_"+id,request:{messages,messagesKind:"full",messageCount:messages.length,
-    body:{tools:[{name:"Read",description:"Schema "+id,parameters:{type:"object",properties:{path:{type:"string"}}}}]}}});
+    body:{tools:[{name:"Read",description:"Schema "+id,parameters:{type:"object",properties:{path:{type:"string"}}}},{name:"Glob",description:"Never called",parameters:{type:"object"}}]}}});
   await appendFile(join(root,"rollout","model-io-"+sessionId+".jsonl"),(gap?"INVALID ROW\n":"")+JSON.stringify(record)+"\n");
 }
 await append("sess_A");await append("sess_A");await append("sess_B");
@@ -30,7 +30,7 @@ const http=createServer(async(req,res)=>{
   try{
     const url=new URL(req.url,"http://127.0.0.1");
     if(url.pathname==="/reset"){
-      fixture.db.exec("DELETE FROM model_usage");counter=0;
+      fixture.db.exec("DELETE FROM model_usage; DELETE FROM tool_usage");counter=0;
       for(const id of ["sess_A","sess_B"])await writeFile(join(root,"rollout","model-io-"+id+".jsonl"),"");
       await rm(join(root,"log"),{recursive:true,force:true});await mkdir(join(root,"log"));
       await append("sess_A");await append("sess_A");await append("sess_B");res.writeHead(204);res.end();return;
