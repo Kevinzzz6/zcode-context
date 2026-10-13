@@ -37,6 +37,10 @@ export function foldRecord(raw, previous) {
     toolNames: Array.isArray(request.toolNames) ? request.toolNames : [],
     responseUsage: raw.response?.usage ?? null,
     responsePreview: String(raw.response?.text ?? "").slice(0, 240),
+    responseCalls: (Array.isArray(raw.response?.toolCalls) ? raw.response.toolCalls : []).slice(0, 8).map(call => ({
+      name: typeof (call?.name ?? call?.toolName) === "string" ? String(call.name ?? call.toolName).slice(0, 80) : null,
+      title: inputSummary(parseInput(call?.input ?? call?.args ?? call?.arguments)) })),
+    responseCallCount: Array.isArray(raw.response?.toolCalls) ? raw.response.toolCalls.length : 0,
     hasResponse: Boolean(raw.response), hasError: Boolean(raw.error),
     hasReset: Boolean(raw.modelIOReset), bodySource: body?.bodySource ?? null
   };
@@ -56,39 +60,97 @@ function resultPart(message) {
   const results=(Array.isArray(message?.content)?message.content:[]).filter(x=>["tool-result","tool_result"].includes(x?.type));
   return results.length===1?results[0]:null;
 }
+function parseInput(value) {
+  if (typeof value !== "string") return value;
+  try { return JSON.parse(value); } catch { return value; }
+}
+// Canonical ZCode messages carry `toolCalls: [{id,name,input}]`; OpenAI and AI SDK shapes are also recorded.
+export function messageCalls(message) {
+  const calls = [];
+  for (const call of Array.isArray(message?.toolCalls) ? message.toolCalls : [])
+    calls.push({id:call?.id ?? call?.toolCallId ?? null, name:call?.name ?? call?.toolName ?? null, input:parseInput(call?.input ?? call?.args ?? call?.arguments)});
+  for (const call of Array.isArray(message?.tool_calls) ? message.tool_calls : [])
+    calls.push({id:call?.id ?? null, name:call?.function?.name ?? call?.name ?? null, input:parseInput(call?.function?.arguments ?? call?.arguments)});
+  for (const part of Array.isArray(message?.content) ? message.content : [])
+    if (["tool-call","tool_use"].includes(part?.type)) calls.push({id:part.toolCallId ?? part.id ?? null, name:part.toolName ?? part.name ?? null, input:parseInput(part.args ?? part.input)});
+  return calls;
+}
+// A call ID recorded more than once is ambiguous and maps to null.
+export function callIndex(record) {
+  const index = new Map();
+  for (const message of record.messages.items) for (const call of messageCalls(message))
+    if (call.id) index.set(call.id, index.has(call.id) ? null : call);
+  return index;
+}
+const REMINDER = /^\s*<system-reminder>\s*/;
+const oneLine = text => String(text).replace(/\s+/g, " ").trim().slice(0, 160);
+function firstLine(text) {
+  for (const line of String(text ?? "").split("\n")) {
+    const value = line.trim();
+    if (value && !/^<\/?system-reminder>$/.test(value)) return value.slice(0, 160);
+  }
+  return "";
+}
+const SUMMARY_KEYS = ["command","file_path","notebook_path","pattern","url","query","skill","path","description","prompt","subject","name","title"];
+export function inputSummary(input) {
+  if (input == null) return null;
+  if (typeof input !== "object") return oneLine(input) || null;
+  for (const key of SUMMARY_KEYS) {
+    if (typeof input[key] !== "string" || !input[key].trim()) continue;
+    return key === "pattern" && typeof input.path === "string" ? oneLine(input.pattern + " · " + input.path) : oneLine(input[key]);
+  }
+  const first = Object.values(input).find(value => typeof value === "string" && value.trim());
+  return first ? oneLine(first) : null;
+}
+function describe(item) {
+  if (item.role === "tool") return {chip:item.toolName ?? item.call?.name ?? null, title:inputSummary(item.call?.input) ?? firstLine(item.readable), subtitle:null};
+  if (item.role === "assistant" && item.calls.length) {
+    const names = [...new Set(item.calls.map(call => call.name ?? "tool"))];
+    const chip = names.length === 1 ? names[0] + (item.calls.length > 1 ? " ×" + item.calls.length : "") : names.slice(0, 2).join(" · ") + (names.length > 2 ? " …" : "");
+    return {chip, title:firstLine(item.readable) || inputSummary(item.calls[0].input) || "", subtitle:null};
+  }
+  if (item.role === "user" && REMINDER.test(item.readable)) return {chip:"reminder", title:firstLine(item.readable.replace(REMINDER, "")), subtitle:null};
+  if (item.role === "schema") return {chip:null, title:item.toolName ?? firstLine(item.readable), subtitle:firstLine(item.value?.function?.description ?? item.value?.description ?? "") || null};
+  return {chip:null, title:firstLine(item.readable), subtitle:null};
+}
 export function inputElements(record) {
-  const result = record.messages.items.map((message, index) => ({
-    key: "message:" + index, role: ["system","user","assistant","tool"].includes(message?.role) ? message.role : "unknown",
-    toolName: message?.toolName ?? message?.name ?? resultPart(message)?.toolName ?? null,
-    toolCallId: message?.toolCallId ?? message?.tool_call_id ?? resultPart(message)?.toolCallId ?? resultPart(message)?.tool_use_id ?? null,
-    text: JSON.stringify(message, null, 2), value: message,
-    readable: readableText(message?.content ?? message?.text ?? message),
-    status: message?.isError === true || resultPart(message)?.isError === true ? "error" : message?.status ?? null
-  }));
+  const calls = callIndex(record);
+  const result = record.messages.items.map((message, index) => {
+    const toolCallId = message?.toolCallId ?? message?.tool_call_id ?? resultPart(message)?.toolCallId ?? resultPart(message)?.tool_use_id ?? null;
+    return {
+      key: "message:" + index, role: ["system","user","assistant","tool"].includes(message?.role) ? message.role : "unknown",
+      toolName: message?.toolName ?? message?.name ?? resultPart(message)?.toolName ?? null, toolCallId,
+      text: JSON.stringify(message, null, 2), value: message,
+      readable: readableText(message?.content ?? message?.text ?? message),
+      status: message?.isError === true || resultPart(message)?.isError === true ? "error" : message?.isError === false || resultPart(message)?.isError === false ? "ok" : message?.status ?? null,
+      calls: message?.role === "assistant" ? messageCalls(message) : [], call: toolCallId ? calls.get(toolCallId) ?? null : null
+    };
+  });
   for (const [index, tool] of (record.tools ?? []).entries()) result.push({
     key: "tool:" + index, role: "schema", toolName: tool?.function?.name ?? tool?.name ?? null,
     toolCallId: null, text: JSON.stringify(tool, null, 2), value: tool,
-    readable: JSON.stringify(tool?.function ?? tool, null, 2), status: null
+    readable: JSON.stringify(tool?.function ?? tool, null, 2), status: null, calls: [], call: null
   });
   return result;
 }
 export function elementSummary(item) {
+  const label = describe(item);
   return {key:item.key, role:item.role, toolName:typeof item.toolName==="string"?item.toolName.slice(0,160):null, toolCallId:typeof item.toolCallId==="string"?item.toolCallId.slice(0,256):null,
     chars:canonical(item.value).length, estimatedTokens:Math.ceil(canonical(item.value).length/4),
-    preview:item.readable.replace(/\s+/g," ").slice(0,180), status:item.status};
+    preview:item.readable.replace(/\s+/g," ").slice(0,180), status:item.status,
+    chip:typeof label.chip==="string"?label.chip.slice(0,80):null, title:label.title, subtitle:label.subtitle, lines:item.readable.split("\n").length};
 }
 export function toolEvidence(record, element) {
   if (!element.toolCallId) return null;
-  const calls = [];
-  for (const message of record.messages.items) {
-    for (const call of message?.tool_calls ?? []) if (call.id === element.toolCallId) calls.push({name:call.function?.name,arguments:call.function?.arguments});
-    for (const part of Array.isArray(message?.content) ? message.content : []) {
-      if (["tool-call","tool_use"].includes(part?.type) && (part.toolCallId ?? part.id) === element.toolCallId)
-        calls.push({name:part.toolName ?? part.name,arguments:part.args ?? part.input});
-    }
-  }
-  return calls.length === 1 ? {name:calls[0].name ?? null, arguments:readableText(calls[0].arguments).slice(0,1600),
-    argumentsTruncated:readableText(calls[0].arguments).length>1600,evidence:"tool_call_id"} : null;
+  const call = callIndex(record).get(element.toolCallId);
+  if (!call) return null;
+  const text = readableText(call.input);
+  const fields = call.input && typeof call.input === "object" && !Array.isArray(call.input)
+    ? Object.entries(call.input).slice(0, 16).map(([name, value]) => {
+      const full = typeof value === "string" ? value : JSON.stringify(value, null, 2) ?? "";
+      return {name:name.slice(0, 80), value:full.slice(0, 800), truncated:full.length > 800};
+    }) : null;
+  return {name:call.name ?? null, arguments:text.slice(0,1600), argumentsTruncated:text.length>1600, fields, evidence:"tool_call_id"};
 }
 export function attemptUsage(usage) {
   return Object.fromEntries(["inputTokens","outputTokens","cacheReadTokens","cacheWriteTokens"].map(k=>[k,nonnegative(usage?.[k])]));
@@ -141,7 +203,8 @@ export function trajectorySummary(record, key) {
     querySource:record.querySource,model:record.model,complete:record.messages.complete,incompleteReason:record.messages.reason,
     messageCount:record.messages.items.length,schemaCount:record.tools?.length??null,hasResponse:record.hasResponse,hasError:record.hasError,
     composition:composition(record),usage:attemptUsage(record.responseUsage),responsePreview:record.responsePreview,
-    userPreview:inputElements(record).findLast(x=>x.role==="user")?.readable.slice(0,160)??""};
+    responseCalls:record.responseCalls??[],responseCallCount:record.responseCallCount??0,
+    userPreview:oneLine(inputElements(record).findLast(x=>x.role==="user"&&!REMINDER.test(x.readable))?.readable??"")};
 }
 // Linear, bounded unified difference. This highlights a replacement block without an expensive full LCS.
 export function textDifference(before,after) {

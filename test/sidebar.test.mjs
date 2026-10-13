@@ -4,7 +4,7 @@ import {mkdtemp,mkdir,writeFile,rm} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {ContextDataService} from "../src/data/service.mjs";
-import {foldRecord,diffRecords,inputElements,toolEvidence,attemptUsage,textDifference} from "../src/domain/trajectory.mjs";
+import {foldRecord,diffRecords,inputElements,toolEvidence,attemptUsage,textDifference,elementSummary,trajectorySummary} from "../src/domain/trajectory.mjs";
 import {modelRecord} from "./fixtures.mjs";
 async function fixture(records,callback,events=[]) {
   const root=await mkdtemp(join(tmpdir(),"context-sidebar-"));
@@ -107,3 +107,27 @@ test("a body replacement with a very long single line cannot bypass the 12k resp
     assert.equal(first.bodyDiff.text.length,12000);assert.equal(first.bodyDiff.hasMore,true);
     const next=await service.request("sess_A",{key,elementKey:"tool:0",diffBeforeElement:"tool:0",offset:12000});assert.equal(next.bodyDiff.text.length,12000);
   }));
+test("canonical ZCode toolCalls pair results with arguments and readable labels",()=>{
+  const call={id:"c1",name:"Read",input:{file_path:"src/cache.ts",limit:20}};
+  const record=foldRecord(modelRecord("s","r",[
+    {role:"assistant",content:"",toolCalls:[call]},
+    {role:"tool",toolCallId:"c1",toolName:"Read",content:"line\nline",isError:false},
+    {role:"assistant",content:"",toolCalls:[{id:"g1",name:"Grep",input:{pattern:"ttl",path:"src"}},{id:"g2",name:"Grep",input:{pattern:"now"}}]},
+    {role:"user",content:"<system-reminder>\nTodo reminder\n</system-reminder>"}
+  ]));
+  const elements=inputElements(record);
+  const evidence=toolEvidence(record,elements[1]);
+  assert.equal(evidence.name,"Read");assert.deepEqual(evidence.fields.map(x=>x.name),["file_path","limit"]);
+  const [, result, calls, reminder]=elements.map(elementSummary);
+  assert.equal(result.chip,"Read");assert.equal(result.title,"src/cache.ts");assert.equal(result.lines,2);
+  assert.equal(calls.chip,"Grep ×2");assert.equal(calls.title,"ttl · src");
+  assert.equal(reminder.chip,"reminder");assert.equal(reminder.title,"Todo reminder");
+  const duplicate=foldRecord(modelRecord("s","r",[{role:"assistant",toolCalls:[call]},{role:"assistant",toolCalls:[call]},{role:"tool",toolCallId:"c1",content:"x"}]));
+  assert.equal(toolEvidence(duplicate,inputElements(duplicate)[2]),null);
+});
+test("summaries skip system reminders and keep response tool calls",()=>{
+  const record=foldRecord(modelRecord("s","r",[{role:"user",content:"真正的问题"},{role:"user",content:"<system-reminder>x</system-reminder>"}],
+    {response:{text:"",toolCalls:[{id:"b",name:"Bash",input:{command:"npm test"}}],usage:{inputTokens:1}}}));
+  const summary=trajectorySummary(record,"k");
+  assert.equal(summary.userPreview,"真正的问题");assert.deepEqual(summary.responseCalls,[{name:"Bash",title:"npm test"}]);
+});
