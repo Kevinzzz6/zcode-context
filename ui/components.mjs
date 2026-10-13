@@ -167,9 +167,10 @@ function summaryCard(ctx) {
 function stepInputs(ctx,s) {
   const {t,view,detail:d,actions:a}=ctx;
   if(d?.summary?.key!==s.key||view.baselineKey||view.baselineMode==="turn")return null;
-  if(!d.diff.available)return muted(t("notComparable"));
+  const source=d.diff.available?d.diff.addedGroups:d.arrivals?.available?d.arrivals.groups:null;
+  if(!source)return muted(t("notComparable"));
   const index=item=>Number(item.key.split(":")[1])+(item.key.startsWith("tool:")?1e9:0);
-  const items=Object.values(d.diff.addedGroups??{}).flatMap(g=>g.items)
+  const items=Object.values(source??{}).flatMap(g=>g.items)
     .filter(x=>x.role!=="assistant"&&!(x.role==="user"&&x.chip!=="reminder")).sort((a,b)=>index(a)-index(b));
   if(!items.length)return muted(t("noInputs"));
   return node("span",{class:"brief-list"},items.slice(0,3).map(item=>button([chip(label(t,item),"tool-chip"),node("span",{class:"brief-text"},item.title||item.preview),node("span",{class:"num"},approx(item.estimatedTokens))],
@@ -335,18 +336,25 @@ function browserCard(ctx) {
     seg([["step",t("baseStep")],["turn",t("baseTurn")]],view.baselineKey?null:view.baselineMode,v=>a.baselineMode(v),{id:"base",small:true}),baseline)));
   const search=node("input",{id:"element-search",type:"search",placeholder:t("filter"),value:view.search,maxLength:200,autocomplete:"off",spellcheck:false,oninput:e=>a.search(e.target.value)});
   card.append(node("div",{class:"controls"},search,seg([["size",t("bySize")],["order",t("byOrder")]],view.sort,v=>a.sort(v),{id:"sort",small:true})));
-  const counts=d?.diff?.available?` +${d.diff.addedCount} −${d.diff.removedCount}`:"";
+  const arrivals=d?.diff?.available===false&&d.arrivals?.available?d.arrivals:null;
+  const counts=d?.diff?.available?` +${d.diff.addedCount} −${d.diff.removedCount}`:arrivals?` +${arrivals.count}`:"";
   card.append(node("div",{class:"controls"},seg([["all",t("all")],["changes",t("changesOnly")+counts]],view.mode,v=>a.set({mode:v}),{id:"mode",small:true}),spacer(),
     view.search?button(t("searchLoaded"),()=>a.searchAll(!view.searchAll),{class:"toggle"+(view.searchAll?" on":""),id:"search-scope",ariaPressed:String(view.searchAll)}):null));
   if(!d||d.summary?.key!==view.selectedKey){card.append(node("p",{class:"muted pad"},t("loading")));return card;}
   if(d.searchScope==="all_loaded_snapshots"){card.append(loadedResults(ctx));return card;}
   const notes=[];
-  if(view.mode==="changes"&&!d.diff.available)notes.push(t("notComparable")+" · "+t(d.diff.reason));
+  if(view.mode==="changes"&&!d.diff.available&&arrivals) {
+    notes.push(t("arrivalsOnly",{since:t("step",{n:arrivals.sinceStep})}));
+    if(arrivals.unknownCount)notes.push(t("arrivalsUnknown",{n:arrivals.unknownCount}));
+  } else if(view.mode==="changes"&&!d.diff.available)notes.push(t("notComparable")+" · "+t(d.diff.reason));
   if(d.diff.available&&view.mode==="changes"){if(d.diff.modelChanged)notes.push(t("modelChanged"));if(d.diff.reordered)notes.push(t("reordered"));}
   if(!d.composition.schemasRecorded)notes.push(t("schemasUnknown"));
-  if(!d.composition.complete)notes.push(t("partial")+(d.summary.incompleteReason?" · "+d.summary.incompleteReason:""));
+  if(!d.composition.complete) {
+    const reason=d.summary.incompleteReason,text=reason?t("incomplete."+reason):"";
+    notes.push(t("partial")+(text?" · "+(text==="incomplete."+reason?reason:text):""));
+  }
   for(const text of notes)card.append(node("p",{class:"note",id:text.startsWith(t("notComparable"))?"diff-status":undefined},text));
-  if(view.mode==="changes"&&!d.diff.available)return card;
+  if(view.mode==="changes"&&!d.diff.available&&!arrivals)return card;
   const buckets=new Map(d.composition.buckets.map(b=>[b.role,b])),categories=new Map((d.diff.available?d.diff.categories:[]).map(c=>[c.role,c]));
   const total=[...buckets.values()].reduce((n,b)=>n+b.estimatedTokens,0)||1,searching=Boolean(view.search),matched=new Set(Object.keys(d.groups??{}));
   const expanded=searching?(view.searchExpanded??[...matched]):(view.expanded??[]);
@@ -360,12 +368,13 @@ function browserCard(ctx) {
 function category(ctx,role,bucket,change,total,open,searching,matched) {
   const {t,view,detail:d,actions:a,more}=ctx,changes=view.mode==="changes";
   const group=d.groups?.[role],count=bucket?.count??0,size=bucket?.estimatedTokens??0;
-  const added=d.diff.available?d.diff.addedGroups?.[role]:null,removed=d.diff.available?d.diff.removedGroups?.[role]:null;
+  const added=d.diff.available?d.diff.addedGroups?.[role]:d.arrivals?.available?d.arrivals.groups?.[role]:null,removed=d.diff.available?d.diff.removedGroups?.[role]:null;
+  const plus=d.diff.available?change?.addedCount:added?.count;
   const dim=changes?!added?.count&&!removed?.count:searching&&!matched;
   const expanded=open&&!dim;
   const head=button([node("span",{class:"chev"},expanded?"▾":"▸"),dot(role),node("span",{class:"cat-name"},t(role)),
     node("span",{class:"cat-count"},searching&&!changes?t("matchedItems",{m:group?.count??0,n:count}):t("items",{n:count})),
-    change?.addedCount?node("span",{class:"badge up"},"+"+change.addedCount):null,change?.removedCount?node("span",{class:"badge down"},"−"+change.removedCount):null,spacer(),
+    plus?node("span",{class:"badge up"},"+"+plus):null,change?.removedCount?node("span",{class:"badge down"},"−"+change.removedCount):null,spacer(),
     change?.charsDelta?node("span",{class:"delta "+(change.charsDelta>0?"up":"down")},signed(tokensOf(change.charsDelta))):null,
     node("span",{class:"num"},approx(size)),node("span",{class:"pct"},pct(size/total))],()=>a.toggleRole(role),{class:"cat-head",ariaExpanded:String(expanded),disabled:dim,...hoverRole(role)});
   const section=node("section",{class:"category"+(expanded?" open":"")+(dim?" dim":""),dataset:{role}},head);
@@ -381,7 +390,7 @@ function category(ctx,role,bucket,change,total,open,searching,matched) {
     if(body.children.length===(role==="schema"?1:0))body.append(node("p",{class:"muted pad"},t("noChanges")));
   } else {
     const seen=new Set(),rows=[...(group?.items??[]),...(more[role]?.items??[])].filter(x=>!seen.has(x.key)&&seen.add(x.key));
-    const addedKeys=new Set(d.diff.available?d.diff.addedKeys:[]);
+    const addedKeys=new Set(d.diff.available?d.diff.addedKeys:d.arrivals?.available?d.arrivals.keys:[]);
     for(const item of rows)body.append(elementRow(ctx,item,{badge:addedKeys.has(item.key)?"added":null}));
     const left=(group?.count??0)-rows.length;
     if(left>0)body.append(button(t("showMore",{n:left}),()=>a.more(role),{class:"btn ghost more",dataset:{role}}));
