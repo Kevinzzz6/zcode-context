@@ -57,6 +57,12 @@ export function conversationStore(db) {
       this.message(sessionId,id,time,{role:"assistant",semantics:{origin:"system",kind:"timeline_event",providerVisibility:"hidden"}});
       this.part(sessionId,id,id+"_timeline",time,{type:"timeline",timelineType:"model_change",time:{start:time,end:time},fromModelSelection:{label:from},toModelSelection:{label:to}});
     },
+    // A rewind deletes nothing; ZCode records the active branch on the session row.
+    revert(sessionId,revert){
+      db.exec("CREATE TABLE IF NOT EXISTS session(id TEXT PRIMARY KEY,revert TEXT)");
+      db.prepare("INSERT OR REPLACE INTO session VALUES (?,?)").run(sessionId,JSON.stringify(revert));
+    },
+    timeline(sessionId,messageId,id,time,data){this.part(sessionId,messageId,id,time,{type:"compaction",time:{start:time},...data});},
     remove(id){db.prepare("DELETE FROM part WHERE message_id=?").run(id);db.prepare("DELETE FROM message WHERE id=?").run(id);}
   };
 }

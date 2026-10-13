@@ -174,3 +174,21 @@ test("the conversation store is read incrementally, reloads after a deletion and
     fixture.db.close();
   } finally { await rm(root,{recursive:true,force:true}); }
 });
+test("the session cache evicts the least recently used session",()=>{
+  const service=new ContextDataService({db:"x",trajectoryDirs:[],logDir:"x"}),first=service.state("sess_0");
+  for(let i=1;i<8;i++)service.state("sess_"+i);
+  assert.equal(service.state("sess_0"),first);service.state("sess_8");
+  assert.equal(service.sessions.has("sess_0"),true);assert.equal(service.sessions.has("sess_1"),false);
+});
+test("older event logs cannot push out today's events",()=>temporary(async root=>{
+  await mkdir(join(root,"log"));
+  const stamp=date=>date.getFullYear()+"-"+String(date.getMonth()+1).padStart(2,"0")+"-"+String(date.getDate()).padStart(2,"0");
+  const day=offset=>{const date=new Date();date.setDate(date.getDate()-offset);return date;};
+  const rows=(date,n,tag)=>Array.from({length:n},(_,i)=>JSON.stringify({sessionId:"sess_A",event:"mcp.tools.registered",timestamp:new Date(Math.min(Date.now(),date.getTime())-i*1000).toISOString(),spanId:tag+i,context:{registeredToolCount:i}})).join("\n")+"\n";
+  await writeFile(join(root,"log","zcode-"+stamp(day(0))+".jsonl"),rows(day(0),60,"today"));
+  await writeFile(join(root,"log","zcode-"+stamp(day(1))+".jsonl"),rows(day(1),250,"yesterday"));
+  const service=new ContextDataService({db:join(root,"absent.sqlite"),trajectoryDirs:[],logDir:join(root,"log")});
+  await service.refresh("sess_A");
+  const spans=[...service.state("sess_A").events.values()].map(e=>e.spanId);
+  assert.equal(spans.filter(x=>x.startsWith("today")).length,60);assert.equal(spans.length,200);
+}));

@@ -328,3 +328,30 @@ test("a recorded compaction carries exact figures, replaces its log records and 
       store.compaction("sess_A","one",now-6000,{summaryId:"sum1",lastSummarizedId:"r1"});
     });
 });
+test("a compaction's summarized messages follow the active branch after a rewind; one on the rewound branch says so",()=>{
+  const now=Date.now();
+  return fixture([modelRecord("sess_A","only",[{role:"user",content:"third"}])],async(service,o)=>{
+    const compactions=o.events.filter(e=>e.kind==="compaction");
+    const active=compactions.find(e=>e.id==="c:compact_one"),rewound=compactions.find(e=>e.id==="c:compact_zero");
+    const {eventDetail:d}=await service.eventDetail("sess_A",active.id);
+    assert.equal(d.messageCount,4);assert.deepEqual(d.items.map(x=>x.role+":"+x.title),["user:first","assistant:first reply","user:third","assistant:third reply"]);
+    await assert.rejects(service.eventDetail("sess_A",rewound.id),{code:"rewound_branch"});
+  },[],null,store=>{
+    store.prompt("sess_A","u1",now-9000,"first");store.reply("sess_A","a1",now-8900,"first reply");
+    store.prompt("sess_A","u2",now-8000,"second");store.reply("sess_A","a2",now-7900,"second reply");
+    store.compaction("sess_A","zero",now-7800,{summaryId:"sumX",lastSummarizedId:"a2",count:4});
+    store.revert("sess_A",{kind:"conversation_rewind",targetMessageID:"u2",keptMessageIDs:["u1","a1"],branchCutAfterMessageID:"sumX",branchGeneration:1});
+    store.prompt("sess_A","u3",now-6000,"third");store.reply("sess_A","a3",now-5900,"third reply");
+    store.compaction("sess_A","one",now-5000,{summaryId:"sum1",lastSummarizedId:"a3",count:4});
+  });
+});
+test("searching changes matches full bodies like the element list, while the In row keeps every addition",()=>{
+  const base=[{role:"user",content:"question"}],added=[...base,{role:"tool",content:"small result"},{role:"tool",content:"x".repeat(400)+" DEEP_NEEDLE"}];
+  return fixture([modelRecord("sess_A","a",base),modelRecord("sess_A","b",added)],async(service,o)=>{
+    const key=o.trajectories.at(-1).key,plain=await service.request("sess_A",{key});
+    assert.equal(plain.diff.available,true);assert.equal(plain.diff.searchAddedGroups,undefined);
+    const d=await service.request("sess_A",{key,search:"deep_needle"});
+    assert.equal(d.diff.addedGroups.tool.count,2);assert.equal(d.diff.searchAddedGroups.tool.count,1);
+    assert.equal(d.diff.searchAddedGroups.tool.items[0].key,d.elements[0].key);assert.deepEqual(d.diff.searchRemovedGroups,{});
+  });
+});
