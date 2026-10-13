@@ -60,6 +60,7 @@ function bucketsOf(item) {
   return ORDER.filter(role=>map.has(role)).map(role=>map.get(role));
 }
 function compactKind(event) {
+  event=String(event??"");
   return event.includes(".micro")?"microCompact":event.includes(".auto")?"autoCompact":event.includes(".reactive")?"reactiveCompact":"manualCompact";
 }
 // Event anchors use the agent-request series that the trend shows, not auxiliary requests:
@@ -97,9 +98,14 @@ function eventLabel(t,e) {
   if(e.kind==="rewind")return t(e.edited?"kind.edit":"kind.rewind");
   return t("kind."+e.kind);
 }
+// The label follows the status, not the event name: a cancelled manual compaction is logged as compact.failed.
+const COMPACT_STATUS={started:"inProgress",retrying:"retrying",completed:"completed",failed:"failed",interrupted:"interrupted",skipped:"skipped",applied:"applied"};
 function eventDetail(t,e) {
-  if(e.kind==="compaction")return [t(e.status==="started"?"inProgress":e.status),e.durationMs!=null&&e.status!=="started"?t("took",{s:(e.durationMs/1000).toFixed(1)}):null,
-    e.summarizedCount!=null?t("summarizedCount",{n:full(e.summarizedCount)}):null,e.reason].filter(Boolean).join(" · ");
+  if(e.kind==="compaction") {
+    const status=Object.hasOwn(COMPACT_STATUS,e.status)?e.status:null,timed=status&&status!=="started"&&status!=="retrying";
+    return [t(status?COMPACT_STATUS[status]:"compactUnknown"),e.durationMs!=null&&timed?t("took",{s:(e.durationMs/1000).toFixed(1)}):null,
+      e.summarizedCount!=null?t("summarizedCount",{n:full(e.summarizedCount)}):null,e.reason].filter(Boolean).join(" · ");
+  }
   if(e.kind==="inject")return e.form==="skill"?e.name??"":String(e.text??"").split("\n").map(x=>x.trim()).find(Boolean)?.slice(0,160)??"";
   if(e.kind==="model")return modelName(e.from)+" → "+modelName(e.to);
   if(e.kind==="rewind")return e.keptMessageCount!=null?t("kept",{n:full(e.keptMessageCount)}):"";
@@ -422,19 +428,24 @@ function browserCard(ctx) {
   for(const text of notes)card.append(node("p",{class:"note",id:text.startsWith(t("notComparable"))?"diff-status":undefined},text));
   if(view.mode==="changes"&&!d.diff.available&&!arrivals)return card;
   const buckets=new Map(d.composition.buckets.map(b=>[b.role,b])),categories=new Map((d.diff.available?d.diff.categories:[]).map(c=>[c.role,c]));
-  const total=[...buckets.values()].reduce((n,b)=>n+b.estimatedTokens,0)||1,searching=Boolean(view.search),matched=new Set(Object.keys(d.groups??{}));
+  const total=[...buckets.values()].reduce((n,b)=>n+b.estimatedTokens,0)||1,searching=Boolean(view.search),matched=new Set(matchedRoles(view,d));
   const expanded=searching?(view.searchExpanded??[...matched]):(view.expanded??[]);
   const list=node("div",{class:"categories"});
   for(const role of ORDER.filter(r=>buckets.has(r)||(view.mode==="changes"&&categories.get(r)?.removedCount)))
     list.append(category(ctx,role,buckets.get(role),categories.get(role),total,expanded.includes(role),searching,matched.has(role)));
   card.append(list);
-  if(searching&&!matched.size&&view.mode==="all")card.append(node("p",{class:"muted pad"},t("noMatches")));
+  if(searching&&!matched.size)card.append(node("p",{class:"muted pad"},t("noMatches")));
   return card;
 }
+// While searching, changes come from the server's full-text-filtered groups (same match as All); missing ones mean none yet.
+const addedOf=(d,role,search)=>d.diff.available?d.diff[search?"searchAddedGroups":"addedGroups"]?.[role]:d.arrivals?.available?d.arrivals[search?"searchGroups":"groups"]?.[role]:null;
+const removedOf=(d,role,search)=>d.diff.available?d.diff[search?"searchRemovedGroups":"removedGroups"]?.[role]:null;
+// Categories a search matched, which are the ones expanded by default while searching.
+export const matchedRoles=(view,d)=>!d?[]:view.mode==="changes"?ORDER.filter(r=>addedOf(d,r,true)?.count||removedOf(d,r,true)?.count):Object.keys(d.groups??{});
 function category(ctx,role,bucket,change,total,open,searching,matched) {
   const {t,view,detail:d,actions:a,more}=ctx,changes=view.mode==="changes";
   const group=d.groups?.[role],count=bucket?.count??0,size=bucket?.estimatedTokens??0;
-  const added=d.diff.available?d.diff.addedGroups?.[role]:d.arrivals?.available?d.arrivals.groups?.[role]:null,removed=d.diff.available?d.diff.removedGroups?.[role]:null;
+  const added=addedOf(d,role,searching),removed=removedOf(d,role,searching);
   const plus=d.diff.available?change?.addedCount:added?.count;
   const dim=changes?!added?.count&&!removed?.count:searching&&!matched;
   const expanded=open&&!dim;
@@ -448,12 +459,11 @@ function category(ctx,role,bucket,change,total,open,searching,matched) {
   const body=node("div",{class:"cat-body"});
   if(role==="schema")body.append(schemaTools(ctx,changes));
   if(changes) {
-    const query=view.search.toLowerCase(),keep=x=>!query||[x.title,x.chip,x.preview,x.toolName].some(v=>String(v??"").toLowerCase().includes(query));
-    for(const item of (added?.items??[]).filter(keep))body.append(elementRow(ctx,item,{badge:"added"}));
+    for(const item of added?.items??[])body.append(elementRow(ctx,item,{badge:"added"}));
     if(added&&added.count>added.items.length)body.append(node("p",{class:"muted pad"},t("moreNotListed",{n:added.count-added.items.length})));
-    for(const item of (removed?.items??[]).filter(keep))body.append(elementRow(ctx,item,{badge:"removed",snapshotKey:d.diff.previousKey}));
+    for(const item of removed?.items??[])body.append(elementRow(ctx,item,{badge:"removed",snapshotKey:d.diff.previousKey}));
     if(removed&&removed.count>removed.items.length)body.append(node("p",{class:"muted pad"},t("moreNotListed",{n:removed.count-removed.items.length})));
-    if(body.children.length===(role==="schema"?1:0))body.append(node("p",{class:"muted pad"},t("noChanges")));
+    if(body.children.length===(role==="schema"?1:0))body.append(node("p",{class:"muted pad"},t(searching?"noMatches":"noChanges")));
   } else {
     const seen=new Set(),rows=[...(group?.items??[]),...(more[role]?.items??[])].filter(x=>!seen.has(x.key)&&seen.add(x.key));
     const addedKeys=new Set(d.diff.available?d.diff.addedKeys:d.arrivals?.available?d.arrivals.keys:[]);
@@ -692,7 +702,7 @@ function injectBody(t,event,target) {
 function summarizedBody(ctx,event) {
   const {t}=ctx,detail=ctx.eventDetails?.get(eventId(event)),box=node("div",{class:"event-body summarized"});
   if(!detail||detail.state==="loading"){box.append(node("p",{class:"muted"},t("loading")));return box;}
-  if(detail.state==="failed"){box.append(node("p",{class:"note"},t("summarizedUnavailable")));return box;}
+  if(detail.state==="failed"){box.append(node("p",{class:"note"},t(detail.code==="rewound_branch"?"summarizedRewound":"summarizedUnavailable")));return box;}
   const d=detail.data;
   box.append(node("p",{class:"muted small"},t("summarizedHint")+" · "+t("summarizedTotal",{n:full(d.messageCount),items:full(d.itemCount),tokens:approx(d.tokens)})));
   const list=node("div",{class:"summarized-list"});
