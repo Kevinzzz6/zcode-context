@@ -41,7 +41,7 @@ An independent, read-only, offline ZCode UI plugin for Desktop local workspaces.
     <td width="50%" valign="top">
       <img src="docs/images/frame-changes.png" alt="Changes view after a compaction">
       <h4>What did a compaction remove?</h4>
-      Logged compaction events, before/after navigation and the removed items. Changes mode lists only additions and removals (requires complete recording, see <a href="#default-recording-versus-complete-retention">below</a>).
+      Context events such as compaction; clicking one compares the steps before and after it in the browser, down to the removed items. Changes mode lists only additions and removals (requires complete recording, see <a href="#default-recording-versus-complete-retention">below</a>).
     </td>
   </tr>
   <tr>
@@ -69,7 +69,7 @@ From top to bottom:
   <tr><td nowrap><b>Context trend</b></td><td>One bar per agent request with an axis, a turn band and ✂ compaction markers; Total/Delta, Steps/Turns, Adaptive scaling; hover for per-category values, and hovering a category highlights it everywhere</td></tr>
   <tr><td nowrap><b>Context browser</b></td><td>Collapsible, paged categories; compare with the previous step, the previous turn or any earlier step; Changes mode shows only additions and removals; elements are named by tool and key argument, such as <code>Read · src/cache.ts</code></td></tr>
   <tr><td nowrap><b>Element details</b></td><td>Inline tool cards (argument table, OK/error), schema parameter tables and bodies (readable / Markdown / raw, copy, find, parts)</td></tr>
-  <tr><td nowrap><b>Compaction events</b></td><td>Logged kind, status, reason and savings, with before/after step navigation</td></tr>
+  <tr><td nowrap><b>Context events</b></td><td>Logged compactions (kind, status, duration, reason, savings), rewinds and edited questions, model switches and MCP tool registrations, filterable by kind; clicking one selects the step after it and opens the browser, comparing with the step before for compactions and rewinds. The ✂ markers in the trend are clickable too</td></tr>
   <tr><td nowrap><b>Usage</b></td><td>Secondary page with 30-day logical usage, daily totals and recent requests</td></tr>
   <tr><td nowrap><b>About</b></td><td>Secondary page (<kbd>ⓘ</kbd> in the toolbar): version, author, licence, source repository, and the read-only local-data, no-network statement</td></tr>
 </table>
@@ -195,7 +195,7 @@ flowchart LR
   subgraph local["This machine: ~/.zcode/cli (read-only)"]
     db[("db/db.sqlite<br/>usage · tool call counts")]
     traj["rollout/ · debug/<br/>Model I/O records"]
-    log["log/<br/>compaction events"]
+    log["log/<br/>context events"]
   end
   panel -- "two read-only tools<br/>bound to the session" --> server --> worker
   worker --> db
