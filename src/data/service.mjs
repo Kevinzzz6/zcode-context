@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { createHash } from "node:crypto";
-import { readUsage } from "./sqlite.mjs";
+import { readUsage, readToolCalls } from "./sqlite.mjs";
 import { JsonlTail } from "./jsonl.mjs";
 import { sanitizeSessionSegment, ContextError, isAgentSource } from "../domain/session.mjs";
 import { foldRecord, inputElements, composition, diffRecords, trajectorySummary, canonical, elementSummary, toolEvidence, textDifference } from "../domain/trajectory.mjs";
@@ -15,6 +15,17 @@ function groupByRole(items, limit = 40) {
     group.count++; if (group.items.length < limit) group.items.push(item);
   }
   return groups;
+}
+const bySize = (a, b) => b.chars - a.chars || a.key.localeCompare(b.key);
+const SCHEMA_ORDER = { calls: (a, b) => (b.callCount ?? -1) - (a.callCount ?? -1) || bySize(a, b),
+  name: (a, b) => (a.toolName == null) - (b.toolName == null) || String(a.toolName ?? "").localeCompare(String(b.toolName ?? "")) || a.key.localeCompare(b.key) };
+// A schema order only permutes schema items among their own slots, so other categories and pages keep the general order.
+function arrange(list, sort, schemaSort) {
+  const result = sort === "order" ? [...list] : [...list].sort(bySize), compare = SCHEMA_ORDER[schemaSort];
+  if (!compare) return result;
+  const slots = result.flatMap((x, i) => x.role === "schema" ? [i] : []), schemas = slots.map(i => result[i]).sort(compare);
+  slots.forEach((slot, i) => { result[slot] = schemas[i]; });
+  return result;
 }
 export class ContextDataService {
   constructor(paths) { this.paths = paths; this.sessions = new Map(); }
@@ -68,13 +79,13 @@ export class ContextDataService {
       });
     }
     const records = this.records(state);
-    const usage = readUsage(this.paths.db, sessionId);
+    const usage = readUsage(this.paths.db, sessionId); state.toolCalls = readToolCalls(this.paths.db, sessionId);
     if (records.length && coverage.every(item => !item.available)) coverage.push({ coverage: ["source_rotated"], scanning: false });
     const cutoff = Date.now() - 3 * 86400000;
     for (const [key,event] of state.events) if (event.timestamp < cutoff) state.events.delete(key);
     while (state.logTails.size > 3) state.logTails.delete(state.logTails.keys().next().value);
     const latest = records.findLast(item => isAgentSource(item.record.querySource));
-    const overview = { sessionId, usage, trajectories: records.slice(-60).map(item => this.timelineItem(records,item)),
+    const overview = { sessionId, usage, toolCalls: state.toolCalls, trajectories: records.slice(-60).map(item => this.timelineItem(records,item)),
       composition: latest ? composition(latest.record) : null,
       trajectory: { available: records.length > 0, scanning: coverage.some(item => item.scanning),
         pendingLine: coverage.some(item => item.pendingLine), coverage: [...new Set(coverage.flatMap(item => item.coverage))],
@@ -144,10 +155,14 @@ export class ContextDataService {
     if(!selected)throw new ContextError("request_expired","Request is outside the loaded trajectory window.");
     const record=selected.record,elements=inputElements(record),page=args.page??0,pageSize=40;
     let diff=this.comparison(all,selected,args.baselineKey);
-    const bySize=list=>args.sort==="order"?list:[...list].sort((a,b)=>b.chars-a.chars||a.key.localeCompare(b.key));
+    // Session-wide counts from tool_usage; null when the table is unavailable or a name fell outside the bounded read.
+    const calls=state.toolCalls??{available:false,byName:{}};
+    const callCount=x=>!calls.available||typeof x.toolName!=="string"?null:Object.hasOwn(calls.byName,x.toolName)?calls.byName[x.toolName].count:calls.truncated?null:0;
+    const decorate=x=>x.role==="schema"?{...x,callCount:callCount(x)}:x;
+    const order=list=>arrange(list.map(decorate),args.sort,args.schemaSort);
     if(diff.available)diff={...diff,addedCount:diff.added.length,removedCount:diff.removed.length,changedCount:diff.changed.length,
       addedKeys:diff.added.slice(0,2000).map(x=>x.key),changedPairs:diff.changed.map(x=>({before:x.before.key,after:x.after.key})),
-      addedGroups:groupByRole(bySize(diff.added)),removedGroups:groupByRole(bySize(diff.removed)),
+      addedGroups:groupByRole(order(diff.added)),removedGroups:groupByRole(order(diff.removed)),
       added:diff.added.slice((args.changePage??0)*40,(args.changePage??0)*40+40),
       removed:diff.removed.slice((args.changePage??0)*40,(args.changePage??0)*40+40),changed:diff.changed.slice((args.changePage??0)*40,(args.changePage??0)*40+40)};
     const search=(args.search??"").toLowerCase(),role=args.role;
@@ -158,10 +173,13 @@ export class ContextDataService {
       for(const item of snapshot===selected?elements:inputElements(snapshot.record)) {
         if(role&&item.role!==role)continue;
         if(search&&![item.readable,item.toolName,item.toolCallId,item.key].some(v=>String(v??"").toLowerCase().includes(search)))continue;
-        filtered.push({...elementSummary(item),...(loadedSearch?{snapshotKey:snapshot.key,snapshotTime:snapshot.record.startedAt}:{})});
+        filtered.push({...decorate(elementSummary(item)),...(loadedSearch?{snapshotKey:snapshot.key,snapshotTime:snapshot.record.startedAt}:{})});
       }
     }
-    if(args.sort!=="order")filtered.sort((a,b)=>b.chars-a.chars||a.key.localeCompare(b.key));
+    const ordered=arrange(filtered,args.sort,loadedSearch?null:args.schemaSort);
+    const schemas=elements.filter(x=>x.role==="schema").map(x=>decorate(elementSummary(x))),unused=schemas.filter(x=>x.callCount===0);
+    const schemaCalls=record.tools===null?{available:false,reason:"not_recorded"}:!calls.available?{available:false,reason:calls.code??"tool_usage_unavailable"}
+      :{available:true,scope:"session",schemaCount:schemas.length,unusedCount:unused.length,unusedEstimatedTokens:unused.reduce((n,x)=>n+x.estimatedTokens,0),unknownCount:schemas.filter(x=>x.callCount==null).length};
     const element=args.elementKey?elements.find(x=>x.key===args.elementKey):null;
     if(args.elementKey&&!element)throw new ContextError("element_missing","Element unavailable.");
     let content=null;
@@ -169,7 +187,7 @@ export class ContextDataService {
       const text=args.format==="raw"?element.text:element.readable,offset=args.offset??0;
       const hits=[];let matchCount=0;const query=(args.bodySearch??"").toLowerCase();
       if(query){const haystack=text.toLowerCase();let cursor=0;while((cursor=haystack.indexOf(query,cursor))!==-1){matchCount++;if(hits.length<100)hits.push(cursor);cursor+=query.length;}}
-      content={...elementSummary(element),offset,totalChars:text.length,lineCount:text.split("\n").length,
+      content={...decorate(elementSummary(element)),offset,totalChars:text.length,lineCount:text.split("\n").length,
         text:text.slice(offset,offset+12000),hasMore:offset+12000<text.length,format:args.format??"readable",
         tool:toolEvidence(record,element),hits,matchCount};
     }
@@ -189,7 +207,7 @@ export class ContextDataService {
       baselineOptions:all.filter(x=>x.path===selected.path&&x.record.querySource===record.querySource&&all.indexOf(x)<all.indexOf(selected)).slice(-60).map(x=>({key:x.key,startedAt:x.record.startedAt,turnId:x.record.turnId,complete:x.record.messages.complete})),
       elementCount:elements.length,filteredCount:filtered.length,page,searchScope:args.searchScope==="loaded"&&search?"all_loaded_snapshots":"all_elements_in_selected_loaded_snapshot",loadedSnapshotCount:all.length,
       largest:filtered.length?filtered.reduce((largest,x)=>x.chars>largest.chars?x:largest):null,
-      groups:loadedSearch?null:groupByRole(filtered),
-      elements:filtered.slice(page*pageSize,(page+1)*pageSize),content,bodyDiff};
+      groups:loadedSearch?null:groupByRole(ordered),schemaCalls,
+      elements:ordered.slice(page*pageSize,(page+1)*pageSize),content,bodyDiff};
   }
 }

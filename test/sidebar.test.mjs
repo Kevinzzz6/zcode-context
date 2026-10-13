@@ -5,16 +5,18 @@ import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {ContextDataService} from "../src/data/service.mjs";
 import {foldRecord,diffRecords,inputElements,toolEvidence,attemptUsage,textDifference,elementSummary,trajectorySummary} from "../src/domain/trajectory.mjs";
-import {modelRecord} from "./fixtures.mjs";
-async function fixture(records,callback,events=[]) {
+import {modelRecord,usageDatabase} from "./fixtures.mjs";
+async function fixture(records,callback,events=[],tools=null) {
   const root=await mkdtemp(join(tmpdir(),"context-sidebar-"));
   try {
     await mkdir(join(root,"rollout"));await mkdir(join(root,"log"));
     await writeFile(join(root,"rollout","model-io-sess_A.jsonl"),records.map(x=>typeof x==="string"?x:JSON.stringify(x)).join("\n")+"\n");
     const date=new Date(),stamp=date.getFullYear()+"-"+String(date.getMonth()+1).padStart(2,"0")+"-"+String(date.getDate()).padStart(2,"0");
     await writeFile(join(root,"log","zcode-"+stamp+".jsonl"),events.map(JSON.stringify).join("\n")+"\n");
-    const service=new ContextDataService({db:join(root,"absent.sqlite"),trajectoryDirs:[join(root,"rollout")],logDir:join(root,"log")});
-    await callback(service,await service.overview("sess_A"));
+    const db=tools?usageDatabase(root):null;
+    for(const [i,[sessionId,name,status]] of (tools??[]).entries())db.tool(sessionId,"t"+i,name,status);
+    const service=new ContextDataService({db:db?db.path:join(root,"absent.sqlite"),trajectoryDirs:[join(root,"rollout")],logDir:join(root,"log")});
+    try{await callback(service,await service.overview("sess_A"));}finally{db?.db.close();}
   }finally{await rm(root,{recursive:true,force:true});}
 }
 test("search and largest-content location cover elements beyond the first 40-row page",()=>{
@@ -149,4 +151,47 @@ test("groups give every category its own first page and changes are grouped by c
     assert.deepEqual(d.diff.removedGroups,{});
     const more=await service.request("sess_A",{key:o.trajectories.at(-1).key,role:"tool",page:1});
     assert.equal(more.elements.length,40);assert.ok(more.elements.every(x=>x.role==="tool"));
+  }));
+// Production records keep only the newest messages: messagesKind "tail" with an absolute messageOffset.
+const tail=(id,all,keep,extra={})=>modelRecord("sess_A",id,[],{...extra,request:{messages:all.slice(-keep),messagesKind:"tail",messageOffset:all.length-keep,messageCount:all.length,...extra.request}});
+const tool=(name,size)=>({type:"function",function:{name,description:name+" "+"d".repeat(size),parameters:{type:"object"}}});
+test("schema call counts come from session tool_usage, not the tail of recorded messages",()=>{
+  const tools=[tool("Read",400),tool("Grep",100),tool("Write",300),tool("Unused",200)];
+  const history=[{role:"system",content:"rules"},...Array.from({length:20},(_,i)=>({role:"user",content:"m"+i}))];
+  return fixture([tail("r",history,4,{request:{body:{tools}}})],async(service,o)=>{
+    assert.equal(o.toolCalls.available,true);assert.equal(o.toolCalls.byName.Read.count,3);assert.equal(o.toolCalls.byName.Read.errorCount,1);
+    const d=await service.request("sess_A",{key:o.trajectories[0].key});
+    assert.equal(d.summary.complete,false);
+    const count=Object.fromEntries(d.groups.schema.items.map(x=>[x.toolName,x.callCount]));
+    assert.deepEqual(count,{Read:3,Grep:1,Write:0,Unused:0});
+    assert.equal(d.schemaCalls.available,true);assert.equal(d.schemaCalls.scope,"session");assert.equal(d.schemaCalls.unusedCount,2);
+    const size=name=>d.groups.schema.items.find(x=>x.toolName===name).estimatedTokens;
+    assert.equal(d.schemaCalls.unusedEstimatedTokens,size("Write")+size("Unused"));
+    assert.deepEqual(d.groups.schema.items.map(x=>x.toolName),["Read","Write","Unused","Grep"]);
+    const calls=await service.request("sess_A",{key:o.trajectories[0].key,schemaSort:"calls"});
+    assert.deepEqual(calls.groups.schema.items.map(x=>x.toolName),["Read","Grep","Write","Unused"]);
+    const names=await service.request("sess_A",{key:o.trajectories[0].key,schemaSort:"name"});
+    assert.deepEqual(names.groups.schema.items.map(x=>x.toolName),["Grep","Read","Unused","Write"]);
+    assert.deepEqual(names.groups.user.items.map(x=>x.key),d.groups.user.items.map(x=>x.key));
+    const body=await service.request("sess_A",{key:o.trajectories[0].key,elementKey:"tool:0"});assert.equal(body.content.callCount,3);
+  },[],[["sess_A","Read"],["sess_A","Read"],["sess_A","Read","error"],["sess_A","Grep"],["sess_B","Write"],["sess_B","Unused"]]);
+});
+test("schema call sort stays consistent across show-more pages",()=>{
+  const tools=Array.from({length:45},(_,i)=>tool("T"+String(i).padStart(2,"0"),100+i*10));
+  return fixture([modelRecord("sess_A","r",[{role:"user",content:"x"}],{request:{messages:[{role:"user",content:"x"}],body:{tools}}})],async(service,o)=>{
+    const key=o.trajectories[0].key,first=await service.request("sess_A",{key,schemaSort:"calls"});
+    assert.equal(first.groups.schema.count,45);assert.equal(first.groups.schema.items.length,40);
+    const next=await service.request("sess_A",{key,schemaSort:"calls",role:"schema",page:1});
+    const all=[...first.groups.schema.items,...next.elements];
+    assert.equal(new Set(all.map(x=>x.key)).size,45);
+    assert.deepEqual(all.slice(0,3).map(x=>x.toolName),["T01","T40","T00"]);
+    for(let i=1;i<all.length;i++)assert.ok(all[i-1].callCount>all[i].callCount||all[i-1].callCount===all[i].callCount&&all[i-1].chars>=all[i].chars);
+    assert.equal(first.schemaCalls.unusedCount,42);
+  },[],[["sess_A","T01"],["sess_A","T01"],["sess_A","T01"],["sess_A","T40"],["sess_A","T40"],["sess_A","T00"]]);
+});
+test("without a tool_usage table call counts are unknown, never zero",()=>fixture([
+  modelRecord("sess_A","r",[],{request:{messages:[],body:{tools:[tool("Read",10)]}}})],async(service,o)=>{
+    assert.equal(o.toolCalls.available,false);
+    const d=await service.request("sess_A",{key:o.trajectories[0].key,schemaSort:"calls"});
+    assert.equal(d.groups.schema.items[0].callCount,null);assert.equal(d.schemaCalls.available,false);
   }));
