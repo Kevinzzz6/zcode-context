@@ -32,7 +32,9 @@ export function demoCall(name,args) {
   if(name==="get_context_summary")return {sessionId:"sess_demo",revision:"demo",trajectories:steps.map(view),trajectory:{coverage:[]},history:{loadedCount:count,hasOlder:false},
     usage:{available:true,totals:{requestCount:count,inputTokens:steps.reduce((n,s)=>n+s.usage.inputTokens,0),outputTokens:steps.reduce((n,s)=>n+s.usage.outputTokens,0),cacheHitRate:0.9},
       days:[{utcDay:Math.floor(now/86400000),inputTokens:steps.reduce((n,s)=>n+s.usage.inputTokens,0),outputTokens:2000}],facts:steps.map(s=>({startedAt:s.startedAt,querySource:"main_turn",modelId:"demo-model",status:"completed",inputTokens:s.usage.inputTokens,outputTokens:s.usage.outputTokens,durationMs:1800}))},
-    events:[{event:"compact.auto.completed",timestamp:steps[6].startedAt-4000,reason:"token_pressure",tokensSavedEstimate:9000,navigation:{evidence:"time_range"}}]};
+    events:[{kind:"compaction",event:"compact.auto.completed",status:"completed",timestamp:steps[6].startedAt-14000,endedAt:steps[6].startedAt-4000,durationMs:10000,
+        reason:"token_pressure",tokensSavedEstimate:9000,navigation:{evidence:"turn_range"}},
+      {kind:"model",event:"session.model.updated",timestamp:steps[8].startedAt-3000,endedAt:steps[8].startedAt-3000,from:"demo/demo-small",to:"demo/demo-model",navigation:{evidence:"time_range"}}]};
   const index=Math.max(0,steps.findIndex(s=>s.key===args.key)),s=steps[index],previous=steps[index-1];
   const query=(args.search??"").toLowerCase(),filtered=s.list.filter(x=>(!args.role||x.role===args.role)&&(!query||x.title.toLowerCase().includes(query))).sort((a,b)=>b.chars-a.chars);
   const keys=new Set(previous?.list.map(x=>x.key+x.estimatedTokens)??[]),added=previous?s.list.filter(x=>!keys.has(x.key+x.estimatedTokens)):[];

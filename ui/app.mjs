@@ -9,7 +9,7 @@ const demo=new URLSearchParams(location.search).get("demo")==="1";
 let app=null,t=translator(),view=initialView(),boundSession=null,overview=null,items=[],hasOlder=false,historyPage=0;
 let detail=null,content=null,more={},notice=null,busy=false,activeLoads=0;
 let generation=0,detailSequence=0,contentSequence=0,moreSequence=0;
-let pendingRender=false,renderedSelection=null,scrollTarget=null,jumpToMatch=false,keepRightEdge=null;
+let pendingRender=false,renderedSelection=null,scrollTarget=null,jumpToMatch=false,keepRightEdge=null,revealKey=null;
 let timer,searchTimer,bodyTimer,slowTimer,noticeTimer,scrollTimer,idlePolls=0,stopped=false;
 const persist=()=>saveView(boundSession,view);
 const latestKey=()=>items.filter(isAgent).at(-1)?.key??items.at(-1)?.key??null;
@@ -41,7 +41,7 @@ function render(background=false) {
   }
   window.scrollTo(0,y);
   if(renderedSelection!==view.selectedKey){renderedSelection=view.selectedKey;centerSelectedBar();}
-  if(scrollTarget){const el=root.querySelector(scrollTarget);scrollTarget=null;el?.scrollIntoView({block:"nearest"});}
+  if(scrollTarget){const [selector,block="nearest"]=[].concat(scrollTarget),el=root.querySelector(selector);scrollTarget=null;el?.scrollIntoView({block});}
   if(jumpToMatch) {
     const body=document.getElementById("content"),mark=body?.querySelector("mark.current");
     if(mark){jumpToMatch=false;body.scrollTop=mark.offsetTop-body.clientHeight/3;}
@@ -126,6 +126,14 @@ async function loadDetail(background=false) {
     detail=next;more={};
     if(view.baselineMode==="turn"&&!view.baselineKey&&!baselineArgs(key).baselineKey&&isAgent(items.find(x=>x.key===key)))detail={...next,diff:{available:false,reason:"no_previous_turn"}};
     if(!items.some(x=>x.key===key))items=mergeSnapshots(items,[next.summary]);
+    // An event focus opens the changes against the request before the event, or explains why they cannot be compared.
+    if(view.eventFocus===key) {
+      view.eventFocus=null;
+      if(next.diff.available)view.expanded=next.diff.categories.filter(c=>c.addedCount||c.removedCount).map(c=>c.role);
+      else{view.mode="all";view.eventNote={key,reason:next.diff.reason};}
+    }
+    // The page is short while a step loads, so the browser is revealed again once its content is in.
+    if(revealKey===key){revealKey=null;scrollTarget=["#browser","start"];}
     if(view.expanded===null) {
       const roles=next.composition.buckets.map(b=>b.role),largest=[...next.composition.buckets].sort((a,b)=>b.estimatedTokens-a.estimatedTokens)[0]?.role;
       view.expanded=roles.includes("tool")?["tool"]:largest?[largest]:[];
@@ -206,11 +214,26 @@ const actions={
   select(key) {
     if(!key)return;
     ++contentSequence;
-    view={...view,selectedKey:key,follow:key===latestKey(),open:null,baselineKey:null};
+    view={...view,selectedKey:key,follow:key===latestKey(),open:null,baselineKey:null,eventFocus:null,eventNote:null,eventKey:null};
     detail=null;content=null;more={};if(notice?.kind==="error")notice=null;
     persist();render();loadDetail();
   },
   latest(){actions.select(latestKey());},
+  // Selecting an event pins the first request after it and brings the context browser into view.
+  focusEvent({id,after,before,compare}) {
+    if(!after)return;
+    ++contentSequence;
+    const baseline=compare&&before&&before!==after?before:null;
+    view={...view,selectedKey:after,follow:false,open:null,baselineKey:baseline,search:"",searchExpanded:null,eventNote:null,eventKey:id,
+      eventFocus:baseline?after:null,mode:baseline?"changes":view.mode};
+    detail=null;content=null;more={};if(notice?.kind==="error")notice=null;
+    scrollTarget=["#browser","start"];revealKey=after;persist();render();loadDetail();
+  },
+  eventKind(kind,kinds) {
+    const current=view.eventKinds?.filter(k=>kinds.includes(k))??[];
+    const next=current.includes(kind)?current.filter(k=>k!==kind):[...current,kind];
+    view={...view,eventKinds:next.length&&next.length<kinds.length?next:null};persist();render();
+  },
   refresh(force=true){refresh(force);},
   page(page){view={...view,page};persist();render();window.scrollTo(0,0);},
   set(patch){view={...view,...patch};persist();render();},
