@@ -154,7 +154,7 @@ export class ContextDataService {
   timelineItem(all,item) {
     if(!item.timeline || item.timeline.baselineKey && !all.some(x=>x.key===item.timeline.baselineKey)){
       const d=this.comparison(all,item);
-      item.timeline={...item.summary,delta:d.available?{chars:d.charsDelta,categories:d.categories,schemasComparable:d.schemasComparable}:null,
+      item.timeline={...item.summary,delta:d.available?{chars:d.charsDelta,tokens:d.tokensDelta,categories:d.categories,schemasComparable:d.schemasComparable}:null,
         baselineKey:d.previousKey??null,deltaReason:d.reason??null};
     }
     return item.timeline;

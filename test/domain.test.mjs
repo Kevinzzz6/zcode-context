@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {readSessionContext,sanitizeSessionSegment} from "../src/domain/session.mjs";
 import {normalizeFact,summarizeFacts} from "../src/domain/usage.mjs";
-import {foldRecord,diffRecords,composition} from "../src/domain/trajectory.mjs";
+import {foldRecord,diffRecords,composition,estimateTokens} from "../src/domain/trajectory.mjs";
 import {compactEvent} from "../src/domain/events.mjs";
 import {modelRecord} from "./fixtures.mjs";
 test("only the host namespace binds a session; transport IDs and arguments cannot bind it",()=>{
@@ -53,7 +53,7 @@ test("an unrecorded schema set is not treated as a tool removal",()=>{
 });
 test("composition clearly reports estimates and schema coverage",()=>{
   const record=foldRecord(modelRecord("s","a",[{role:"tool",toolName:"Read",content:"output"}]));
-  const result=composition(record);assert.equal(result.tokenMethod,"chars/4");assert.equal(result.schemasRecorded,false);
+  const result=composition(record);assert.equal(result.tokenMethod,"script_weighted");assert.equal(result.schemasRecorded,false);
 });
 test("compaction requires an explicit matching-session event; a size drop is not a cause",()=>{
   const record={sessionId:"sess_A",event:"compact.micro.applied",timestamp:"2026-10-12T12:00:00Z",context:{trigger:"token_pressure",tokensSaved:300}};
@@ -78,4 +78,23 @@ test("field-level absence stays unknown even when another usage field is reporte
   assert.equal(summarizeFacts([fact]).cacheHitRate,null);
   const totalOnly=normalizeFact({id:"total",input_tokens:0,output_tokens:0,computed_total_tokens:0,provider_total_tokens:50,raw_usage_json:'{"totalTokens":50}'});
   assert.equal(totalOnly.inputTokens,null);assert.equal(totalOnly.totalTokens,50);
+});
+
+test("token estimates weigh CJK characters far above Latin ones and stay consistent across composition and deltas",()=>{
+  assert.equal(estimateTokens(""),0);
+  assert.equal(estimateTokens("abcdefgh"),2);
+  assert.equal(estimateTokens("检查缓存过期逻辑"),6);
+  assert.equal(estimateTokens("こんにちは안녕"),5);
+  assert.equal(estimateTokens("😀😀"),1);
+  // Mixed text adds its parts, so English-only estimates are unchanged by the CJK weighting.
+  assert.equal(estimateTokens("abcd检查缓"),3);
+  const chinese="请检查缓存过期逻辑并修复".repeat(20),english="Please check the cache expiry logic and fix it".repeat(5);
+  const before=foldRecord(modelRecord("s","a",[{role:"user",content:english}]));
+  const after=foldRecord(modelRecord("s","b",[{role:"user",content:english},{role:"user",content:chinese}]));
+  const cn=composition(after).buckets.find(x=>x.role==="user").estimatedTokens-composition(before).buckets.find(x=>x.role==="user").estimatedTokens;
+  assert.ok(cn>=chinese.length/1.5,"Chinese content counts at least one token per 1.5 characters");
+  const diff=diffRecords(before,after);
+  assert.equal(diff.tokensDelta,cn);
+  assert.equal(diff.categories.find(x=>x.role==="user").tokensDelta,cn);
+  assert.equal(composition(after).tokenMethod,"script_weighted");
 });
