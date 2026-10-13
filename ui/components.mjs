@@ -1,203 +1,474 @@
-import { palette } from "./i18n.mjs";
-export const fmt=n=>n==null?"—":Intl.NumberFormat().format(n);
-export const when=n=>n?new Date(n).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit",second:"2-digit"}):"—";
+import { palette, ORDER } from "./i18n.mjs";
+export const CHUNK=12000;
+const nf=new Intl.NumberFormat();
+export const full=n=>n==null||!Number.isFinite(n)?"—":nf.format(Math.round(n));
+export function compact(n) {
+  if(n==null||!Number.isFinite(n))return "—";
+  const a=Math.abs(n);
+  if(a<1000)return String(Math.round(n));
+  if(a<1e6)return (n/1000).toFixed(1)+"k";
+  return (n/1e6).toFixed(a<1e7?2:1)+"M";
+}
+const approx=n=>"≈"+compact(n);
+const signed=n=>(n>0?"+":n<0?"−":"±")+compact(Math.abs(n));
+const pct=ratio=>ratio>0&&ratio<0.005?"<1%":Math.round(ratio*100)+"%";
+const tokensOf=chars=>Math.round(chars/4);
+export const clock=ms=>ms?new Date(ms).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit",second:"2-digit",hour12:false}):"—";
+const utcDate=day=>new Date(day*86400000).toISOString().slice(0,10);
+
 export function node(tag,attrs={},...children) {
   const el=document.createElement(tag);
   for(const [key,value] of Object.entries(attrs)) {
+    if(value===undefined||value===null)continue;
     if(key==="class")el.className=value;
     else if(key.startsWith("on"))el.addEventListener(key.slice(2).toLowerCase(),value);
     else if(key==="style")Object.assign(el.style,value);
     else if(key==="dataset")Object.assign(el.dataset,value);
-    else if(value!==undefined&&value!==null)el[key]=value;
+    else el[key]=value;
   }
-  el.append(...children.filter(x=>x!==null&&x!==undefined));return el;
+  el.append(...children.flat(Infinity).filter(x=>x!==null&&x!==undefined&&x!==false));
+  return el;
 }
-export const button=(text,action,attrs={})=>node("button",{type:"button",onclick:action,...attrs},text);
-const note=text=>node("p",{class:"muted"},text);
-const total=s=>s?.composition?.buckets.reduce((n,x)=>n+x.estimatedTokens,0)??0;
-export function snapshotControls(ctx) {
-  const {t,view,items,selected,actions:a}=ctx,index=items.findIndex(x=>x.key===view.selectedKey);
-  const select=node("select",{id:"snapshot",value:view.selectedKey??"",onchange:e=>a.select(e.target.value)});
-  for(const [i,x] of items.entries())select.append(node("option",{value:x.key,selected:x.key===view.selectedKey},`R${i+1} · ${when(x.startedAt)} · ${x.querySource} #${x.attempt}`));
-  return node("section",{class:"snapshot-controls"},node("div",{class:"controls"},
-    button("‹",()=>a.select(items[index-1]?.key),{id:"snapshot-previous",disabled:index<=0,ariaLabel:t("previous")}),select,
-    button("›",()=>a.select(items[index+1]?.key),{id:"snapshot-next",disabled:index<0||index>=items.length-1,ariaLabel:t("next")})),
-    node("div",{class:"row-head"},node("span",{id:"follow-state",class:"muted"},t(view.follow?"following":"pinned")),
-      button((!view.follow&&items.at(-1)?.key!==view.selectedKey?t("newRequests")+" · ":"")+t("latest"),a.latest,{id:"latest",disabled:view.follow})),
-    selected?node("div",{class:"overview-number"},node("span",{},t("estimate")),node("strong",{id:"selected-total"},fmt(total(selected))),
-      node("span",{id:"selected-delta",class:"muted"},selected.delta?`Δ ${selected.delta.chars>=0?"+":""}${fmt(selected.delta.chars)} ${t("chars")}`:t("noDiff")+" · "+t(selected.deltaReason??"no_previous_snapshot")),
-      note(selected.complete?selected.model?.modelId??"":t("partial")),
-      note(`Provider IN ${fmt(selected.usage?.inputTokens)} / OUT ${fmt(selected.usage?.outputTokens)} · Cache ${fmt(selected.usage?.cacheReadTokens)}`)):note(t("empty")));
+export const button=(content,action,attrs={})=>node("button",{type:"button",onclick:action,...attrs},content);
+const muted=value=>node("span",{class:"muted"},value);
+const spacer=()=>node("span",{class:"spacer"});
+const dot=role=>node("i",{class:"dot",style:{background:palette[role]??palette.unknown}});
+const chip=(value,cls="")=>value?node("span",{class:("chip "+cls).trim()},value):null;
+function seg(options,value,onChange,{id,small=false}={}) {
+  const group=node("div",{class:"seg"+(small?" small":""),role:"group",id});
+  for(const [key,label] of options)group.append(button(label,()=>{if(key!==value)onChange(key);},{class:key===value?"on":"",ariaPressed:String(key===value),id:id?id+"-"+key:undefined}));
+  return group;
 }
-export function trend(ctx) {
-  const {t,view,items,actions:a}=ctx;
-  const end=Math.max(0,items.length-view.trendPage*10),window=items.slice(Math.max(0,end-10),end);
-  const scale=Math.max(1,...window.map(s=>view.trend==="total"?total(s):Math.max(
-    s.delta?.categories.filter(x=>x.charsDelta>0).reduce((n,x)=>n+x.charsDelta,0)??0,
-    -(s.delta?.categories.filter(x=>x.charsDelta<0).reduce((n,x)=>n+x.charsDelta,0)??0))));
-  const chart=node("div",{class:"trend",id:"trend",role:"group",ariaLabel:t("estimate")});
-  for(const s of window) {
-    const delta=view.trend==="delta",bar=button("",()=>a.select(s.key),{class:"trend-column"+(s.key===view.selectedKey?" selected":""),title:`${s.requestId} · ${fmt(total(s))}`,dataset:{key:s.key},ariaLabel:`${when(s.startedAt)} ${fmt(total(s))}`});
-    bar.setAttribute("aria-pressed",String(s.key===view.selectedKey));
-    const nearby=ctx.overview.events?.filter(e=>[e.navigation?.beforeKey,e.navigation?.afterKey].includes(s.key))??[];
-    if(nearby.length){bar.classList.add("event-range");bar.title+=" · "+t("timeRange");bar.append(node("span",{class:"event-marker",title:t("timeRange")},"◇"));}
-    const positive=node("div",{class:delta?"stack-column positive":"stack-column"}),negative=node("div",{class:"stack-column negative"});
-    if(delta&&!s.delta)positive.append(node("span",{class:"missing"},"?"));
-    for(const x of delta?s.delta?.categories??[]:s.composition?.buckets??[]) {
-      const value=delta?x.charsDelta:x.estimatedTokens;
-      const seg=node("span",{class:"trend-segment",style:{height:Math.abs(value)/scale*(delta?47:94)+"px",background:palette[x.role]??palette.unknown},title:t(x.role)+" "+fmt(value)});
-      (value<0?negative:positive).append(seg);
+
+const SOURCES=new Set(["session_title","compact","main_turn","subagent","workflow_child"]);
+export const isAgent=item=>item?.step!=null;
+const sourceName=(t,source)=>t("source."+(SOURCES.has(source)?source:"unknown"));
+export const itemName=(t,item)=>!item?"—":item.step!=null?t("step",{n:item.step}):sourceName(t,item.querySource);
+const itemLong=(t,item)=>[itemName(t,item),item.turn!=null?t("turn",{n:item.turn}):null,clock(item.startedAt)].filter(Boolean).join(" · ");
+const totalOf=item=>item?.composition?.buckets?.reduce((n,x)=>n+x.estimatedTokens,0)??0;
+function bucketsOf(item) {
+  const map=new Map((item?.composition?.buckets??[]).map(x=>[x.role,x]));
+  return ORDER.filter(role=>map.has(role)).map(role=>map.get(role));
+}
+function compactKind(event) {
+  return event.includes(".micro")?"microCompact":event.includes(".auto")?"autoCompact":event.includes(".reactive")?"reactiveCompact":"manualCompact";
+}
+// Compaction anchors use the agent-request series that the trend shows, not auxiliary requests.
+function anchors(items,event) {
+  const agents=items.filter(isAgent);
+  return {before:agents.findLast(x=>x.startedAt<=event.timestamp)??null,after:agents.find(x=>x.startedAt>event.timestamp)??null};
+}
+
+export function renderApp(ctx) {
+  const {view}=ctx,page=document.createDocumentFragment();
+  const add=(...parts)=>page.append(...parts.filter(Boolean));
+  add(toolbar(ctx),ctx.notice?noticeBar(ctx):null);
+  if(!ctx.overview){add(node("section",{class:"card"},node("p",{class:"muted",id:"loading"},ctx.t("loading"))));return page;}
+  if(view.page==="usage"){add(usagePage(ctx),about(ctx));return page;}
+  if(!ctx.items.length) {
+    add(node("section",{class:"card empty"},node("h2",{},ctx.t("empty")),node("p",{class:"muted"},ctx.t("emptyHint"))),eventsCard(ctx),about(ctx));
+    return page;
+  }
+  add(pinnedBar(ctx),summaryCard(ctx),trendCard(ctx),browserCard(ctx),eventsCard(ctx),about(ctx));
+  return page;
+}
+
+function toolbar(ctx) {
+  const {t,view,items,actions:a}=ctx,bar=node("div",{class:"toolbar"});
+  const refresh=button("↻",()=>a.refresh(),{class:"icon-btn"+(ctx.busy?" spinning":""),id:"refresh",title:t("refresh"),ariaLabel:t("refresh")});
+  if(view.page==="usage") {
+    bar.append(button("‹ "+t("back"),()=>a.page("context"),{class:"btn ghost",id:"usage-back"}),node("h1",{class:"toolbar-title",id:"heading"},t("usageTitle")),spacer(),refresh);
+    return bar;
+  }
+  if(items.length) {
+    const agents=items.filter(isAgent),selected=items.find(x=>x.key===view.selectedKey),index=agents.findIndex(x=>x.key===view.selectedKey);
+    const prev=index>=0?agents[index-1]:selected?agents.findLast(x=>x.startedAt<selected.startedAt):null;
+    const next=index>=0?agents[index+1]:selected?agents.find(x=>x.startedAt>selected.startedAt):null;
+    const select=node("select",{id:"snapshot",class:"step-select",ariaLabel:t("agentRequests"),onchange:e=>a.select(e.target.value)});
+    const main=node("optgroup",{label:t("agentRequests")}),aux=node("optgroup",{label:t("auxRequests")});
+    for(const item of [...items].reverse())(isAgent(item)?main:aux).append(node("option",{value:item.key,selected:item.key===view.selectedKey},itemLong(t,item)));
+    if(main.children.length)select.append(main);
+    if(aux.children.length)select.append(aux);
+    bar.append(node("div",{class:"stepper"},
+      button("‹",()=>a.select(prev?.key),{class:"icon-btn",id:"snapshot-previous",disabled:!prev,title:t("previous"),ariaLabel:t("previous")}),select,
+      button("›",()=>a.select(next?.key),{class:"icon-btn",id:"snapshot-next",disabled:!next,title:t("next"),ariaLabel:t("next")})));
+  } else bar.append(spacer());
+  bar.append(button(t("usage"),()=>a.page("usage"),{class:"btn",id:"show-usage"}),refresh);
+  return bar;
+}
+function pinnedBar(ctx) {
+  const {t,view,actions:a,latestKey,newerCount}=ctx;
+  if(!latestKey||view.selectedKey===latestKey)return null;
+  return node("div",{class:"pinned",id:"follow-state"},node("span",{},t(view.follow&&view.open?"paused":"pinned")),spacer(),
+    button(newerCount?t("newer",{n:newerCount})+" · "+t("latest"):t("latest"),a.latest,{class:"btn accent small",id:"latest"}));
+}
+function noticeBar(ctx) {
+  const {t,notice:n,actions:a}=ctx;
+  if(n.kind==="slow")return node("div",{class:"notice slow",id:"status",role:"status"},t("slow"));
+  if(n.kind==="info")return node("div",{class:"notice info",id:"status",role:"status"},t(n.code));
+  const message=n.code==="binding_unavailable"?t("binding"):n.code==="request_expired"?t("expired"):t("readFailed");
+  return node("div",{class:"notice error",id:"status",role:"alert"},node("span",{},message),spacer(),
+    n.code==="request_expired"?button(t("latest"),a.latest,{class:"btn small"}):button(t("retry"),()=>a.refresh(true),{class:"btn small"}));
+}
+
+function summaryCard(ctx) {
+  const {t,view,selected:s,detail:d,actions:a,latestKey}=ctx;
+  if(!s)return null;
+  const buckets=bucketsOf(s),sum=buckets.reduce((n,x)=>n+x.estimatedTokens,0)||1;
+  const live=view.follow&&view.selectedKey===latestKey;
+  const head=node("div",{class:"card-head"},
+    node("div",{class:"eyebrow"},node("b",{},itemName(t,s)),s.turn!=null?muted(t("turn",{n:s.turn})):null),
+    node("div",{class:"head-meta"},live?node("span",{class:"live"},node("i",{class:"live-dot"}),t("following")):null,muted(clock(s.startedAt))));
+  const deltaTokens=s.delta?tokensOf(s.delta.chars):null;
+  const badge=s.delta
+    ?node("span",{class:"badge "+(deltaTokens>0?"up":deltaTokens<0?"down":"flat"),id:"selected-delta"},signed(deltaTokens)+" "+t("vsPrevious"))
+    :node("span",{class:"badge flat",id:"selected-delta",title:t(s.deltaReason??"no_previous_snapshot")},t("notComparable"));
+  const big=node("div",{class:"big-row"},node("strong",{class:"big",id:"selected-total"},approx(totalOf(s))),muted(t("estimate")),badge);
+  const u=s.usage??{},facts=node("div",{class:"facts"});
+  if(u.inputTokens!=null)facts.append(node("span",{},t("actualIn")+" ",node("b",{},compact(u.inputTokens))));
+  if(u.outputTokens!=null)facts.append(node("span",{},t("output")+" ",node("b",{},compact(u.outputTokens))));
+  if(u.inputTokens&&u.cacheReadTokens!=null)facts.append(node("span",{},t("cache")+" ",node("b",{},pct(u.cacheReadTokens/u.inputTokens))));
+  if(s.model?.modelId)facts.append(muted(s.model.modelId));
+  if(!s.complete)facts.append(node("span",{class:"badge warn",title:s.incompleteReason??""},t("partial")));
+  const stack=node("div",{class:"stackbar"});
+  for(const b of buckets)stack.append(node("span",{style:{flexGrow:String(Math.max(b.estimatedTokens,1)),background:palette[b.role]??palette.unknown},title:t(b.role)+" "+approx(b.estimatedTokens)}));
+  const legend=node("div",{class:"legend"});
+  for(const b of buckets)legend.append(button([dot(b.role),node("span",{class:"legend-name"},t(b.role)),node("span",{class:"num"},approx(b.estimatedTokens)),node("span",{class:"pct"},pct(b.estimatedTokens/sum))],
+    ()=>a.focusRole(b.role),{class:"legend-item",dataset:{role:b.role}}));
+  const brief=node("div",{class:"brief"});
+  if(s.userPreview)brief.append(briefRow(t("briefUser"),node("span",{class:"brief-text"},s.userPreview)));
+  const added=d?.summary?.key===s.key&&d.diff?.available?Object.values(d.diff.addedGroups??{}).flatMap(g=>g.items).reduce((m,x)=>!m||x.chars>m.chars?x:m,null):null;
+  if(added)brief.append(briefRow(t("briefAdded"),[chip(label(t,added),"tool-chip"),node("span",{class:"brief-text"},added.title||added.preview),
+    node("span",{class:"num"},approx(added.estimatedTokens)),d.diff.addedCount>1?muted(t("addedTotal",{n:d.diff.addedCount})):null],()=>a.reveal(added)));
+  const calls=s.responseCalls??[];
+  if(calls.length)brief.append(briefRow(t("briefResponse"),[chip(calls[0].name,"tool-chip"),node("span",{class:"brief-text"},calls[0].title??""),
+    s.responseCallCount>1?muted("+"+(s.responseCallCount-1)):null]));
+  else if(s.responsePreview)brief.append(briefRow(t("briefResponse"),node("span",{class:"brief-text"},s.responsePreview.replace(/\s+/g," "))));
+  else if(!s.hasResponse)brief.append(briefRow(t("briefResponse"),muted(t("noResponse"))));
+  return node("section",{class:"card summary",id:"summary"},head,big,facts.children.length?facts:null,stack,legend,brief.children.length?brief:null);
+}
+function briefRow(name,content,action) {
+  const children=[node("span",{class:"brief-label"},name),node("span",{class:"brief-body"},content)];
+  return action?button(children,action,{class:"brief-row clickable"}):node("div",{class:"brief-row"},children);
+}
+const label=(t,item)=>item.chip==="reminder"?t("reminder"):item.chip;
+
+function niceStep(max,count) {
+  const raw=Math.max(max,1)/count,mag=10**Math.floor(Math.log10(raw)),norm=raw/mag;
+  return (norm<=1?1:norm<=2?2:norm<=2.5?2.5:norm<=5?5:10)*mag;
+}
+function trendCard(ctx) {
+  const {t,view,items,overview:o,actions:a}=ctx;
+  let series=items.filter(isAgent);
+  if(!series.length)series=items;
+  const delta=view.trend==="delta",H=120,TOP=14;
+  const rows=series.map(s=>{
+    if(!delta)return {s,pos:bucketsOf(s).map(b=>({role:b.role,v:b.estimatedTokens})),neg:[]};
+    if(!s.delta)return {s,missing:true,pos:[],neg:[]};
+    const pos=[],neg=[];
+    for(const role of ORDER){
+      const v=tokensOf(s.delta.categories.find(c=>c.role===role)?.charsDelta??0);
+      if(v)(v>0?pos:neg).push({role,v:Math.abs(v)});
     }
-    bar.append(positive);if(delta)bar.append(negative);
-    bar.append(node("small",{},when(s.startedAt).slice(0,5)));chart.append(bar);
+    return {s,pos,neg};
+  });
+  const sum=list=>list.reduce((n,x)=>n+x.v,0);
+  const maxPos=Math.max(0,...rows.map(r=>sum(r.pos))),maxNeg=Math.max(0,...rows.map(r=>sum(r.neg)));
+  const step=niceStep(Math.max(maxPos,maxNeg),delta?2:3);
+  const top=Math.max(step,Math.ceil(maxPos/step)*step),bottom=delta?Math.ceil(maxNeg/step)*step:0;
+  const posH=Math.round(H*top/(top+bottom)),negH=H-posH;
+  const axis=node("div",{class:"y-axis",style:{height:TOP+H+"px"}}),lines=node("div",{class:"grid-lines",style:{top:TOP+"px",height:H+"px"}});
+  for(let v=top;v>=-bottom-1e-9;v-=step) {
+    const y=v>=0?posH*(1-v/top):posH+negH*(-v/bottom);
+    axis.append(node("span",{style:{top:TOP+y+"px"}},(delta&&v>0?"+":v<0?"−":"")+compact(Math.abs(v))));
+    lines.append(node("i",{class:v===0?"zero":"",style:{top:y+"px"}}));
   }
-  const legend=node("div",{class:"color-legend"});for(const role of Object.keys(palette).filter(x=>x!=="unknown"))legend.append(node("span",{},node("i",{style:{background:palette[role]}}),t(role)));
-  if(ctx.overview.events?.length)legend.append(node("span",{},"◇ "+t("timeRange")));
-  const body=node("section",{class:"trend-section"},node("div",{class:"row-head"},note(t("trendNote")),node("div",{class:"controls"},
-    ...["total","delta"].map(mode=>button(t(mode),()=>a.set({trend:mode}),{class:view.trend===mode?"active":"",id:"trend-"+mode})))),
-    node("div",{class:"axis"},fmt(scale)+(view.trend==="total"?" est. tokens":" chars")),chart,legend,
-    node("div",{class:"controls"},button(t("older"),()=>a.olderTrend(),{id:"older",disabled:!ctx.hasOlder&&end<=10}),
-    button(t("newer"),()=>a.set({trendPage:Math.max(0,view.trendPage-1)}),{disabled:view.trendPage===0})));
-  if(view.layout==="browse")return node("details",{class:"fold-trend",open:view.trendOpen,ontoggle:e=>a.remember({trendOpen:e.target.open})},node("summary",{},t("total")+" / Delta"),body);
-  return body;
-}
-export function compositionView(ctx) {
-  const {t,view,detail:d,actions:a}=ctx;if(!d)return note(t("loading")+" · "+t("hostPermission"));
-  const search=node("input",{id:"element-search",type:"search",placeholder:t("search"),value:view.search,maxLength:200,oninput:e=>a.search(e.target.value)});
-  const sort=node("select",{id:"sort",onchange:e=>a.set({sort:e.target.value,page:0},true)});
-  for(const key of ["size","order"])sort.append(node("option",{value:key,selected:key===view.sort},t(key)));
-  const scope=node("select",{id:"search-scope",onchange:e=>a.set({searchScope:e.target.value,page:0},true)},
-    node("option",{value:"selected",selected:view.searchScope==="selected"},t("selectedScope")),
-    node("option",{value:"loaded",selected:view.searchScope==="loaded"},t("loadedScope")));
-  const container=node("section",{},node("div",{class:"search-controls"},search,sort),scope,
-    note(`${t("range")} · ${fmt(d.filteredCount)} / ${fmt(d.elementCount)}`));
-  if(!d.composition.complete)container.append(note(t("partial")+" · "+(d.summary.incompleteReason??"")));
-  if(!d.composition.schemasRecorded)container.append(note(t("schemasUnknown")));
-  if(d.searchScope==="all_loaded_snapshots") {
-    container.append(note(t("loadedRange")+" · "+d.loadedSnapshotCount+" snapshots · "+d.filteredCount+" matches"));
-    for(const item of d.elements)container.append(node("div",{},note(when(item.snapshotTime)+" · "+t(item.role)),elementRow(item,()=>a.openSearch(item),ctx)));
-    container.append(node("div",{class:"pager"},button(t("previous"),()=>a.set({page:view.page-1},true),{disabled:view.page===0}),button(t("next"),()=>a.set({page:view.page+1},true),{disabled:(view.page+1)*40>=d.filteredCount})));
-    return container;
-  }
-  const buckets=[...d.composition.buckets].sort((a,b)=>b.chars-a.chars),sum=buckets.reduce((n,x)=>n+x.chars,0);
-  for(const bucket of buckets) {
-    const expanded=view.expanded.includes(bucket.role),group=node("section",{class:"category",dataset:{role:bucket.role}});
-    const head=button("",()=>a.expand(bucket.role),{class:"category-head",ariaExpanded:expanded});
-    head.append(node("span",{class:"category-name"},node("i",{style:{background:palette[bucket.role]??palette.unknown}}),t(bucket.role),` · ${bucket.count}`),
-      node("span",{class:"numbers"},fmt(bucket.estimatedTokens)+" est. · "+Math.round(bucket.chars/Math.max(1,sum)*100)+"% "+(expanded?"▾":"▸")));
-    group.append(head);
-    if(expanded) {
-      const rows=d.elements.filter(x=>x.role===bucket.role);
-      for(const item of rows)group.append(elementRow(item,()=>a.open(item),ctx));
-      if(!rows.length)group.append(note(t("noResults")));
+  const cuts=new Map();
+  for(const event of o.events??[]){const after=anchors(items,event).after;if(after)cuts.set(after.key,event);}
+  const plot=node("div",{class:"plot"}),dense=series.length>14;
+  let lastTurn,parity=0;
+  for(const [i,r] of rows.entries()) {
+    const s=r.s,selected=s.key===view.selectedKey,first=i===0||s.turn!==lastTurn;
+    if(i>0&&s.turn!==lastTurn)parity^=1;
+    lastTurn=s.turn;
+    const total=totalOf(s),change=s.delta?" ("+signed(tokensOf(s.delta.chars))+")":"";
+    const bar=button([],()=>a.select(s.key),{class:"bar"+(selected?" selected":""),dataset:{key:s.key},title:itemLong(t,s)+"\n"+approx(total)+change,ariaLabel:itemLong(t,s)});
+    bar.setAttribute("aria-pressed",String(selected));
+    const area=node("span",{class:"bar-area",style:{height:H+"px"}}),up=node("span",{class:"stack up",style:{height:posH+"px"}});
+    for(const x of r.pos)up.append(node("span",{style:{height:x.v/top*posH+"px",background:palette[x.role]}}));
+    if(r.missing)up.append(node("span",{class:"missing",title:t("deltaUnknown")},"?"));
+    area.append(up);
+    if(bottom) {
+      const down=node("span",{class:"stack down",style:{height:negH+"px"}});
+      for(const x of r.neg)down.append(node("span",{style:{height:x.v/bottom*negH+"px",background:palette[x.role]}}));
+      area.append(down);
     }
-    container.append(group);
+    const cut=cuts.get(s.key);
+    if(cut)bar.append(node("span",{class:"cut",title:t(compactKind(cut.event))+" · "+clock(cut.timestamp)},"✂"));
+    const showLabel=!dense||selected||i===0||(s.step??i+1)%5===0,joined=rows[i+1]&&rows[i+1].s.turn===s.turn;
+    bar.append(area,node("span",{class:"bar-x"},showLabel?String(s.step??i+1):""),
+      node("span",{class:"bar-turn"+(parity?" alt":"")+(joined?" joined":"")},first&&s.turn!=null?t("turnShort",{n:s.turn}):""));
+    plot.append(bar);
   }
-  if(d.elements.length)container.append(button(t("large"),()=>a.open(d.largest??[...d.elements].sort((a,b)=>b.chars-a.chars)[0]),{id:"open-largest"}));
-  container.append(node("div",{class:"pager"},button(t("previous"),()=>a.set({page:view.page-1},true),{disabled:view.page===0}),
-    node("span",{class:"muted"},`${view.page+1} / ${Math.max(1,Math.ceil(d.filteredCount/40))}`),
-    button(t("next"),()=>a.set({page:view.page+1},true),{id:"elements-next",disabled:(view.page+1)*40>=d.filteredCount})));
-  return container;
+  const head=node("div",{class:"card-head"},node("h2",{},t("trend")),seg([["total",t("total")],["delta",t("delta")]],view.trend,v=>a.set({trend:v}),{id:"trend",small:true}));
+  const chart=node("div",{class:"chart"},axis,node("div",{class:"chart-main"},lines,node("div",{class:"trend-scroll",id:"trend-scroll",dataset:{scroll:"trend"}},plot)));
+  const foot=node("div",{class:"card-foot"},ctx.hasOlder?button("‹ "+t("older"),a.older,{class:"btn ghost small",id:"older"}):null,spacer(),muted(t("loadedSteps",{n:series.length})));
+  return node("section",{class:"card trend-card"},head,chart,foot);
 }
-export function elementRow(item,action,{t}) {
-  const row=button("",action,{class:"element-row",dataset:{element:item.key}});
-  row.append(
-    node("div",{class:"row-head"},node("b",{},item.toolName??item.preview.slice(0,65)??item.key),node("span",{class:"numbers"},fmt(item.estimatedTokens)+" est.")),
-    node("small",{class:"muted"},item.preview));
+
+function browserCard(ctx) {
+  const {t,view,detail:d,items,actions:a}=ctx,card=node("section",{class:"card browser",id:"browser"});
+  const baseline=node("select",{id:"baseline",class:"mini-select",ariaLabel:t("compareWith"),onchange:e=>a.baseline(e.target.value||null)},node("option",{value:""},t("autoBaseline")));
+  for(const option of [...(d?.baselineOptions??[])].reverse()) {
+    const item=items.find(x=>x.key===option.key);
+    baseline.append(node("option",{value:option.key,selected:option.key===view.baselineKey},[item?itemName(t,item):null,clock(option.startedAt),option.complete?null:t("partial")].filter(Boolean).join(" · ")));
+  }
+  card.append(node("div",{class:"card-head"},node("h2",{},t("browser")),node("label",{class:"compare"},muted(t("compareWith")),baseline)));
+  const search=node("input",{id:"element-search",type:"search",placeholder:t("filter"),value:view.search,maxLength:200,autocomplete:"off",spellcheck:false,oninput:e=>a.search(e.target.value)});
+  card.append(node("div",{class:"controls"},search,seg([["size",t("bySize")],["order",t("byOrder")]],view.sort,v=>a.sort(v),{id:"sort",small:true})));
+  const counts=d?.diff?.available?` +${d.diff.addedCount} −${d.diff.removedCount}`:"";
+  card.append(node("div",{class:"controls"},seg([["all",t("all")],["changes",t("changesOnly")+counts]],view.mode,v=>a.set({mode:v}),{id:"mode",small:true}),spacer(),
+    view.search?button(t("searchLoaded"),()=>a.searchAll(!view.searchAll),{class:"toggle"+(view.searchAll?" on":""),id:"search-scope",ariaPressed:String(view.searchAll)}):null));
+  if(!d||d.summary?.key!==view.selectedKey){card.append(node("p",{class:"muted pad"},t("loading")));return card;}
+  if(d.searchScope==="all_loaded_snapshots"){card.append(loadedResults(ctx));return card;}
+  const notes=[];
+  if(view.mode==="changes"&&!d.diff.available)notes.push(t("notComparable")+" · "+t(d.diff.reason));
+  if(d.diff.available&&view.mode==="changes"){if(d.diff.modelChanged)notes.push(t("modelChanged"));if(d.diff.reordered)notes.push(t("reordered"));}
+  if(!d.composition.schemasRecorded)notes.push(t("schemasUnknown"));
+  if(!d.composition.complete)notes.push(t("partial")+(d.summary.incompleteReason?" · "+d.summary.incompleteReason:""));
+  for(const text of notes)card.append(node("p",{class:"note",id:text.startsWith(t("notComparable"))?"diff-status":undefined},text));
+  if(view.mode==="changes"&&!d.diff.available)return card;
+  const buckets=new Map(d.composition.buckets.map(b=>[b.role,b])),categories=new Map((d.diff.available?d.diff.categories:[]).map(c=>[c.role,c]));
+  const total=[...buckets.values()].reduce((n,b)=>n+b.estimatedTokens,0)||1,searching=Boolean(view.search),matched=new Set(Object.keys(d.groups??{}));
+  const expanded=searching?(view.searchExpanded??[...matched]):(view.expanded??[]);
+  const list=node("div",{class:"categories"});
+  for(const role of ORDER.filter(r=>buckets.has(r)||(view.mode==="changes"&&categories.get(r)?.removedCount)))
+    list.append(category(ctx,role,buckets.get(role),categories.get(role),total,expanded.includes(role),searching,matched.has(role)));
+  card.append(list);
+  if(searching&&!matched.size&&view.mode==="all")card.append(node("p",{class:"muted pad"},t("noMatches")));
+  return card;
+}
+function category(ctx,role,bucket,change,total,open,searching,matched) {
+  const {t,view,detail:d,actions:a,more}=ctx,changes=view.mode==="changes";
+  const group=d.groups?.[role],count=bucket?.count??0,size=bucket?.estimatedTokens??0;
+  const added=d.diff.available?d.diff.addedGroups?.[role]:null,removed=d.diff.available?d.diff.removedGroups?.[role]:null;
+  const dim=changes?!added?.count&&!removed?.count:searching&&!matched;
+  const expanded=open&&!dim;
+  const head=button([node("span",{class:"chev"},expanded?"▾":"▸"),dot(role),node("span",{class:"cat-name"},t(role)),
+    node("span",{class:"cat-count"},searching&&!changes?t("matchedItems",{m:group?.count??0,n:count}):t("items",{n:count})),
+    change?.addedCount?node("span",{class:"badge up"},"+"+change.addedCount):null,change?.removedCount?node("span",{class:"badge down"},"−"+change.removedCount):null,spacer(),
+    change?.charsDelta?node("span",{class:"delta "+(change.charsDelta>0?"up":"down")},signed(tokensOf(change.charsDelta))):null,
+    node("span",{class:"num"},approx(size)),node("span",{class:"pct"},pct(size/total))],()=>a.toggleRole(role),{class:"cat-head",ariaExpanded:String(expanded),disabled:dim});
+  const section=node("section",{class:"category"+(expanded?" open":"")+(dim?" dim":""),dataset:{role}},head);
+  if(!expanded)return section;
+  const body=node("div",{class:"cat-body"});
+  if(changes) {
+    const query=view.search.toLowerCase(),keep=x=>!query||[x.title,x.chip,x.preview,x.toolName].some(v=>String(v??"").toLowerCase().includes(query));
+    for(const item of (added?.items??[]).filter(keep))body.append(elementRow(ctx,item,{badge:"added"}));
+    if(added&&added.count>added.items.length)body.append(node("p",{class:"muted pad"},t("moreNotListed",{n:added.count-added.items.length})));
+    for(const item of (removed?.items??[]).filter(keep))body.append(elementRow(ctx,item,{badge:"removed",snapshotKey:d.diff.previousKey}));
+    if(removed&&removed.count>removed.items.length)body.append(node("p",{class:"muted pad"},t("moreNotListed",{n:removed.count-removed.items.length})));
+    if(!body.children.length)body.append(node("p",{class:"muted pad"},t("noChanges")));
+  } else {
+    const seen=new Set(),rows=[...(group?.items??[]),...(more[role]?.items??[])].filter(x=>!seen.has(x.key)&&seen.add(x.key));
+    const addedKeys=new Set(d.diff.available?d.diff.addedKeys:[]);
+    for(const item of rows)body.append(elementRow(ctx,item,{badge:addedKeys.has(item.key)?"added":null}));
+    const left=(group?.count??0)-rows.length;
+    if(left>0)body.append(button(t("showMore",{n:left}),()=>a.more(role),{class:"btn ghost more",dataset:{role}}));
+    if(!rows.length)body.append(node("p",{class:"muted pad"},t("noMatches")));
+  }
+  section.append(body);
+  return section;
+}
+function loadedResults(ctx) {
+  const {t,detail:d,items}=ctx,wrap=node("div",{class:"loaded-results"},node("p",{class:"muted pad"},t("loadedResults",{n:d.loadedSnapshotCount,m:d.filteredCount})));
+  for(const item of d.elements) {
+    const snapshot=items.find(x=>x.key===item.snapshotKey);
+    wrap.append(elementRow(ctx,item,{snapshotKey:item.snapshotKey,prefix:snapshot?itemName(t,snapshot):clock(item.snapshotTime)}));
+  }
+  if(d.filteredCount>d.elements.length)wrap.append(node("p",{class:"muted pad"},t("moreNotListed",{n:d.filteredCount-d.elements.length})));
+  return wrap;
+}
+function elementRow(ctx,item,{badge=null,snapshotKey=null,prefix=null}={}) {
+  const {t,view,actions:a}=ctx,key=snapshotKey??view.selectedKey;
+  const open=Boolean(view.open&&view.open.elementKey===item.key&&view.open.key===key);
+  const head=button([node("span",{class:"chev"},open?"▾":"▸"),prefix?chip(prefix,"step-chip"):null,
+    item.status==="error"?node("i",{class:"err-dot",title:t("error")}):null,chip(label(t,item),item.role==="tool"||item.role==="assistant"?"tool-chip":""),
+    node("span",{class:"el-title"},item.title||item.preview||item.key),
+    badge?node("span",{class:"badge "+(badge==="added"?"up":"down")},t(badge==="added"?"addedBadge":"removedBadge")):null,
+    node("span",{class:"num"},approx(item.estimatedTokens))],()=>a.open(item,key),{class:"el-head",ariaExpanded:String(open)});
+  const row=node("div",{class:"el element-row"+(open?" open":"")+(badge==="removed"?" removed":""),dataset:{element:item.key,snapshot:key,kind:badge??""}},head);
+  if(item.subtitle&&!open)row.append(node("div",{class:"el-sub"},item.subtitle));
+  if(open)row.append(elementBody(ctx,item,{badge}));
   return row;
 }
-export function changesView(ctx) {
-  const {t,view,detail:d,actions:a}=ctx;if(!d)return note(t("loading")+" · "+t("hostPermission"));const diff=d.diff;
-  const baseline=node("select",{id:"baseline",onchange:e=>a.set({baselineKey:e.target.value||null,changePage:0},true)},node("option",{value:""},t("auto")));
-  for(const item of d.baselineOptions)baseline.append(node("option",{value:item.key,selected:item.key===view.baselineKey},when(item.startedAt)+(item.complete?"":" · "+t("partial"))));
-  const container=node("section",{},node("label",{},t("baseline"),baseline),note(t("observed")));
-  if(!diff.available){container.append(node("p",{class:"notice",id:"diff-status"},t("noDiff")+" · "+t(diff.reason)));return container;}
-  container.append(node("p",{id:"diff-status",class:"notice"},`Δ ${diff.charsDelta>=0?"+":""}${fmt(diff.charsDelta)} ${t("chars")} · +${diff.addedCount} / −${diff.removedCount}`),
-    note(t("baseline")+": "+when(d.baselineOptions.find(x=>x.key===diff.previousKey)?.startedAt)));
-  if(!diff.schemasComparable)container.append(note(t("schemasUnknown")));
-  if(diff.modelChanged)container.append(note(t("modelChanged")));if(diff.reordered)container.append(note(t("reordered")));
-  for(const c of diff.categories)container.append(node("div",{class:"row-head category-delta"},node("span",{},t(c.role)),
-    node("span",{class:"numbers"},`${c.charsDelta>=0?"+":""}${fmt(c.charsDelta)} · +${c.addedCount} / −${c.removedCount}`)));
-  for(const change of diff.changed??[])container.append(button(t("bodyDiff")+" · "+(change.after.toolName??change.after.key),()=>a.open(change.after,{diffBeforeElement:change.before.key}),{class:"diff-open"}));
-  for(const [kind,key,items] of [["added",view.selectedKey,diff.added],["removed",diff.previousKey,diff.removed]]) {
-    container.append(node("h2",{},t(kind)));
-    for(const item of items)container.append(node("div",{class:"change-row",dataset:{kind}},elementRow(item,()=>a.open(item,{key}),ctx)));
+
+function elementBody(ctx,item,{badge}) {
+  const {t,view,content:data,detail:d,items,actions:a}=ctx,p=view.open,box=node("div",{class:"el-body"});
+  const origin=items.find(x=>x.key===p.key);
+  if(badge==="removed")box.append(node("p",{class:"note"},t("fromBaseline",{label:origin?itemLong(t,origin):"—"})));
+  else if(p.key!==view.selectedKey&&origin)box.append(node("p",{class:"note"},node("span",{class:"spacer"},itemLong(t,origin)),button(itemName(t,origin)+" ›",()=>a.select(p.key),{class:"btn small"})));
+  if(!data?.content||data.content.key!==item.key||data.summary?.key!==p.key){box.append(node("p",{class:"muted"},t("loading")));return box;}
+  const c=data.content,diff=data.bodyDiff;
+  if(c.role==="tool")box.append(toolCard(t,c));
+  const pair=d?.diff?.available&&p.key===view.selectedKey?d.diff.changedPairs?.find(x=>x.after===item.key):null;
+  if(pair)box.append(button(p.diff?t("showContent"):t("showDiff"),()=>a.toggleDiff(pair.before),{class:"btn small",id:"toggle-diff"}));
+  if(diff){box.append(diffView(ctx,diff));return box;}
+  if(c.role==="schema"&&p.format!=="raw") {
+    const schema=schemaView(ctx,c);
+    if(schema){box.append(schema);return box;}
   }
-  container.append(node("div",{class:"pager"},button(t("previous"),()=>a.set({changePage:view.changePage-1},true),{disabled:!view.changePage}),
-    button(t("next"),()=>a.set({changePage:view.changePage+1},true),{disabled:(view.changePage+1)*40>=Math.max(diff.addedCount,diff.removedCount,diff.changedCount)})));
-  return container;
+  box.append(bodyHead(ctx,c),bodyText(ctx,c),bodyFoot(ctx,c));
+  return box;
 }
-export function eventsView(ctx) {
-  const {t,overview:o,view,actions:a}=ctx;
-  const container=node("section",{},note(t("eventNote")));
-  for(const event of o.events??[]) {
-    const kind=event.event.includes(".micro")?"microCompact":event.event.includes(".auto")?"autoCompact":event.event.includes(".reactive")?"reactiveCompact":"manualCompact";
-    const status=event.event.split(".").at(-1),nav=event.navigation??{};
-    const row=node("article",{class:"event"},node("b",{},t(kind)+" · "+t(status)),note(when(event.timestamp)+" · "+(event.turnId??t("unknown"))),
-      note(t("reason")+": "+(event.reason??t("noCause"))),note(t(nav.evidence==="turn_range"?"turnRange":"timeRange")));
-    if(event.tokensSavedEstimate!=null)row.append(note(t("saved")+": "+fmt(event.tokensSavedEstimate)));
-    if(event.clearedMessageCount!=null)row.append(note(t("cleared")+": "+fmt(event.clearedMessageCount)));
-    row.append(node("div",{class:"controls"},button(t("before"),()=>a.select(nav.beforeKey),{disabled:!nav.beforeKey}),
-      button(t("after"),()=>a.select(nav.afterKey),{disabled:!nav.afterKey})));
-    for(const key of nav.turnKeys??[])row.append(button(t("turnRange")+" · "+key.slice(0,8),()=>a.select(key),{class:key===view.selectedKey?"active":""}));
-    container.append(row);
-  }
-  if(!o.events?.length)container.append(note(t("noEvents")));return container;
+function toolCard(t,c) {
+  const tool=c.tool,status=c.status==="error"?["err",t("error")]:c.status==null?["unknown",t("statusUnknown")]:["ok",t("ok")];
+  const card=node("div",{class:"tool-card"},node("div",{class:"tool-card-head"},node("span",{class:"tool-name"},"← "+(tool?.name??c.toolName??"tool")),spacer(),
+    node("span",{class:"status "+status[0]},"● "+status[1])));
+  if(tool?.fields?.length) {
+    const list=node("dl",{class:"params"});
+    for(const field of tool.fields)list.append(node("dt",{},field.name),node("dd",{},field.value+(field.truncated?"…":"")));
+    card.append(list);
+  } else if(tool)card.append(node("pre",{class:"params-raw"},tool.arguments+(tool.argumentsTruncated?"…":"")));
+  else card.append(node("p",{class:"muted"},t("noParams")));
+  return card;
+}
+function formatSwitch(ctx,options) {
+  const {t,view,actions:a}=ctx;
+  return seg(options.map(key=>[key,key==="markdown"?"MD":t(key)]),view.open.format,v=>a.format(v),{id:"format",small:true});
+}
+function bodyHead(ctx,c) {
+  const {t,actions:a}=ctx,parts=Math.ceil(c.totalChars/CHUNK);
+  return node("div",{class:"body-head"},node("b",{},c.role==="tool"?t("result"):t("content")),muted(t("lines",{n:full(c.lineCount)})),spacer(),
+    formatSwitch(ctx,c.role==="schema"?["readable","raw"]:["readable","markdown","raw"]),button(parts>1?t("copyChunk"):t("copy"),()=>a.copy(c.text),{class:"btn small",id:"copy"}));
+}
+function bodyText(ctx,c) {
+  const p=ctx.view.open,markdownMode=p.format==="markdown";
+  const el=node(markdownMode?"article":"pre",{class:"body"+(markdownMode?" md":""),id:"content",tabIndex:0,dataset:{scroll:"body:"+p.key+":"+p.elementKey+":"+c.offset+":"+p.format}});
+  if(markdownMode)el.append(markdown(c.text));
+  else if(p.search) {
+    const query=p.search.toLowerCase(),lower=c.text.toLowerCase(),current=p.matchIndex>=0?c.hits[p.matchIndex]-c.offset:-1;
+    let start=0,at;
+    while(query&&(at=lower.indexOf(query,start))>=0){el.append(c.text.slice(start,at),node("mark",{class:at===current?"current":""},c.text.slice(at,at+query.length)));start=at+query.length;}
+    el.append(c.text.slice(start));
+  } else el.textContent=c.text;
+  return el;
+}
+function bodyFoot(ctx,c) {
+  const {t,view,actions:a}=ctx,p=view.open,parts=Math.ceil(c.totalChars/CHUNK),part=Math.floor(c.offset/CHUNK)+1;
+  const find=node("div",{class:"find"},node("input",{id:"body-search",type:"search",placeholder:t("findInBody"),value:p.search??"",maxLength:200,autocomplete:"off",oninput:e=>a.bodySearch(e.target.value)}),
+    p.search?muted(t("matches",{n:full(c.matchCount)})+(c.matchCount>100?" · "+t("firstMatches"):"")):null,
+    p.search?button(t("nextMatch"),a.nextMatch,{class:"btn small",id:"next-match",disabled:!c.hits.length}):null);
+  const foot=node("div",{class:"body-foot"},find);
+  if(parts>1)foot.append(chunks(ctx,c.offset,parts,c.hasMore));
+  return foot;
+}
+function chunks(ctx,offset,parts,hasMore) {
+  const {t,actions:a}=ctx;
+  return node("div",{class:"chunks"},button("‹ "+t("prevChunk"),()=>a.chunk(Math.max(0,offset-CHUNK)),{class:"btn small",id:"chunk-previous",disabled:offset===0}),
+    muted(t("chunkOf",{i:Math.floor(offset/CHUNK)+1,n:parts})),button(t("nextChunk")+" ›",()=>a.chunk(offset+CHUNK),{class:"btn small",id:"more",disabled:!hasMore}));
+}
+function diffView(ctx,diff) {
+  const {t,actions:a}=ctx,parts=Math.ceil(diff.totalChars/CHUNK);
+  const body=node("pre",{class:"body body-diff",id:"content",tabIndex:0,dataset:{scroll:"diff:"+diff.afterKey+":"+diff.offset}});
+  for(const line of diff.text.split("\n"))body.append(node("div",{class:line.startsWith("+ ")?"added":line.startsWith("- ")?"removed":""},line||" "));
+  return node("div",{class:"diff"},node("div",{class:"body-head"},node("b",{},t("showDiff")),spacer(),button(t("copy"),()=>a.copy(diff.text),{class:"btn small",id:"copy"})),
+    node("p",{class:"muted small"},t("diffMethod")),body,parts>1?chunks(ctx,diff.offset,parts,diff.hasMore):null);
+}
+function typeOf(spec) {
+  if(!spec||typeof spec!=="object")return "any";
+  if(Array.isArray(spec.type))return spec.type.join(" | ");
+  if(spec.type)return spec.type+(spec.type==="array"&&spec.items?.type?"<"+spec.items.type+">":"");
+  const options=spec.anyOf??spec.oneOf;
+  if(Array.isArray(options))return options.map(typeOf).join(" | ");
+  return spec.enum?"enum":"any";
+}
+function schemaView(ctx,c) {
+  if(c.offset!==0||c.hasMore)return null;
+  let fn;
+  try{fn=JSON.parse(c.text);}catch{return null;}
+  if(!fn||typeof fn!=="object")return null;
+  const {t,actions:a}=ctx,params=fn.parameters??fn.input_schema??fn.inputSchema??{},props=params.properties??{};
+  const required=new Set(Array.isArray(params.required)?params.required:[]);
+  const wrap=node("div",{class:"schema"},
+    node("div",{class:"body-head"},node("b",{},t("description")),spacer(),formatSwitch(ctx,["readable","raw"]),button(t("copy"),()=>a.copy(c.text),{class:"btn small",id:"copy"})),
+    node("article",{class:"body md",id:"content",tabIndex:0,dataset:{scroll:"schema:"+c.key}},markdown(String(fn.description??""))),
+    node("div",{class:"body-head"},node("b",{},t("parameters")),muted(String(Object.keys(props).length))));
+  const list=node("div",{class:"param-list"});
+  for(const [name,spec] of Object.entries(props))list.append(node("div",{class:"param"},
+    node("div",{class:"param-head"},node("code",{},name),node("span",{class:"param-type"},typeOf(spec)),required.has(name)?node("span",{class:"req"},"✓ "+t("required")):null),
+    spec?.description?node("div",{class:"param-desc"},String(spec.description)):null));
+  wrap.append(list);
+  return wrap;
+}
+function inline(text) {
+  return String(text).split(/(`[^`]+`|\*\*[^*]+\*\*)/).filter(Boolean).map(part=>
+    part.length>2&&part.startsWith("`")&&part.endsWith("`")?node("code",{},part.slice(1,-1)):
+    part.length>4&&part.startsWith("**")&&part.endsWith("**")?node("strong",{},part.slice(2,-2)):part);
 }
 export function markdown(text) {
-  const fragment=document.createDocumentFragment();let code=false;
-  for(const line of text.split("\n")) {
-    if(line.startsWith("```")){code=!code;continue;}
-    const match=!code&&line.match(/^(#{1,3})\s+(.*)$/);
-    fragment.append(node(code?"pre":match?"h"+(Number(match[1].length)+1):"p",{},match?match[2]:line||" "));
+  const fragment=document.createDocumentFragment(),lines=String(text).split("\n"),block=/^(```|#{1,4}\s|\s*[-*+]\s|\s*\d+[.)]\s|>)/;
+  let i=0;
+  while(i<lines.length) {
+    const line=lines[i];
+    if(line.startsWith("```")){const code=[];i++;while(i<lines.length&&!lines[i].startsWith("```"))code.push(lines[i++]);i++;fragment.append(node("pre",{class:"code"},code.join("\n")));continue;}
+    const heading=line.match(/^(#{1,4})\s+(.*)$/);
+    if(heading){fragment.append(node("h"+(heading[1].length+2),{},inline(heading[2])));i++;continue;}
+    if(/^\s*[-*+]\s+/.test(line)||/^\s*\d+[.)]\s+/.test(line)) {
+      const ordered=/^\s*\d/.test(line),pattern=ordered?/^\s*\d+[.)]\s+/:/^\s*[-*+]\s+/,list=node(ordered?"ol":"ul");
+      while(i<lines.length&&pattern.test(lines[i]))list.append(node("li",{},inline(lines[i++].replace(pattern,""))));
+      fragment.append(list);continue;
+    }
+    if(line.startsWith(">")){const quote=[];while(i<lines.length&&lines[i].startsWith(">"))quote.push(lines[i++].replace(/^>\s?/,""));fragment.append(node("blockquote",{},inline(quote.join(" "))));continue;}
+    if(!line.trim()){i++;continue;}
+    const paragraph=[lines[i++]];
+    while(i<lines.length&&lines[i].trim()&&!block.test(lines[i]))paragraph.push(lines[i++]);
+    fragment.append(node("p",{},inline(paragraph.join(" "))));
   }
   return fragment;
 }
-export function contentView(ctx) {
-  const {t,view,contentData:d,actions:a}=ctx,pointer=view.detail;
-  const container=node("section",{id:"content-view"},button("‹ "+t("back"),a.back,{id:"back"}));
-  if(!d?.content){container.append(note(t("loading")+" · "+t("hostPermission")));return container;}
-  const c=d.content,diff=d.bodyDiff,text=diff?.text??c.text,offset=diff?.offset??c.offset,totalChars=diff?.totalChars??c.totalChars;
-  container.append(node("h2",{},diff?t("bodyDiff"):t(c.role)+" · "+(c.toolName??c.preview.slice(0,80))),
-    note(t("origin")+": "+when(d.summary.startedAt)+" · "+d.summary.requestId),
-    note(`${fmt(c.lineCount)} ${t("line")} · ${fmt(totalChars)} ${t("chars")} · ${offset}–${offset+text.length}`));
-  if(diff)container.append(note(t("baseline")+": "+diff.beforeKey.slice(0,8)+" → "+diff.afterKey.slice(0,8)),note(t("diffMethod")));
-  if(c.role==="tool") {
-    container.append(note(t("status")+": "+(c.status??t("unknown"))));
-    if(c.tool){container.append(node("h3",{},(c.tool.name??c.toolName??"")+" · "+t("params")),node("pre",{},c.tool.arguments+(c.tool.argumentsTruncated?"…":"")));}
-    else container.append(note(t("noParams")));
+
+function eventsCard(ctx) {
+  const {t,view,overview:o,items,actions:a}=ctx,events=[...(o.events??[])].reverse();
+  const card=node("section",{class:"card events",id:"events"},node("div",{class:"card-head"},node("h2",{},t("events")),muted(t("eventsWindow"))));
+  if(!events.length){card.append(node("p",{class:"muted"},t("noEvents")));return card;}
+  for(const event of events) {
+    const status=event.event.split(".").at(-1),{before,after}=anchors(items,event);
+    const evidence=t(event.navigation?.evidence==="turn_range"?"turnEvidence":"timeEvidence");
+    card.append(node("div",{class:"event"+(status==="failed"?" failed":"")},
+      node("div",{class:"event-head"},node("span",{class:"kind"},"✂ "+t(compactKind(event.event))),node("span",{},t(status)),event.reason?muted("· "+event.reason):null,spacer(),
+        event.tokensSavedEstimate!=null?node("span",{class:"badge down",title:t("saved",{n:full(event.tokensSavedEstimate)})},"−"+compact(event.tokensSavedEstimate)):null,muted(clock(event.timestamp))),
+      node("div",{class:"event-nav"},
+        button(t("before")+(before?" · "+itemName(t,before):""),()=>a.select(before?.key),{class:"btn small"+(before&&before.key===view.selectedKey?" on":""),disabled:!before,title:evidence}),
+        button(t("after")+(after?" · "+itemName(t,after):""),()=>a.select(after?.key),{class:"btn small"+(after&&after.key===view.selectedKey?" on":""),disabled:!after,title:evidence}),
+        event.clearedMessageCount!=null?muted(t("cleared",{n:full(event.clearedMessageCount)})):null)));
   }
-  const controls=node("div",{class:"controls"},button(t("copy"),()=>a.copy(text),{id:"copy"}));
-  if(!diff)for(const format of ["readable","markdown","raw"])controls.append(button(t(format),()=>a.contentFormat(format),{id:"format-"+format,class:pointer.format===format?"active":""}));
-  container.append(controls);
-  if(!diff) {
-    container.append(node("input",{id:"body-search",type:"search",value:pointer.search??"",placeholder:t("bodySearch"),maxLength:200,oninput:e=>a.bodySearch(e.target.value)}),
-      node("div",{class:"row-head"},note(`${fmt(c.matchCount)} ${t("match")}${c.matchCount>100?" · "+t("first100"):""} · ${t("chunk")}`),
-        button(t("next")+" "+t("match"),a.nextMatch,{id:"next-match",disabled:!c.hits.length})));
-  }
-  const body=node(pointer.format==="markdown"&&!diff?"article":"pre",{id:"content",tabIndex:0,class:diff?"body-diff":"body-text"});
-  if(diff)for(const line of text.split("\n"))body.append(node("div",{class:line.startsWith("+ ")?"added":line.startsWith("- ")?"removed":""},line));
-  else if(pointer.format==="markdown")body.append(markdown(text));
-  else if(pointer.search) {
-    const query=pointer.search.toLowerCase(),lower=text.toLowerCase();let start=0,at;
-    while((at=lower.indexOf(query,start))>=0){body.append(text.slice(start,at),node("mark",{},text.slice(at,at+query.length)));start=at+query.length;}
-    body.append(text.slice(start));
-  }else body.textContent=text;
-  container.append(body,node("div",{class:"pager"},button(t("previous"),()=>a.chunk(Math.max(0,offset-12000)),{id:"chunk-previous",disabled:offset===0}),
-    button(t("more"),()=>a.chunk(offset+12000),{id:"more",disabled:!(diff?.hasMore??c.hasMore)})));
-  container.append(node("details",{},node("summary",{},t("recordInfo")),node("pre",{},`key: ${pointer.key}\nelement: ${c.key}\ntoolCallId: ${c.toolCallId??t("unknown")}\nsource: ${d.summary.querySource}`)));
-  return container;
+  return card;
 }
-export function usageView(ctx) {
-  const {t,overview:o,actions:a}=ctx,u=o.usage,totals=u?.totals??{};
-  const container=node("section",{id:"usage-view"},button("‹ "+t("back"),()=>a.set({usage:false}),{id:"usage-back"}),node("h2",{},t("usage")),note(t("usageNote")));
-  if(!u?.available){container.append(note(t("unknown")));return container;}
-  const metrics=node("div",{class:"metrics"});
-  for(const [id,key,value] of [["input","input",fmt(totals.inputTokens)],["output","output",fmt(totals.outputTokens)],["calls","calls",fmt(totals.requestCount)],["cache","cache",totals.cacheHitRate==null?"—":Math.round(totals.cacheHitRate*100)+"%"]])metrics.append(node("div",{},node("span",{},t(key)),node("strong",{id},value)));
-  container.append(metrics);if(totals.inputMissingCount||totals.outputMissingCount||totals.missingUsageCount)container.append(note(t("partUsage")));
-  container.append(node("h2",{},t("daily")));const daily=node("div",{id:"daily"});
-  for(const day of u.days??[])daily.append(node("div",{class:"row-head"},node("span",{},day.utcDay),node("span",{class:"numbers"},`IN ${fmt(day.inputTokens)} / OUT ${fmt(day.outputTokens)}`)));
-  container.append(daily);
-  for(const fact of u.facts??[])container.append(node("div",{class:"usage-fact"},node("b",{},fact.modelId??t("unknown")),note(`${when(fact.startedAt)} · ${fact.querySource} · ${fact.status}`),note(`IN ${fmt(fact.inputTokens)} / OUT ${fmt(fact.outputTokens)} · ${fmt(fact.durationMs)} ms`)));
-  return container;
+function about(ctx) {
+  const {t,view,overview:o,actions:a,session}=ctx,coverage=o?.trajectory?.coverage??[];
+  const known=code=>{const text=t("cov."+code);return text==="cov."+code?code:text;};
+  return node("details",{class:"about",id:"request-info",open:view.aboutOpen,ontoggle:e=>a.remember({aboutOpen:e.target.open})},
+    node("summary",{},t("about")),
+    node("ul",{},["aboutEstimate","aboutRecorded","aboutUsage","aboutDiff","aboutPermission"].map(key=>node("li",{},t(key)))),
+    node("div",{class:"about-row"},node("b",{},t("coverage")),node("span",{id:"coverage"},coverage.length?coverage.map(known).join("；"):t("coverageFull"))),
+    session?node("div",{class:"about-row"},node("b",{},t("session")),node("code",{id:"session"},session),button(t("copyId"),()=>a.copy(session),{class:"btn small"})):null,
+    ctx.demo?node("div",{class:"about-row"},node("b",{},t("demo"))):null);
+}
+function usagePage(ctx) {
+  const {t,overview:o}=ctx,u=o.usage,card=node("section",{class:"card",id:"usage-view"});
+  if(!u?.available){card.append(node("p",{class:"muted"},t("usageUnavailable")));return card;}
+  const x=u.totals,kpi=(id,name,value,title)=>node("div",{class:"kpi",title},node("span",{},name),node("strong",{id},value));
+  card.append(node("div",{class:"kpis"},kpi("input",t("input"),compact(x.inputTokens),full(x.inputTokens)),kpi("output",t("output"),compact(x.outputTokens),full(x.outputTokens)),
+    kpi("calls",t("calls"),full(x.requestCount)),kpi("cache",t("cacheRate"),x.cacheHitRate==null?"—":pct(x.cacheHitRate))));
+  if(x.inputMissingCount||x.outputMissingCount||x.missingUsageCount)card.append(node("p",{class:"note"},t("partUsage")));
+  const max=Math.max(1,...u.days.map(day=>day.inputTokens??0)),daily=node("div",{class:"daily",id:"daily"});
+  for(const day of [...u.days].reverse())daily.append(node("div",{class:"day"},node("span",{class:"day-date"},utcDate(day.utcDay)),
+    node("span",{class:"day-bar"},node("i",{style:{width:(day.inputTokens??0)/max*100+"%"}})),node("span",{class:"num"},compact(day.inputTokens)+" / "+compact(day.outputTokens))));
+  const recent=node("div",{class:"recent"});
+  for(const fact of [...u.facts].reverse().slice(0,40))recent.append(node("div",{class:"fact"},
+    node("div",{class:"fact-main"},node("b",{},sourceName(t,fact.querySource)),muted(fact.modelId??""),spacer(),node("span",{class:"num"},compact(fact.inputTokens)+" / "+compact(fact.outputTokens))),
+    node("div",{class:"muted small"},[clock(fact.startedAt),fact.status,fact.durationMs!=null?(fact.durationMs/1000).toFixed(1)+"s":null].filter(Boolean).join(" · "))));
+  card.append(node("h3",{},t("daily")),daily,node("h3",{},t("recent")),recent);
+  return card;
 }

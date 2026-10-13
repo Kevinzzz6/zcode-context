@@ -1,20 +1,25 @@
+const PREFIX="zcode-context:view:v3:";
 export function initialView() {
-  return {selectedKey:null,follow:true,tab:"composition",layout:"diagnostic",trend:"total",trendPage:0,
-    search:"",searchScope:"selected",sort:"size",expanded:[],page:0,changePage:0,baselineKey:null,detail:null,scroll:0,usage:false,infoOpen:false,trendOpen:false};
+  return {selectedKey:null,follow:true,page:"context",trend:"total",search:"",searchAll:false,sort:"size",mode:"all",
+    expanded:null,searchExpanded:null,open:null,baselineKey:null,aboutOpen:false,scroll:0};
 }
 export function restoreView(sessionId) {
   try {
-    const saved=JSON.parse(localStorage.getItem("zcode-context:view:v2:"+sessionId));
+    const saved=JSON.parse(localStorage.getItem(PREFIX+sessionId));
     if(!saved||typeof saved!=="object")return initialView();
     const view={...initialView(),...saved};
-    if(!["composition","changes","events"].includes(view.tab))view.tab="composition";
-    if(!Array.isArray(view.expanded))view.expanded=[];
+    if(!["context","usage"].includes(view.page))view.page="context";
+    if(!["total","delta"].includes(view.trend))view.trend="total";
+    if(!["all","changes"].includes(view.mode))view.mode="all";
+    if(view.expanded!==null&&!Array.isArray(view.expanded))view.expanded=null;
+    if(view.searchExpanded!==null&&!Array.isArray(view.searchExpanded))view.searchExpanded=null;
+    if(view.open&&(typeof view.open!=="object"||typeof view.open.elementKey!=="string"))view.open=null;
     return view;
   }catch{return initialView();}
 }
 export function saveView(sessionId,view) {
   if(!sessionId)return;
-  try{localStorage.setItem("zcode-context:view:v2:"+sessionId,JSON.stringify(view));}catch{/* Sandboxed storage is optional. */}
+  try{localStorage.setItem(PREFIX+sessionId,JSON.stringify(view));}catch{/* Sandboxed storage is optional. */}
 }
 export function mergeSnapshots(oldItems,newItems) {
   return [...new Map([...oldItems,...newItems].map(x=>[x.key,x])).values()]
