@@ -8,7 +8,8 @@
 修掉的逻辑问题：辅助请求混入趋势导致 Delta 柱与相邻柱无关；R 编号随窗口滑动变化；全局 40 条分页导致小类别展开为空；token 与字符混用；
 每 3 秒整页重绘两次（会关闭下拉框、清掉选中文字）；打开任意条目会永久取消跟随；规范 `toolCalls` 不能配对参数。
 服务端只做了增量字段（步序号/回合号、按类分组、按类增删、条目标题/芯片、规范 toolCalls、`isError:false` 视为成功），既有口径和测试不变。
-UI 开发用 `npm run fixture:ui`（端口 4175）；`npm run fixture:browser` + `npm run test:browser` 为 18 组交互回归。
+UI 开发用 `npm run fixture:ui`（端口 4175）；`npm run fixture:browser` + `npm run test:browser` 为 23 组交互回归。
+0.3.0 之后按 dsh-context 补了第一批交互：趋势悬停提示与类别联动高亮、步骤/轮次粒度、自适应纵轴、“本轮 / 输入 / 回复”摘要、上一步/上一轮对比基线、正文查找上一处/下一处与 ←/→ 切换步骤，均为前端改动。
 0.3.0 尚未在真实 Electron 客户端中重新验收；下面的桌面结论仍针对 0.2.0。`_sandbox/context-desktop-acceptance/guest-v02-check.mjs` 使用的
 `#back`、`.element-row` 详情页流程已改为行内展开，复验时需要按新选择器调整。
 
