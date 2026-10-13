@@ -1,15 +1,15 @@
 import { App } from "@modelcontextprotocol/ext-apps";
 import { initialView, restoreView, saveView, mergeSnapshots } from "./state.mjs";
 import { translator } from "./i18n.mjs";
-import { renderApp, isAgent, CHUNK, layoutTrend, highlight, anchors, olderUnloaded, BOUNDARY, eventId } from "./components.mjs";
+import { renderApp, isAgent, CHUNK, layoutTrend, highlight, anchors, olderUnloaded, BOUNDARY, eventId, matchedRoles } from "./components.mjs";
 import { demoCall } from "./demo.mjs";
 const root=document.getElementById("root");
-const INFO={name:"zcode-context",version:"0.3.5"};
+const INFO={name:"zcode-context",version:"0.3.6"};
 const demo=new URLSearchParams(location.search).get("demo")==="1";
 let app=null,t=translator(),view=initialView(),boundSession=null,overview=null,items=[],hasOlder=false,historyPage=0;
 let detail=null,content=null,more={},notice=null,busy=false,activeLoads=0;
 const eventDetails=new Map();
-let generation=0,detailSequence=0,contentSequence=0,moreSequence=0;
+let generation=0,detailSequence=0,contentSequence=0,moreSequence={},toolCallsDigest=null;
 let pendingRender=false,renderedSelection=null,scrollTarget=null,jumpToMatch=false,keepRightEdge=null,reveal=null;
 let timer,searchTimer,bodyTimer,slowTimer,noticeTimer,scrollTimer,idlePolls=0,stopped=false;
 const persist=()=>saveView(boundSession,view);
@@ -79,11 +79,11 @@ function endLoad() {
 }
 function showError(error) {
   const code=error?.code??"read_failed";
-  if(code==="binding_unavailable"){generation++;overview=null;items=[];boundSession=null;detail=null;content=null;more={};view=initialView();}
+  if(code==="binding_unavailable"){generation++;overview=null;items=[];boundSession=null;detail=null;content=null;more={};moreSequence={};view=initialView();}
   notice={kind:"error",code};render();
 }
-function flash(code) {
-  notice={kind:"info",code};render();
+function flash(code,background=false) {
+  notice={kind:"info",code};render(background);
   clearTimeout(noticeTimer);noticeTimer=setTimeout(()=>{if(notice?.kind==="info"){notice=null;render(true);}},1600);
 }
 
@@ -95,9 +95,11 @@ async function refresh(force=false) {
     const next=await call("get_context_summary",!force&&overview?.revision?{revision:overview.revision}:{});
     if(expected!==generation)return;
     const fresh=next.sessionId!==boundSession;
-    if(fresh){generation++;boundSession=next.sessionId;view=restoreView(boundSession);items=[];detail=null;content=null;more={};historyPage=0;overview=null;eventDetails.clear();}
+    if(fresh){generation++;boundSession=next.sessionId;view=restoreView(boundSession);items=[];detail=null;content=null;more={};moreSequence={};historyPage=0;overview=null;eventDetails.clear();}
     if(next.unchanged){idlePolls++;if(notice?.kind==="error"){notice=null;render(true);}return;}
     idlePolls=0;overview=next;
+    // Call counts are session-wide, so a pinned step's schema counts and call sort follow them.
+    const calls=JSON.stringify(next.toolCalls??null),callsChanged=calls!==toolCallsDigest;toolCallsDigest=calls;
     items=mergeSnapshots(items.filter(x=>!next.history?.loadedKeys||next.history.loadedKeys.includes(x.key)),next.trajectories);
     hasOlder=historyPage<4&&(next.history?.loadedCount??items.length)>items.length;
     const previous=view.selectedKey,loaded=next.history?.loadedKeys;
@@ -106,17 +108,20 @@ async function refresh(force=false) {
     if(!previous||expired||(view.follow&&!view.open))view.selectedKey=latestKey();
     if(!previous||expired){view.follow=true;view.open=null;}
     const changed=previous!==view.selectedKey;
-    if(changed){detail=null;content=null;more={};view.baselineKey=null;}
+    if(changed){detail=null;content=null;more={};moreSequence={};view.baselineKey=null;}
     if(notice?.kind==="error")notice=null;
-    if(expired&&!fresh)flash("expiredMoved");
+    if(expired&&!fresh)flash("expiredMoved",!force);
     persist();render(!fresh&&!force);
+    const opened=view.eventOpen&&next.events?.find(e=>eventId(e)===view.eventOpen);
+    if(opened?.kind==="compaction"&&opened.evidence==="recorded"&&!eventDetails.has(view.eventOpen))loadEventDetail(view.eventOpen,!fresh&&!force);
     if(fresh||changed||!detail||force)await loadDetail(!fresh&&!force);
+    else if(callsChanged)await loadDetail(true,true);
     if(view.open&&(fresh||force||!content))await loadContent();
     if(fresh)window.scrollTo(0,view.scroll??0);
   }catch(error){if(expected===generation)showError(error);}
   finally{busy=false;document.getElementById("refresh")?.classList.remove("spinning");}
 }
-async function loadDetail(background=false) {
+async function loadDetail(background=false,keepMore=false) {
   const key=view.selectedKey;if(!key)return;
   const sequence=++detailSequence,expected=generation;
   startLoad();
@@ -125,7 +130,7 @@ async function loadDetail(background=false) {
     const focusKey=view.open?.key===key?view.open.elementKey:view.eventFocus?.key===key?view.eventFocus.summary??undefined:undefined;
     const next=await call("get_context_request",{key,search:view.search,searchScope:searchAll?"loaded":"selected",sort:view.sort,schemaSort:view.schemaSort,focusKey,...baselineArgs(key)});
     if(sequence!==detailSequence||expected!==generation||key!==view.selectedKey||next.sessionId!==boundSession)return;
-    detail=next;more={};
+    detail=next;if(!keepMore){more={};moreSequence={};}
     if(view.baselineMode==="turn"&&!view.baselineKey&&!baselineArgs(key).baselineKey&&isAgent(items.find(x=>x.key===key)))detail={...next,diff:{available:false,reason:"no_previous_turn"}};
     if(!items.some(x=>x.key===key))items=mergeSnapshots(items,[next.summary]);
     // An event focus opens the changes against the request before the event. When they cannot be compared it says why
@@ -171,22 +176,22 @@ async function loadContent() {
   }finally{endLoad();}
 }
 async function loadMore(role) {
-  const key=view.selectedKey,sequence=++moreSequence,expected=generation,page=(more[role]?.page??0)+1;
+  const key=view.selectedKey,sequence=moreSequence[role]={},expected=generation,page=(more[role]?.page??0)+1;
   try {
     const next=await call("get_context_request",{key,role,page,search:view.search,searchScope:"selected",sort:view.sort,schemaSort:view.schemaSort,...baselineArgs(key)});
-    if(sequence!==moreSequence||expected!==generation||key!==view.selectedKey)return;
+    if(sequence!==moreSequence[role]||expected!==generation||key!==view.selectedKey)return;
     more={...more,[role]:{page,items:[...(more[role]?.items??[]),...next.elements]}};render();
   }catch(error){if(expected===generation)showError(error);}
 }
-async function loadEventDetail(id) {
+async function loadEventDetail(id,background=false) {
   const expected=generation;
-  eventDetails.set(id,{state:"loading"});render();
+  eventDetails.set(id,{state:"loading"});render(background);
   try {
     const next=await call("get_context_summary",{eventDetail:id});
     if(expected!==generation)return;
     eventDetails.set(id,next.eventDetail?{state:"ready",data:next.eventDetail}:{state:"failed"});
-  }catch{if(expected===generation)eventDetails.set(id,{state:"failed"});}
-  render();
+  }catch(error){if(expected===generation)eventDetails.set(id,{state:"failed",code:error?.code});}
+  render(background);
 }
 async function loadOlder() {
   if(!hasOlder)return;
@@ -198,7 +203,7 @@ async function loadOlder() {
     const scroller=document.getElementById("trend-scroll");
     if(scroller)keepRightEdge=scroller.scrollWidth-scroller.scrollLeft;
     render();
-  }catch(error){showError(error);}
+  }catch(error){if(expected===generation)showError(error);}
 }
 async function copy(text) {
   try{await navigator.clipboard.writeText(text);flash("copied");}catch{flash("copyFailed");}
@@ -240,7 +245,7 @@ function focusStep(key,{eventKey,element=null,baseline=null,mode,search="",searc
   const open=element?openPointer(key,element):null;
   view={...view,selectedKey:key,follow:false,open,baselineKey:baseline,search,searchExpanded,eventNote:null,eventKey,eventFocus,
     mode:element||search?"all":mode??view.mode,expanded:element?[...new Set([...(view.expanded??[]),element.role])]:view.expanded};
-  detail=null;content=null;more={};if(notice?.kind==="error")notice=null;
+  detail=null;content=null;more={};moreSequence={};if(notice?.kind==="error")notice=null;
   const target=element?[rowSelector(key,element.key),"center"]:scroll;
   scrollTarget=target;reveal={key,target};persist();render();loadDetail();if(open)loadContent();
 }
@@ -249,7 +254,7 @@ const actions={
     if(!key)return;
     ++contentSequence;
     view={...view,selectedKey:key,follow:key===latestKey(),open:null,baselineKey:null,eventFocus:null,eventNote:null,eventKey:null};
-    detail=null;content=null;more={};if(notice?.kind==="error")notice=null;
+    detail=null;content=null;more={};moreSequence={};if(notice?.kind==="error")notice=null;
     persist();render();loadDetail();
   },
   latest(){actions.select(latestKey());},
@@ -301,16 +306,21 @@ const actions={
   },
   searchAll(on){view={...view,searchAll:on};persist();render();loadDetail();},
   toggleRole(role) {
-    const key=view.search?"searchExpanded":"expanded",current=view[key]??(view.search?Object.keys(detail?.groups??{}):[]);
+    const key=view.search?"searchExpanded":"expanded",current=view[key]??(view.search?matchedRoles(view,detail):[]);
     view={...view,[key]:current.includes(role)?current.filter(x=>x!==role):[...current,role]};persist();render();
   },
   focusRole(role) {
+    const searched=Boolean(view.search);
     view={...view,mode:"all",search:"",searchExpanded:null,expanded:[...new Set([...(view.expanded??[]),role])]};persist();
-    scrollTarget=`.category[data-role="${role}"]`;render();
+    scrollTarget=`.category[data-role="${role}"]`;if(searched)reveal={key:view.selectedKey,target:scrollTarget};
+    render();if(searched)loadDetail();
   },
+  // The target may be filtered out or beyond its category's loaded pages; open it first so the reload sends it as focusKey.
   reveal(item) {
-    view={...view,mode:"all",search:"",searchExpanded:null,expanded:[...new Set([...(view.expanded??[]),item.role])]};
-    actions.open(item,view.selectedKey,true);
+    const key=view.selectedKey;if(!key)return;
+    ++contentSequence;content=null;
+    view={...view,mode:"all",search:"",searchExpanded:null,expanded:[...new Set([...(view.expanded??[]),item.role])],open:openPointer(key,item)};
+    scrollTarget=[rowSelector(key,item.key),"center"];reveal={key,target:scrollTarget};persist();render();loadDetail();loadContent();
   },
   open(item,snapshotKey=view.selectedKey,scroll=false) {
     ++contentSequence;content=null;
@@ -344,13 +354,13 @@ window.addEventListener("scroll",()=>{view.scroll=window.scrollY;clearTimeout(sc
 const pollDelay=()=>idlePolls>=20?10000:idlePolls>=10?6000:3000;
 function schedule() {
   clearTimeout(timer);
-  if(!stopped&&!document.hidden)timer=setTimeout(async()=>{await refresh();schedule();},pollDelay());
+  if(!stopped&&!document.hidden)timer=setTimeout(async()=>{try{await refresh();}finally{schedule();}},pollDelay());
 }
 function wake() {
   if(stopped||pollDelay()===3000||document.hidden)return;
-  idlePolls=0;refresh().then(schedule);
+  idlePolls=0;refresh().finally(schedule);
 }
-document.addEventListener("visibilitychange",()=>{clearTimeout(timer);if(!stopped&&!document.hidden){idlePolls=0;refresh().then(schedule);}});
+document.addEventListener("visibilitychange",()=>{clearTimeout(timer);if(!stopped&&!document.hidden){idlePolls=0;refresh().finally(schedule);}});
 document.documentElement.addEventListener("pointerenter",wake);
 window.addEventListener("focus",wake);
 render();

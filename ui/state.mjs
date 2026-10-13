@@ -7,11 +7,15 @@ export function restoreView(sessionId) {
   try {
     const saved=JSON.parse(localStorage.getItem(PREFIX+sessionId));
     if(!saved||typeof saved!=="object")return initialView();
-    const view={...initialView(),...saved};
+    const base=initialView(),view={...base,...saved};
     if(!["context","usage","about"].includes(view.page))view.page="context";
     if(!["total","delta"].includes(view.trend))view.trend="total";
     if(!["step","turn"].includes(view.granularity))view.granularity="step";
     view.trendAdaptive=view.trendAdaptive===true;
+    if(typeof view.search!=="string")view.search="";
+    if(!Number.isFinite(view.scroll))view.scroll=0;
+    for(const key of ["selectedKey","baselineKey"])if(view[key]!==null&&typeof view[key]!=="string")view[key]=null;
+    for(const key of ["follow","searchAll","aboutOpen"])if(typeof view[key]!=="boolean")view[key]=base[key];
     if(!["all","changes"].includes(view.mode))view.mode="all";
     if(!["size","order"].includes(view.sort))view.sort="size";
     if(!["size","calls","name"].includes(view.schemaSort))view.schemaSort="size";
