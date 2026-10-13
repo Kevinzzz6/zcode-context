@@ -7,7 +7,8 @@
 # Usage, from anywhere:
 #   PLAYWRIGHT=/abs/path/to/node_modules/playwright/index.mjs bash docs/images/src/render.sh
 #   SKIP_SHOTS=1 bash docs/images/src/render.sh      # reuse output/readme-raw/
-# Needs Node.js 24+, Chrome (CHROME=… overrides the path), curl and ImageMagick (magick) for sizes and compression.
+# Needs Node.js 24+, Chrome (CHROME=… overrides the path), curl and ImageMagick (magick, for image heights).
+# oxipng, when on PATH, losslessly shrinks the generated PNGs; the pass is skipped without it.
 set -euo pipefail
 cd "$(dirname "$0")/../../.."
 chrome="${CHROME:-/c/Program Files/Google/Chrome/Application/chrome.exe}"
@@ -68,10 +69,10 @@ for v in "${variants[@]}"; do
   shot "architecture$v.png" 1200 520 "$src/architecture.html?lang=$(lang "$v")&theme=$(theme "$v")"
 done
 
-# Palette-quantize the UI images: about a third of the size, visually lossless at this scale.
+# Palette-quantize the UI images (about a third of the size, visually lossless at this scale),
+# then squeeze every PNG losslessly with oxipng when it is on PATH.
 for f in "$out"/frame-*.png "$out"/events-flow*.png "$out"/architecture*.png; do
   magick "$f" -strip -dither None -colors 256 -define png:compression-level=9 "PNG8:$f"
 done
-magick "$out/hero.png" -strip -define png:compression-level=9 "$out/hero.png"
-magick "$out/hero.en.png" -strip -define png:compression-level=9 "$out/hero.en.png"
+if command -v oxipng >/dev/null; then oxipng -o max --strip safe --quiet "$out"/*.png; fi
 echo "README images written to $out/"
