@@ -154,6 +154,13 @@ try {
   checks.push("focusing a compaction pins the step after it, scrolls to the browser and explains a non-comparable baseline");
   await compactions.first().locator(".event-nav button").click();await a.locator("#follow-state").filter({hasText:"正在查看历史请求"}).waitFor();
   checks.push("compaction before-step navigation");
+  await page.request.get(base+"/inject?session=sess_A");await refresh(a);
+  const inject=a.locator('.event.inject[data-evidence="recorded"]').first();await inject.waitFor();
+  await inject.locator(".event-main").click();await a.locator(".el.open #content").filter({hasText:"Fixture TodoWrite reminder"}).waitFor();
+  assert.equal(await inject.locator(".event-main").getAttribute("aria-pressed"),"true");
+  checks.push("a recorded injection opens the message that carried it in the context browser");
+  await inject.locator(".event-toggle").click();await inject.locator(".event-text").filter({hasText:"Fixture TodoWrite reminder"}).waitFor();
+  checks.push("an injection's own text opens inline");
 
   await a.locator("#trend-delta").click();await a.locator("#trend-scroll .bar").first().click();
   assert.equal(await a.locator("#trend-scroll .bar").first().getAttribute("aria-pressed"),"true");checks.push("trend Delta mode and bar selection");

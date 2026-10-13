@@ -65,32 +65,51 @@ function compactKind(event) {
 // Event anchors use the agent-request series that the trend shows, not auxiliary requests:
 // the last request sent before the operation began and the first one sent after it ended.
 // With earlier steps not loaded, an event older than the first loaded step has no known neighbour on either side.
-function anchors(items,event,older=false) {
-  const agents=items.filter(isAgent),before=agents.findLast(x=>x.startedAt<=event.timestamp)??null;
+// A recorded injection carries the step the server found it in, or none when that request is not readable.
+export function anchors(items,event,older=false) {
+  const agents=items.filter(isAgent);
+  if("stepKey" in event) {
+    if(!event.stepKey)return {before:null,after:null,unlocated:true};
+    const after=agents.find(x=>x.key===event.stepKey)??null;
+    return after?{before:agents.findLast(x=>x.startedAt<after.startedAt)??null,after}:{before:null,after:null,earlier:older};
+  }
+  const before=agents.findLast(x=>x.startedAt<=event.timestamp)??null;
   if(!before&&older&&agents.length)return {before:null,after:null,earlier:true};
   return {before,after:agents.find(x=>x.startedAt>(event.endedAt??event.timestamp))??null};
 }
 const TRUNCATED=["display_window","history_window","history_reset","source_rotated"];
-const olderUnloaded=ctx=>Boolean(ctx.hasOlder)||ctx.items.length<(ctx.overview?.history?.loadedCount??0)
+export const olderUnloaded=ctx=>Boolean(ctx.hasOlder)||ctx.items.length<(ctx.overview?.history?.loadedCount??0)
   ||(ctx.overview?.trajectory?.coverage??[]).some(code=>TRUNCATED.includes(code));
-const GLYPH={compaction:"✂",rewind:"↶",model:"⇄",tools:"+"};
+const GLYPH={compaction:"✂",rewind:"↶",model:"⇄",tools:"⚙",inject:"↳"};
 // Compaction and rewind remove content between two requests, so their focus compares the request after with the one before.
-const BOUNDARY=new Set(["compaction","rewind"]);
+export const BOUNDARY=new Set(["compaction","rewind"]);
+const EVENT_ROWS=12;
 const modelName=id=>String(id).split("/").at(-1);
+// ZCode's own source label for an injection; an unknown source shows as ZCode names it.
+const known=(t,key)=>{const text=t(key);return text===key?null:text;};
+function injectLabel(t,e) {
+  if(e.form==="skill")return "Skill";
+  return known(t,"src."+e.source)??known(t,"form."+e.form)??e.source??e.form??t("kind.inject");
+}
 function eventLabel(t,e) {
   if(e.kind==="compaction")return t(compactKind(e.event));
+  if(e.kind==="inject")return injectLabel(t,e);
   if(e.kind==="rewind")return t(e.edited?"kind.edit":"kind.rewind");
   return t("kind."+e.kind);
 }
 function eventDetail(t,e) {
-  if(e.kind==="compaction")return [t(e.status==="started"?"inProgress":e.status),e.durationMs!=null&&e.status!=="started"?t("took",{s:(e.durationMs/1000).toFixed(1)}):null,e.reason].filter(Boolean).join(" · ");
+  if(e.kind==="compaction")return [t(e.status==="started"?"inProgress":e.status),e.durationMs!=null&&e.status!=="started"?t("took",{s:(e.durationMs/1000).toFixed(1)}):null,
+    e.summarizedCount!=null?t("summarizedCount",{n:full(e.summarizedCount)}):null,e.reason].filter(Boolean).join(" · ");
+  if(e.kind==="inject")return e.form==="skill"?e.name??"":String(e.text??"").split("\n").map(x=>x.trim()).find(Boolean)?.slice(0,160)??"";
   if(e.kind==="model")return modelName(e.from)+" → "+modelName(e.to);
   if(e.kind==="rewind")return e.keptMessageCount!=null?t("kept",{n:full(e.keptMessageCount)}):"";
   if(e.kind==="tools")return e.toolCount!=null?t("toolsRegistered",{n:e.toolCount}):"";
   return "";
 }
-function eventAt(t,e,{before,after,earlier}) {
+function eventAt(t,e,{before,after,earlier,unlocated}) {
   if(earlier)return t("eventEarlier");
+  if(unlocated)return t("eventUnreadable");
+  if(e.stepKey)return after?(after.turn!=null?t("turnShort",{n:after.turn})+" · ":"")+t("step",{n:after.step}):null;
   if(BOUNDARY.has(e.kind)&&before&&after) {
     const turn=before.turn!=null&&before.turn===after.turn?t("turnShort",{n:after.turn})+" · ":"";
     return turn+t("stepGap",{a:before.step,b:after.step});
@@ -99,7 +118,7 @@ function eventAt(t,e,{before,after,earlier}) {
   if(before)return t("afterStep",{n:before.step});
   return null;
 }
-const KINDS=["compaction","rewind","model","tools"];
+const KINDS=["compaction","rewind","inject","model","tools"];
 export const eventKinds=events=>KINDS.filter(kind=>(events??[]).some(e=>e.kind===kind));
 
 export function renderApp(ctx) {
@@ -349,7 +368,7 @@ function trendCard(ctx) {
     if(missing)up.append(node("span",{class:"missing",title:t("deltaUnknown")},"?"));
     const cut=c.items.map(x=>cuts.get(x.key)).find(Boolean);
     if(cut)bar.append(node("span",{class:"cut "+cut.event.kind,title:eventLabel(t,cut.event)+" · "+clock(cut.event.timestamp)+" · "+t("eventFocusTip"),
-      onclick:e=>{e.stopPropagation();a.focusEvent(focusOf(cut.event,cut));}},GLYPH[cut.event.kind]));
+      onclick:e=>{e.stopPropagation();a.focusEvent(cut.event);}},GLYPH[cut.event.kind]));
     const number=turns?c.turn:s.step??i+1,showLabel=!dense||selected||i===0||number%5===0;
     bar.append(node("span",{class:"bar-area",style:{height:H+"px"}},up,down),node("span",{class:"bar-x"},showLabel?(turns?t("turnShort",{n:number}):String(number)):""));
     if(!turns)bar.append(node("span",{class:"bar-turn"+(parity?" alt":"")+(columns[i+1]?.turn===c.turn?" joined":"")},first&&c.turn!=null?t("turnShort",{n:c.turn}):""));
@@ -617,34 +636,72 @@ export function markdown(text) {
   return fragment;
 }
 
-const eventId=event=>event.kind+":"+event.timestamp;
-const focusOf=(event,{before,after})=>({id:eventId(event),after:after?.key??null,before:before?.key??null,compare:BOUNDARY.has(event.kind)});
+export const eventId=event=>event.id??event.kind+":"+event.timestamp;
+// Where a click on the event leads, for its tooltip.
+function eventTip(t,event,target) {
+  if(event.kind==="tools")return t("eventToolsTip");
+  if(target.unlocated)return t("eventTextTip");
+  if(target.earlier)return t("eventEarlierTip");
+  if(!target.after)return t("eventNoAfter");
+  if(event.stepKey)return t("eventOpenTip");
+  if(event.kind==="model")return t("eventModelTip");
+  return t(BOUNDARY.has(event.kind)?"eventCompareTip":"eventFocusTip");
+}
 function eventsCard(ctx) {
   const {t,view,overview:o,items,actions:a}=ctx,all=o.events??[],kinds=eventKinds(all);
   const picked=view.eventKinds?.filter(k=>kinds.includes(k)),shown=picked?.length?picked:kinds;
-  const head=node("div",{class:"card-head wrap"},node("h2",{},t("events")),muted(t("eventsWindow")),spacer());
+  const whole=Boolean(o.conversation?.available);
+  const head=node("div",{class:"card-head wrap"},node("h2",{},t("events")),node("span",{class:"muted",id:"events-scope",title:t(whole?"eventsWholeTip":"eventsWindowTip")},t(whole?"eventsWhole":"eventsWindow")),spacer());
   if(kinds.length>1)head.append(node("div",{class:"event-kinds",id:"event-kinds"},...kinds.map(kind=>{
     const on=shown.includes(kind),n=all.filter(e=>e.kind===kind).length;
     return button([t("kindName."+kind),node("span",{class:"kind-n"},String(n))],()=>a.eventKind(kind,kinds),{class:"toggle"+(on&&picked?.length?" on":""),dataset:{kind},ariaPressed:String(on&&Boolean(picked?.length))});
   })));
   const card=node("section",{class:"card events",id:"events"},head);
   if(!all.length){card.append(node("p",{class:"muted"},t("noEvents")));return card;}
-  for(const event of [...all].reverse()) {
-    if(!shown.includes(event.kind))continue;
+  const rows=[...all].reverse().filter(event=>shown.includes(event.kind));
+  for(const event of view.eventsAll?rows:rows.slice(0,EVENT_ROWS)) {
     const target=anchors(items,event,olderUnloaded(ctx)),{before,after}=target,at=eventAt(t,event,target),detail=eventDetail(t,event);
     const evidence=t(event.navigation?.evidence==="turn_range"?"turnEvidence":"timeEvidence");
-    const on=Boolean(after&&after.key===view.selectedKey&&view.eventKey===eventId(event));
-    const saved=event.tokensSavedEstimate!=null?node("span",{class:"badge down",title:t("saved",{n:full(event.tokensSavedEstimate)})},"−"+compact(event.tokensSavedEstimate)):null;
+    const on=view.eventKey===eventId(event)&&Boolean(view.selectedKey);
+    const saved=event.tokensSavedEstimate!=null?node("span",{class:"badge down",title:t("saved",{n:full(event.tokensSavedEstimate)})},"−"+compact(event.tokensSavedEstimate))
+      :event.tokens?node("span",{class:"badge up",title:t("eventTokensTip")},"+"+compact(event.tokens)):null;
+    const reachable=Boolean(after)||target.earlier||target.unlocated||event.kind==="tools";
+    const open=view.eventOpen===eventId(event),compacted=event.kind==="compaction"&&event.evidence==="recorded"&&event.summarizedCount;
     const main=button([node("span",{class:"event-glyph"},GLYPH[event.kind]??"•"),node("span",{class:"kind"},eventLabel(t,event)),
       detail?node("span",{class:"event-detail",title:detail},detail):null,spacer(),saved,muted(clock(event.timestamp))],
-      ()=>a.focusEvent(focusOf(event,target)),{class:"event-main",disabled:!after,title:after?t(BOUNDARY.has(event.kind)?"eventCompareTip":"eventFocusTip"):t(target.earlier?"eventEarlierTip":"eventNoAfter"),ariaPressed:String(on)});
+      ()=>a.focusEvent(event),{class:"event-main",disabled:!reachable,title:eventTip(t,event,target),ariaPressed:String(on)});
     const nav=node("div",{class:"event-nav"},at?node("span",{class:"event-at",title:evidence},at):null,
       event.clearedMessageCount!=null?muted(t("cleared",{n:full(event.clearedMessageCount)})):null,spacer(),
+      event.kind==="inject"&&event.text?button(open?t("hideText"):t("showText"),()=>a.eventToggle(event),{class:"btn small ghost event-toggle",ariaExpanded:String(open)}):null,
+      compacted?button((open?"▾ ":"▸ ")+t("summarizedList"),()=>a.eventToggle(event),{class:"btn small ghost event-toggle",ariaExpanded:String(open),title:t("summarizedHint")}):null,
       BOUNDARY.has(event.kind)&&before?button(t(event.kind==="rewind"?"rewindBefore":"before")+" · "+itemName(t,before),()=>a.select(before.key),
         {class:"btn small ghost"+(before.key===view.selectedKey?" on":""),title:evidence}):null);
-    card.append(node("div",{class:"event "+event.kind+(event.status==="failed"?" failed":"")+(on?" on":""),dataset:{kind:event.kind}},main,nav));
+    const row=node("div",{class:"event "+event.kind+(event.status==="failed"?" failed":"")+(on?" on":"")+(open?" open":""),dataset:{kind:event.kind,evidence:event.evidence??"logged",event:eventId(event)}},main,nav);
+    if(open)row.append(event.kind==="inject"?injectBody(t,event,target):summarizedBody(ctx,event));
+    card.append(row);
   }
+  if(rows.length>EVENT_ROWS)card.append(button(view.eventsAll?t("showFewerEvents"):t("showAllEvents",{n:rows.length-EVENT_ROWS}),()=>a.set({eventsAll:!view.eventsAll}),{class:"btn ghost small more",id:"events-all"}));
   return card;
+}
+// The injected text as ZCode's conversation store keeps it, for when the request that carried it is not readable.
+function injectBody(t,event,target) {
+  return node("div",{class:"event-body"},target.unlocated?node("p",{class:"note"},t("eventNotInRecords")):null,
+    node("pre",{class:"body event-text"},event.text),event.truncated?node("p",{class:"muted small"},t("textTruncated")):null);
+}
+// What a compaction summarized away, read on demand from the conversation store: one row per prompt, reply, reasoning block or tool call.
+function summarizedBody(ctx,event) {
+  const {t}=ctx,detail=ctx.eventDetails?.get(eventId(event)),box=node("div",{class:"event-body summarized"});
+  if(!detail||detail.state==="loading"){box.append(node("p",{class:"muted"},t("loading")));return box;}
+  if(detail.state==="failed"){box.append(node("p",{class:"note"},t("summarizedUnavailable")));return box;}
+  const d=detail.data;
+  box.append(node("p",{class:"muted small"},t("summarizedHint")+" · "+t("summarizedTotal",{n:full(d.messageCount),items:full(d.itemCount),tokens:approx(d.tokens)})));
+  const list=node("div",{class:"summarized-list"});
+  for(const item of d.items.slice(0,80))list.append(node("div",{class:"summarized-row"},
+    chip(item.chip?known(t,"src."+item.chip)??known(t,"form."+item.chip)??item.chip:t("role."+item.role),"tool-chip"),node("span",{class:"el-title",title:item.title},item.title||"—"),node("span",{class:"num"},approx(item.tokens))));
+  box.append(list);
+  const rest=d.itemCount-Math.min(80,d.items.length);
+  if(rest>0)box.append(node("p",{class:"muted small"},t("moreNotListed",{n:full(rest)})));
+  return box;
 }
 function about(ctx) {
   const {t,view,overview:o,actions:a,session}=ctx,coverage=o?.trajectory?.coverage??[];
