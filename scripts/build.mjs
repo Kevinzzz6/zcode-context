@@ -35,13 +35,14 @@ for(const [directory,metadata] of [...packages.entries()].sort((a,b)=>a[1].name.
   try{notices+=await readFile(directory+"/NOTICE","utf8");notices+="\n\n";}catch{}
 }
 await writeFile(path("dist/THIRD_PARTY_NOTICES.txt"),notices);
-const base=path("dist/local-marketplace/");const plugin=path("dist/local-marketplace/plugins/zcode-context/");
-await mkdir(plugin,{recursive:true});await cp(path(".zcode-plugin"),new URL(".zcode-plugin/",plugin),{recursive:true});
+const plugin=path("plugins/zcode-context/");
+await rm(plugin,{recursive:true,force:true});await mkdir(plugin,{recursive:true});
+await cp(path(".zcode-plugin"),new URL(".zcode-plugin/",plugin),{recursive:true});
 await mkdir(new URL("dist/",plugin),{recursive:true});
 for(const file of ["server.mjs","worker.mjs","context.html"])await cp(path("dist/"+file),new URL("dist/"+file,plugin));
 await cp(path("dist/THIRD_PARTY_NOTICES.txt"),new URL("THIRD_PARTY_NOTICES.txt",plugin));
 for(const file of ["README.md","README.en.md","CHANGELOG.md","LICENSE"])await cp(path(file),new URL(file,plugin));
 await cp(path("docs"),new URL("docs/",plugin),{recursive:true});
 const manifest=JSON.parse(await readFile(path(".zcode-plugin/plugin.json"),"utf8"));
-await writeFile(new URL("marketplace.json",base),JSON.stringify({name:"zcode-context-local",description:"Independent Context UI plugin for local development.",owner:{name:"Kevinzzz6"},plugins:[{name:manifest.name,version:manifest.version,source:"./plugins/zcode-context",description:manifest.description,description_i18n:manifest.description_i18n,category:"developer-tools"}]},null,2)+"\n");
-console.log("Built dist/local-marketplace. Register this directory in ZCode's plugin marketplace.");
+await writeFile(path("marketplace.json"),JSON.stringify({name:"zcode-context-marketplace",description:"Distribution marketplace for the zcode-context plugin.",owner:{name:manifest.author.name},plugins:[{name:manifest.name,version:manifest.version,source:"./plugins/zcode-context",description:manifest.description,description_i18n:manifest.description_i18n,category:"developer-tools",keywords:["context","tokens","usage","mcp"]}]},null,2)+"\n");
+console.log("Built plugins/zcode-context and the root marketplace.json. The repository itself is now a ZCode plugin marketplace: add it by GitHub repo (Kevinzzz6/zcode-context), by the repo root path, or via a release zip.");
