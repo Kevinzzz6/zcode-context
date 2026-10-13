@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Trend: hover tip with per-category values, category highlight shared by the legend, summary bar, browser and bars, Steps/Turns granularity, and an Adaptive axis that rescales to the bars in view.
+- Summary: Turn / In / Reply brief; In lists what entered the context after the previous reply, in message order.
+- Browser: compare with the previous step or the previous turn's last step; Earlier… still picks any step.
+- Body find with previous/next, Enter / Shift+Enter / Esc; left/right arrows move between steps.
+- Keep LF line endings in the working copy; the browser smoke test now covers 23 interaction groups.
+
 ## 0.3.0 — 2026-10-13
 
 - Redesign the sidebar after dsh-context's card layout: request summary with composition bar, legend and User / Added / Response brief; trend with a Y axis, turn band and ✂ compaction markers; a context browser with inline expansion; a compaction events card; collapsed explanations.

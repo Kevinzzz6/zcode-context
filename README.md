@@ -87,13 +87,13 @@ limited session caches and on-demand paginated text. Coverage warnings remain vi
 The sidebar follows dsh-context's card layout, top to bottom:
 
 - **Step selector**: ‹ › move between agent requests; the menu also lists auxiliary title and compaction requests. It follows
-  the latest request by default. Choosing an earlier one shows "Jump to latest" with the number of newer requests; following pauses while an element is open.
+  the latest request by default. Choosing an earlier one shows "Jump to latest" with the number of newer requests; following pauses while an element is open. Left/right arrows move between steps when focus is not in a field.
 - **Request summary**: estimated input, change versus the previous step, actual provider input/output/cache, a category bar and legend
-  (click to jump to the category), and a User / Added / Response brief. Clicking Added opens that element.
-- **Context trend**: one bar per agent request with a Y axis, a turn band and ✂ compaction markers; Total or Delta; scrolls horizontally.
+  (click to jump to the category), and a Turn / In / Reply brief: the turn's opening message, what entered the context after the previous reply (usually tool results; click to open), and this step's calls or text. Hovering a category lights it across the trend and summary.
+- **Context trend**: one bar per agent request with a Y axis, a turn band and ✂ compaction markers; Total or Delta, Steps or Turns; scrolls horizontally, and Adaptive rescales the axis to the bars in view. Hovering shows per-category values.
 - **Context browser**: fixed categories (system prompt, tool schemas, user, assistant, tool results), each with count, added/removed badges,
-  change, estimate, share and its own pagination. Elements are named by tool and key argument (for example `Read · src/cache.ts`) and expand
-  inline into a tool card with argument table and status, a schema parameter table, or the body (readable / Markdown / raw, copy, find, 12k parts).
+  change, estimate, share and its own pagination. The baseline is the previous step, the previous turn's last step, or any earlier step. Elements are named by tool and key argument (for example `Read · src/cache.ts`) and expand
+  inline into a tool card with argument table and status, a schema parameter table, or the body (readable / Markdown / raw, copy, find with Enter / Shift+Enter / Esc, 12k parts).
   Changes mode lists added and removed elements per category against the baseline; removed ones come from the baseline and are struck through.
   A replacement with unique recorded identity offers its body Diff inside the expanded element.
 - **Compaction events**: logged kind, status, reason and savings, with Before / After step navigation.
@@ -115,7 +115,7 @@ this requires available localStorage and never supplies session authority. A res
   This does not validate the real Desktop sandbox.
 - Optional browser test: start `npm run fixture:browser`, then `npm run test:browser -- /absolute/path/to/playwright/index.mjs`.
   Uses existing Playwright and installed Chrome; no browser is downloaded. It verifies official App/AppBridge communication,
-  real stdio/SQLite and A/B page isolation across 18 interaction groups, but not Electron sandbox behavior.
+  real stdio/SQLite and A/B page isolation across 23 interaction groups, but not Electron sandbox behavior.
 - [Desktop acceptance](docs/desktop-acceptance.md) must be completed in an isolated ZCode copy.
   Code and protocol tests do not prove released-client integration.
 - [Handoff](docs/handoff.md) records current state, paths, validation evidence and rollout acceptance steps.
