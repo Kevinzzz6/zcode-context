@@ -1,7 +1,7 @@
 # Desktop acceptance — isolated ZCode only
 
 Baseline: ZCode 3.15.1. Do not run these checks in the developer's active ZCode profile.
-Use an isolated executable/profile. Register dist/local-marketplace in that same profile.
+Use an isolated executable/profile. Register the repository root (marketplace.json + plugins/zcode-context) in that same profile.
 
 Status on 2026-10-12: current client 3.15.1.8093; plugin 0.2.0.
 Basic v0.1.1 Electron handshake and real-session data were verified. v0.2 SDK browser and local installation

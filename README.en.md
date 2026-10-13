@@ -55,18 +55,47 @@ For complete comparisons, turn on complete Model I/O retention in ZCode Settings
 
 ## Install
 
-Requires ZCode Desktop (baseline 3.15.1 with the official UI plugin contract) and Node.js 24+ on PATH.
+### Prerequisites
+
+- ZCode Desktop (baseline 3.15.1 with the official UI plugin contract).
+- Node.js 24+ on PATH. `node -v` printing a version is enough — it only starts the plugin's bundled service; no npm or build tools are needed.
+
+### From the plugin marketplace (recommended)
+
+1. Open ZCode's **Settings → Plugin Management** and switch to the **Discover** tab.
+2. Click the **`+`** button to add a marketplace.
+3. Enter this project's GitHub repository `Kevinzzz6/zcode-context` (the full URL `https://github.com/Kevinzzz6/zcode-context` also works) and confirm; `zcode-context-marketplace` appears in the marketplace list.
+4. Find the **zcode-context** card in the plugin list and click **Get**. The button turns to **Installed** when done; the plugin is enabled by default.
+5. Restart ZCode.
+6. Open any session, click **`+`** in the right pane to add a tab, and choose **Context**.
+
+No cloning and no npm commands are involved. The plugin installs into ZCode's local cache with its bundled service dependencies, worker and offline page; it does not need the source checkout at runtime. Uninstall and the on/off switch live in the plugin's detail view on the **Installed** tab.
+
+> Adding the marketplace makes ZCode clone from GitHub. If your network needs a proxy, set the `ZCODE_HTTP_PROXY` environment variable (for example `http://127.0.0.1:7890`) and restart ZCode — ZCode reads only this variable, not `http_proxy`.
+
+### Updating
+
+In **Settings → Plugin Management → Discover**, refresh the `zcode-context-marketplace` source; when the zcode-context card offers **Update**, click it and restart ZCode. The current version is shown in the plugin's detail view on the **Installed** tab.
+
+### Offline install
+
+When GitHub is unreachable, use the release archive instead:
+
+1. Download `zcode-context-<version>-marketplace.zip` for the version you want from [Releases](https://github.com/Kevinzzz6/zcode-context/releases); the matching `.sha256` file verifies it.
+2. Unzip it anywhere; you get a `zcode-context-marketplace` directory.
+3. Add a marketplace via **Plugin Management → Discover → `+`** choosing a local directory, pointing at the unzipped `zcode-context-marketplace` directory (the one containing `marketplace.json`).
+4. Get, enable and restart as in steps 4–6 above.
+
+### From source (developers)
 
 ```sh
+git clone https://github.com/Kevinzzz6/zcode-context.git
+cd zcode-context
 npm ci
 npm run build
 ```
 
-1. In ZCode's plugin marketplace, add a local marketplace at the absolute path of `dist/local-marketplace`.
-2. Install and enable **zcode-context**, then restart ZCode.
-3. Open a session, add a tab in the right pane and choose **Context**.
-
-To update, rebuild, refresh the same marketplace source, update the plugin and restart ZCode. The installed package bundles its service dependencies, worker and offline page; it does not need this checkout at runtime.
+The build writes `marketplace.json` and `plugins/zcode-context/` at the repository root, so the repository root itself becomes a marketplace directory. Add it in **Plugin Management → Discover → `+`** as a local directory using the repository's absolute path. After changing code, rebuild, then refresh and update the plugin in the marketplace. See **Development** below for the full verification flow.
 
 ### About approving two read-only tools
 
@@ -105,7 +134,7 @@ Defaults read `db/db.sqlite`, `rollout/`, `debug/` and `log/` under `~/.zcode/cl
 npm ci
 npm run check        # syntax and manifest checks
 npm test             # unit tests
-npm run build        # dist/ and the local marketplace
+npm run build        # dist/, plugins/zcode-context/ and the root marketplace
 npm run smoke        # built service over real MCP stdio
 npm run verify       # all of the above, results in output/verification
 ```

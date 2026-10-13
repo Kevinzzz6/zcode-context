@@ -79,8 +79,8 @@ cd /tmp/zcode-context
 /home/kevin/.nvm/versions/node/v24.13.1/bin/node scripts/verify.mjs
 ```
 
-构建结果复制回正式目录，安装源为 `dist/local-marketplace`。
-安装包为 `zcode-context-0.2.0-marketplace.zip`，校验值同名 `.sha256`。
+构建结果在仓库根：安装源为根目录 `marketplace.json` + `plugins/zcode-context/`（仓库本身即市场，可加 GitHub 仓库或本地根目录）。
+安装包为 `zcode-context-<版本>-marketplace.zip`，校验值同名 `.sha256`。
 旧 0.1.x 包保留作历史。不能将旧包作为本次安装包。
 
 ZCode 宿主权限链仍然生效，readonly 注释并不自动允许普通 MCP 工具。

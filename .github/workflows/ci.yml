@@ -15,4 +15,14 @@ jobs:
       - run: npm run check
       - run: npm test
       - run: npm run build
+      - name: Committed marketplace must match a fresh build
+        shell: bash
+        run: |
+          changes=$(git status --porcelain -- marketplace.json plugins/)
+          if [ -n "$changes" ]; then
+            echo "marketplace.json / plugins/ differ from a fresh build."
+            echo "Run npm run build and commit the regenerated marketplace artifacts."
+            echo "$changes"
+            exit 1
+          fi
       - run: npm run smoke

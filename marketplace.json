@@ -1,0 +1,26 @@
+{
+  "name": "zcode-context-marketplace",
+  "description": "Distribution marketplace for the zcode-context plugin.",
+  "owner": {
+    "name": "Kevinzzz6"
+  },
+  "plugins": [
+    {
+      "name": "zcode-context",
+      "version": "0.3.3",
+      "source": "./plugins/zcode-context",
+      "description": "只读查看会话用量、模型输入组成、请求差异和压缩事件。",
+      "description_i18n": {
+        "en": "Read-only session usage, model input composition, request differences and compaction events.",
+        "zh-CN": "只读查看会话用量、模型输入组成、请求差异和压缩事件。"
+      },
+      "category": "developer-tools",
+      "keywords": [
+        "context",
+        "tokens",
+        "usage",
+        "mcp"
+      ]
+    }
+  ]
+}

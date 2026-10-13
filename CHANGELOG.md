@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.3 — 2026-10-13
+
+- The repository is itself a plugin marketplace now. `npm run build` assembles `plugins/zcode-context/` plus a root `marketplace.json` (replacing `dist/local-marketplace`), so users install by adding the GitHub repo `Kevinzzz6/zcode-context` in ZCode's plugin marketplace — no clone, no npm. Release zips (`scripts/package.py`) and offline/local-directory install are documented in the READMEs.
+- CI fails when the committed marketplace differs from a fresh build; pushing a `v*` tag verifies, packages and attaches the marketplace zip to a GitHub Release.
+
 ## 0.3.2 — 2026-10-13
 
 - On partial (tail) records the In row and Changes mode list what entered after the baseline step, derived from entry stamps, with +N per category; removals stay unknown and the panel says so. Messages that cannot be dated are counted, not listed.

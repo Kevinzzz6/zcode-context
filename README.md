@@ -57,18 +57,47 @@ ZCode 默认只记录每次请求的**最近 64 条消息**（长会话一次请
 
 ## 安装
 
-需要 ZCode Desktop（适配基线 3.15.1，需支持官方 UI 插件接口）和系统 PATH 中的 Node.js 24+。
+### 前置条件
+
+- ZCode Desktop（适配基线 3.15.1，需支持官方 UI 插件接口）。
+- 系统 PATH 中的 Node.js 24+。终端里 `node -v` 能打印版本即可，它只用于启动插件自带的服务，不需要 npm 或其他构建工具。
+
+### 从插件市场安装（推荐）
+
+1. 打开 ZCode 的「设置 → 插件管理」，切换到「发现」（Discover）页签。
+2. 点击页签右上角的「+」按钮添加市场。
+3. 输入本项目的 GitHub 仓库 `Kevinzzz6/zcode-context`（完整地址 `https://github.com/Kevinzzz6/zcode-context` 也可以），确认后市场列表会新增 `zcode-context-marketplace`。
+4. 在插件列表找到 **zcode-context** 卡片，点击「获取」（Get）；完成后按钮变为「已安装」，插件默认启用。
+5. 重启 ZCode。
+6. 打开任意一个会话，在右侧面板点击「+」新增标签，选择「上下文」。
+
+整个过程不需要克隆仓库、不需要执行任何 npm 命令。插件安装进 ZCode 的本地缓存，自带服务依赖、worker 和离线页面，运行时不依赖源码目录；卸载与开关在「已安装」页签的插件详情里操作。
+
+> 添加市场时 ZCode 需要从 GitHub 克隆仓库。如果网络要走代理，请设置环境变量 `ZCODE_HTTP_PROXY`（例如 `http://127.0.0.1:7890`）并重启 ZCode。ZCode 只读取这个变量，不读取 `http_proxy`。
+
+### 更新
+
+在「设置 → 插件管理 → 发现」中刷新 `zcode-context-marketplace` 市场源；zcode-context 卡片出现「更新」时点击更新，完成后重启 ZCode。当前版本号在「已安装」页签的插件详情里查看。
+
+### 离线安装
+
+无法访问 GitHub 时，改用 Release 压缩包：
+
+1. 在 [Releases](https://github.com/Kevinzzz6/zcode-context/releases) 下载对应版本的 `zcode-context-<版本>-marketplace.zip`；同名的 `.sha256` 文件可用来校验。
+2. 解压到任意位置，得到 `zcode-context-marketplace` 目录。
+3. 在「插件管理 → 发现 → +」添加市场时选择本地目录，指向解压出的 `zcode-context-marketplace` 目录（其中含有 `marketplace.json`）。
+4. 获取、启用、重启，与上面第 4–6 步相同。
+
+### 从源码安装（开发者）
 
 ```sh
+git clone https://github.com/Kevinzzz6/zcode-context.git
+cd zcode-context
 npm ci
 npm run build
 ```
 
-1. 在 ZCode 插件市场中添加本地市场，路径填 `dist/local-marketplace` 的绝对路径。
-2. 安装并启用 **zcode-context**，重启 ZCode。
-3. 打开一个会话，在右侧面板新增标签，选择「上下文」。
-
-更新时重新构建，在插件市场刷新同一个市场源并更新插件，再重启 ZCode。安装产物自带服务依赖、worker 和离线页面，运行时不需要源码目录。
+构建会在仓库根生成 `marketplace.json` 和 `plugins/zcode-context/`，整个仓库根目录此时就是一个市场目录。在「插件管理 → 发现 → +」添加市场时选择本地目录、填仓库根目录的绝对路径即可；改动代码后重新构建，再到市场里刷新并更新插件。完整验证流程见下文「开发」。
 
 ### 关于「授权两个只读工具」
 
@@ -107,7 +136,7 @@ npm run build
 npm ci
 npm run check        # 语法与清单检查
 npm test             # 单元测试
-npm run build        # 构建 dist/ 与本地市场
+npm run build        # 构建 dist/、plugins/zcode-context/ 与根目录市场
 npm run smoke        # 构建产物 + 真实 MCP stdio 通信
 npm run verify       # 以上全部，结果写入 output/verification
 ```
