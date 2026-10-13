@@ -1,6 +1,13 @@
 # Changelog
 
-## Unreleased
+## 0.3.1 — 2026-10-13
+
+Tested against a real 600k-token session in the user's ZCode.
+
+- Partial (tail) records, the default ZCode rollout format, now lead with the provider's actual input instead of the recorded part (about 60k of a real 600k), show the recorded coverage (latest n of total messages), draw the rest as hatched "earlier messages (not recorded)" in the bar, legend and trend, compare steps by actual input, and explain how to turn on complete Model I/O retention.
+- Ignore moving prompt-cache breakpoints (cacheControl) when matching messages; they broke entry-stamp chains after one step and would make diffs report the previous message as removed and re-added.
+- The trend says when ZCode reset the record file or only its end was read, and that step numbers are relative.
+- User previews and titles drop host-injected leading blocks such as <in-app-browser-context>.
 
 - Trend: hover tip with per-category values, category highlight shared by the legend, summary bar, browser and bars, Steps/Turns granularity, and an Adaptive axis that rescales to the bars in view.
 - Summary: Turn / In / Reply brief; In lists what entered the context after the previous reply, in message order.
