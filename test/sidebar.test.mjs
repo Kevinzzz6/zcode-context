@@ -244,3 +244,11 @@ test("auxiliary snapshots and schemas carry no entry stamps",()=>fixture([
     const agent=await service.request("sess_A",{key:o.trajectories[1].key});
     assert.equal(agent.groups.user.items[0].enteredBefore,true);assert.ok(!("enteredBefore" in agent.groups.schema.items[0]));
   }));
+const cached=n=>chat(n,{[n-1]:{...message(n-1),cacheControl:{type:"ephemeral"}}});
+test("a prompt-cache breakpoint moving to the newest message breaks neither entry stamps nor diffs",()=>{
+  const before=foldRecord(modelRecord("s","a",cached(2))),after=foldRecord(modelRecord("s","b",cached(4)));
+  const d=diffRecords(before,after);assert.equal(d.added.length,2);assert.equal(d.removed.length,0);
+  return fixture([tail("c1",cached(4),3,{turnId:"t1"}),tail("c2",cached(6),3,{turnId:"t1"}),tail("c3",cached(8),3,{turnId:"t1"})],async(service,o)=>{
+    assert.deepEqual(stamps(await service.request("sess_A",{key:o.trajectories.at(-1).key})),{0:"S2T1",1:"S3T1",2:"S3T1"});
+  });
+});

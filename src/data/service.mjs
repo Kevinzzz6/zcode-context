@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { readUsage, readToolCalls } from "./sqlite.mjs";
 import { JsonlTail } from "./jsonl.mjs";
 import { sanitizeSessionSegment, ContextError, isAgentSource } from "../domain/session.mjs";
-import { foldRecord, inputElements, composition, diffRecords, trajectorySummary, canonical, elementSummary, toolEvidence, textDifference } from "../domain/trajectory.mjs";
+import { foldRecord, inputElements, composition, diffRecords, trajectorySummary, canonical, contentKey, elementSummary, toolEvidence, textDifference } from "../domain/trajectory.mjs";
 import { compactEvent } from "../domain/events.mjs";
 const digest = value => createHash("sha256").update(value).digest("hex").slice(0,24);
 const MAX_CACHE_CHARS = 32 * 1024 * 1024;
@@ -127,7 +127,7 @@ export class ContextDataService {
   // Absolute message range and per-message digests of one cached record, computed once and kept on the cache entry.
   fingerprint(entry) {
     const {items,offset}=entry.record.messages;
-    return entry.fingerprint??={start:offset,end:offset==null?null:offset+items.length,hashes:items.map(x=>digest(canonical(x)))};
+    return entry.fingerprint??={start:offset,end:offset==null?null:offset+items.length,hashes:items.map(x=>digest(contentKey(x)))};
   }
   // The message at absolute index i entered with the earliest snapshot of an unbroken chain whose message count exceeds i.
   // The chain follows previous(): same file, segment and source. A missing offset, a shrinking count (compaction) or a
