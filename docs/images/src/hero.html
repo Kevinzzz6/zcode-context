@@ -1,0 +1,139 @@
+<!doctype html>
+<!--
+  README hero, rendered by docs/images/src/render.sh. Equivalent single command from the repository root:
+    chrome --headless=new --hide-scrollbars --force-device-scale-factor=2 --default-background-color=00000000 \
+      --window-size=1200,560 --screenshot=docs/images/hero.png "file:///<repo>/docs/images/src/hero.html"
+  Append ?lang=en for docs/images/hero.en.png.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  :root {
+    --system: #6366f1; --schema: #f59e0b; --user: #22c55e; --assistant: #3b82f6; --tool: #14b8a6;
+    --sans: "Segoe UI Variable Display", "Segoe UI", -apple-system, "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+    --mono: "Cascadia Mono", Consolas, ui-monospace, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { width: 1200px; height: 560px; background: transparent; overflow: hidden; }
+  body { font-family: var(--sans); -webkit-font-smoothing: antialiased; }
+
+  .card {
+    position: relative; width: 1200px; height: 560px; border-radius: 28px; overflow: hidden; isolation: isolate;
+    background:
+      radial-gradient(620px 420px at -4% -8%, rgba(99,102,241,.34), transparent 62%),
+      radial-gradient(560px 460px at 104% 108%, rgba(20,184,166,.30), transparent 60%),
+      radial-gradient(420px 300px at 62% 18%, rgba(59,130,246,.14), transparent 70%),
+      linear-gradient(160deg, #111729 0%, #0b0f1c 55%, #080b14 100%);
+  }
+  .card::before {
+    content: ""; position: absolute; inset: 0; z-index: -1;
+    background-image: radial-gradient(rgba(255,255,255,.075) 1px, transparent 1.2px);
+    background-size: 22px 22px;
+    -webkit-mask-image: radial-gradient(900px 520px at 30% 50%, #000 20%, transparent 75%);
+  }
+  .card::after {
+    content: ""; position: absolute; inset: 0; border-radius: 28px; pointer-events: none;
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,.08), inset 0 1px 0 rgba(255,255,255,.10);
+  }
+
+  .copy { position: absolute; left: 68px; top: 0; bottom: 0; width: 560px; display: flex; flex-direction: column; justify-content: center; }
+
+  .eyebrow { display: inline-flex; align-self: flex-start; align-items: center; gap: 10px; padding: 7px 14px 7px 10px; border-radius: 999px;
+    font-size: 14px; font-weight: 600; letter-spacing: .02em; color: #c8cfdd;
+    background: rgba(255,255,255,.05); box-shadow: inset 0 0 0 1px rgba(255,255,255,.10); }
+  .eyebrow .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--tool); box-shadow: 0 0 0 4px rgba(20,184,166,.18); }
+  .eyebrow .sep { color: #5d6678; }
+
+  h1 { margin-top: 26px; font-size: 76px; line-height: .98; font-weight: 700; letter-spacing: -.035em; color: #f4f6fb; }
+  h1 span { background: linear-gradient(100deg, #a5b4fc 0%, #60a5fa 45%, #2dd4bf 100%); -webkit-background-clip: text; color: transparent; }
+
+  .tagline { margin-top: 22px; font-size: 27px; line-height: 1.42; font-weight: 600; color: #dfe4ee; letter-spacing: -.005em; }
+  :lang(en) .tagline { font-size: 26px; letter-spacing: -.01em; }
+  .sub { margin-top: 12px; font-size: 16px; line-height: 1.6; color: #8f98ab; }
+
+  .bar { margin-top: 30px; width: 452px; height: 12px; border-radius: 999px; display: flex; gap: 3px; overflow: hidden; }
+  .bar b { display: block; height: 100%; }
+  .bar b:first-child { border-radius: 999px 0 0 999px; }
+  .bar b:last-child { border-radius: 0 999px 999px 0; }
+  .bar .hatch { background: repeating-linear-gradient(135deg, rgba(255,255,255,.28) 0 3px, rgba(255,255,255,.06) 3px 6px); }
+
+  .legend { margin-top: 14px; display: flex; flex-wrap: wrap; gap: 8px 18px; font-size: 14px; color: #a7afbf; }
+  .legend span { display: inline-flex; align-items: center; gap: 7px; }
+  .legend span::before { content: ""; width: 9px; height: 9px; border-radius: 3px; background: var(--c); }
+
+  /* product shots */
+  .shots { position: absolute; left: 672px; top: 0; width: 600px; height: 560px; }
+  .shot { position: absolute; width: 330px; border-radius: 18px; overflow: hidden; background: #fff;
+    box-shadow: 0 0 0 1px rgba(255,255,255,.14), 0 2px 6px rgba(0,0,0,.25), 0 32px 70px -12px rgba(0,0,0,.75); }
+  .shot img { display: block; width: 100%; }
+  .shot.back { left: 250px; top: 104px; transform: scale(.92); transform-origin: top left; filter: saturate(.9) brightness(.86); }
+  .shot.back::after { content: ""; position: absolute; inset: 0; background: linear-gradient(90deg, rgba(8,11,20,.55) 0%, rgba(8,11,20,.12) 38%, transparent 60%); }
+  .shot.front { left: 0; top: 46px; }
+
+  .chip { position: absolute; z-index: 3; display: inline-flex; align-items: center; gap: 8px; padding: 9px 14px; border-radius: 12px;
+    font-size: 15px; font-weight: 650; color: #eef1f7; white-space: nowrap;
+    background: rgba(17,23,41,.78); backdrop-filter: blur(12px);
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,.14), 0 14px 30px -8px rgba(0,0,0,.6); }
+  .chip .k { color: #8f98ab; font-weight: 500; }
+  .chip .up { color: #4ade80; font-family: var(--mono); }
+  .chip .down { color: #fb923c; font-family: var(--mono); }
+  .chip.c1 { left: -74px; top: 478px; }
+  .chip.c2 { left: 346px; top: 404px; }
+</style>
+</head>
+<body>
+<div class="card">
+
+  <div class="copy">
+    <div class="eyebrow"><span class="dot"></span><span data-i18n="eyebrow1"></span><span class="sep">/</span><span data-i18n="eyebrow2"></span></div>
+    <h1>ZCode <span>Context</span></h1>
+    <p class="tagline" data-i18n="tagline"></p>
+    <p class="sub" data-i18n="sub"></p>
+    <div class="bar">
+      <b style="flex:9;background:var(--system)"></b>
+      <b style="flex:58;background:var(--schema)"></b>
+      <b style="flex:20;background:var(--user)"></b>
+      <b style="flex:2;background:var(--assistant)"></b>
+      <b style="flex:9;background:var(--tool)"></b>
+      <b class="hatch" style="flex:3"></b>
+    </div>
+    <div class="legend">
+      <span style="--c:var(--system)" data-i18n="system"></span>
+      <span style="--c:var(--schema)" data-i18n="schema"></span>
+      <span style="--c:var(--user)" data-i18n="user"></span>
+      <span style="--c:var(--assistant)" data-i18n="assistant"></span>
+      <span style="--c:var(--tool)" data-i18n="tool"></span>
+    </div>
+  </div>
+
+  <div class="shots">
+    <div class="shot back"><img src="../sidebar-changes.png" alt=""></div>
+    <div class="shot front"><img src="../sidebar-overview.png" alt=""></div>
+    <div class="chip c1"><span class="up">+1.8k</span><span class="k" data-i18n="chip1"></span></div>
+    <div class="chip c2"><span class="k" data-i18n="chip2"></span><span class="up">+3</span><span class="down">−32</span></div>
+  </div>
+</div>
+<script>
+  const text = {
+    zh: {
+      eyebrow1: "ZCode UI 插件", eyebrow2: "只读 · 离线 · 本地",
+      tagline: "看清每一次请求里，<br>到底装了什么。",
+      sub: "请求组成、逐步变化、压缩差异与工具定义开销，<br>就在会话侧栏里。",
+      system: "系统指令", schema: "工具定义", user: "用户消息", assistant: "助手消息", tool: "工具结果",
+      chip1: "较上一步", chip2: "仅变化",
+    },
+    en: {
+      eyebrow1: "ZCode UI plugin", eyebrow2: "Read-only · Offline · Local",
+      tagline: "See exactly what goes into<br>every model request.",
+      sub: "Composition, step-by-step changes, compaction diffs<br>and tool-schema cost — right in the session side pane.",
+      system: "System", schema: "Tool schemas", user: "User", assistant: "Assistant", tool: "Tool results",
+      chip1: "vs previous step", chip2: "Changes",
+    },
+  };
+  const lang = new URLSearchParams(location.search).get("lang") === "en" ? "en" : "zh";
+  document.documentElement.lang = lang === "en" ? "en" : "zh-CN";
+  for (const el of document.querySelectorAll("[data-i18n]")) el.innerHTML = text[lang][el.dataset.i18n];
+</script>
+</body>
+</html>
