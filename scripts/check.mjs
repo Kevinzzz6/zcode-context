@@ -16,5 +16,12 @@ for(const directory of ["src/","ui/","scripts/","test/"])await walk(new URL(dire
 const pkg=JSON.parse(await readFile(new URL("package.json",root),"utf8"));
 const manifest=JSON.parse(await readFile(new URL(".zcode-plugin/plugin.json",root),"utf8"));
 if(pkg.name!==manifest.name||pkg.version!==manifest.version)throw new Error("Package and plugin identities differ.");
+const lock=JSON.parse(await readFile(new URL("package-lock.json",root),"utf8"));
+if(lock.version!==pkg.version||lock.packages?.[""]?.version!==pkg.version)throw new Error("package-lock.json version differs from package.json; run npm install.");
+// The MCP server and the app announce their version to the host; it must be the released one.
+for(const file of ["src/server.mjs","ui/app.mjs"]) {
+  const announced=[...(await readFile(new URL(file,root),"utf8")).matchAll(/name:"zcode-context",version:"([^"]+)"/g)].map(x=>x[1]);
+  if(announced.length!==1||announced[0]!==pkg.version)throw new Error(file+" announces version "+(announced.join(", ")||"none")+", expected "+pkg.version+".");
+}
 if(JSON.stringify(manifest.mcpServers).includes("ZCODE_SESSION_ID"))throw new Error("Session variables cannot appear in the MCP manifest.");
 console.log("Syntax and manifest checks passed.");

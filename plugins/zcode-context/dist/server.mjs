@@ -31295,73 +31295,85 @@ function resolveDataPaths(env = process.env) {
   return { root: resolve(root), db: resolve(db), trajectoryDirs: [join(root, "rollout"), join(root, "debug")], logDir: join(root, "log") };
 }
 
+// src/data/reader.mjs
+function createReader(spawn, { timeoutMs = 15e3, limit = 8 } = {}) {
+  const pending = /* @__PURE__ */ new Map(), held = /* @__PURE__ */ new Set();
+  let sequence = 0, worker = null;
+  function fail() {
+    worker = null;
+    held.clear();
+    for (const job of pending.values()) {
+      clearTimeout(job.timer);
+      job.reject(new ContextError("worker_unavailable", "Data worker stopped."));
+    }
+    pending.clear();
+  }
+  function current() {
+    if (worker) return worker;
+    const next = spawn();
+    worker = next;
+    next.on("message", (message) => {
+      if (worker !== next) return;
+      held.delete(message.id);
+      const job = pending.get(message.id);
+      if (!job) return;
+      pending.delete(message.id);
+      clearTimeout(job.timer);
+      message.error ? job.reject(new ContextError(message.error.code, message.error.message)) : message.skipped ? job.reject(new ContextError("cancelled", "Read cancelled.")) : job.resolve(message.result);
+    });
+    const onFailure = () => {
+      if (worker === next) fail();
+    };
+    next.on("error", onFailure);
+    next.on("exit", onFailure);
+    return next;
+  }
+  function run(method, sessionId, args, signal) {
+    return new Promise((resolve2, reject) => {
+      if (signal?.aborted) {
+        reject(new ContextError("cancelled", "Read cancelled."));
+        return;
+      }
+      if (held.size >= limit) {
+        reject(new ContextError("reader_busy", "Too many pending reads."));
+        return;
+      }
+      const target = current(), id = ++sequence;
+      const drop = (code, message) => {
+        const job = pending.get(id);
+        if (!job) return;
+        clearTimeout(job.timer);
+        pending.delete(id);
+        if (worker === target) target.postMessage({ cancel: id });
+        job.reject(new ContextError(code, message));
+      };
+      const abort = () => drop("cancelled", "Read cancelled.");
+      const settle = (callback) => (value) => {
+        signal?.removeEventListener("abort", abort);
+        callback(value);
+      };
+      signal?.addEventListener("abort", abort, { once: true });
+      pending.set(id, { resolve: settle(resolve2), reject: settle(reject), timer: setTimeout(() => drop("read_timeout", "Data read timed out."), timeoutMs) });
+      held.add(id);
+      target.postMessage({ id, method, sessionId, args });
+    });
+  }
+  async function close() {
+    const target = worker;
+    worker = null;
+    held.clear();
+    await target?.terminate();
+  }
+  return { run, close, get held() {
+    return held.size;
+  } };
+}
+
 // src/server.mjs
 var HTML_URI = "ui://zcode-context/panel.html";
-var pending = /* @__PURE__ */ new Map();
-var sequence = 0;
-var worker = null;
-function failWorker() {
-  worker = null;
-  for (const job of pending.values()) {
-    clearTimeout(job.timer);
-    job.reject(new ContextError("worker_unavailable", "Data worker stopped."));
-  }
-  pending.clear();
-}
-function getWorker() {
-  if (worker) return worker;
-  const next = new Worker(new URL("./worker.mjs", import.meta.url), { workerData: { paths: resolveDataPaths() }, resourceLimits: { maxOldGenerationSizeMb: 256 } });
-  worker = next;
-  next.on("message", (message) => {
-    const job = pending.get(message.id);
-    if (!job) return;
-    pending.delete(message.id);
-    clearTimeout(job.timer);
-    message.error ? job.reject(new ContextError(message.error.code, message.error.message)) : job.resolve(message.result);
-  });
-  const onFailure = () => {
-    if (worker === next) failWorker();
-  };
-  next.on("error", onFailure);
-  next.on("exit", onFailure);
-  return next;
-}
-function runJob(method, sessionId, args, signal) {
-  return new Promise((resolve2, reject) => {
-    if (pending.size >= 8) {
-      reject(new ContextError("reader_busy", "Too many pending reads."));
-      return;
-    }
-    const current = getWorker();
-    const id = ++sequence;
-    const timer = setTimeout(() => {
-      const job = pending.get(id);
-      pending.delete(id);
-      job?.reject(new ContextError("read_timeout", "Data read timed out."));
-    }, 15e3);
-    const abort = () => {
-      const job = pending.get(id);
-      if (job) {
-        clearTimeout(timer);
-        pending.delete(id);
-        job.reject(new ContextError("cancelled", "Read cancelled."));
-      }
-    };
-    signal?.addEventListener("abort", abort, { once: true });
-    const done = (callback) => (value) => {
-      signal?.removeEventListener("abort", abort);
-      callback(value);
-    };
-    pending.set(id, { resolve: done(resolve2), reject: done(reject), timer });
-    if (signal?.aborted) {
-      abort();
-      return;
-    }
-    current.postMessage({ id, method, sessionId, args });
-  });
-}
+var reader = createReader(() => new Worker(new URL("./worker.mjs", import.meta.url), { workerData: { paths: resolveDataPaths() }, resourceLimits: { maxOldGenerationSizeMb: 256 } }));
 function createContextServer() {
-  const server2 = new McpServer({ name: "zcode-context", version: "0.3.2" });
+  const server2 = new McpServer({ name: "zcode-context", version: "0.3.4" });
   server2.registerResource(
     "context_panel",
     HTML_URI,
@@ -31374,7 +31386,7 @@ function createContextServer() {
   const wrap = (method) => async (args, extra) => {
     try {
       const { sessionId } = readSessionContext(extra._meta);
-      const result = await runJob(method, sessionId, args, extra.signal);
+      const result = await reader.run(method, sessionId, args, extra.signal);
       return { content: [], structuredContent: result };
     } catch (error51) {
       return {
@@ -31422,7 +31434,7 @@ var shutdown = async () => {
   closing = true;
   await server.close().catch(() => {
   });
-  await worker?.terminate().catch(() => {
+  await reader.close().catch(() => {
   });
   process.exit(0);
 };

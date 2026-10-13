@@ -1,6 +1,15 @@
 # ZCode Context 交接文档
 
-更新时间：2026-10-13，Asia/Shanghai。当前版本：0.3.2。
+更新时间：2026-10-13，Asia/Shanghai。当前版本：0.3.4。
+
+## 0.3.4 修复与优化
+
+- token 估算按文字类型加权：ASCII 约 4 字符 ≈ 1 token，中日韩约 1.5 字 ≈ 1 token。旧的一律 chars/4 让中文内容显得偏小，tail 记录下“更早消息（未记录）”（实际输入减去已记录估算）因此被高估。Delta 由服务端按同一口径给出 `tokensDelta`。
+- worker 串行队列：超时或取消且尚未开始的读取直接跳过（`src/data/runner.mjs`）；繁忙上限按 worker 实际持有的读取计数（`src/data/reader.mjs`）。之前超时只删除了主线程的等待项，worker 仍会执行，堆积在新请求前面。
+- 面板轮询空闲退避 3 → 6 → 10 秒，可见、获得焦点或指针进入时立即刷新。
+- 服务端缓存经实测放弃：32 MiB 真实会话的无变化刷新约 7 ms，其中 SQLite 约 4 ms。
+- `npm run check` 校验 server/app 宣告的版本号与 package-lock 一致。
+- 本版尚未在真实 Electron 客户端中验收；下面 0.3.x 的验收状态不变。
 
 ## 真实会话测试（0.3.1–0.3.2）
 
@@ -59,7 +68,8 @@ SQLite 与 traj 不强行关联 request ID。估算与实际 usage 分开，缺�
 
 | 文件 | 职责 |
 |---|---|
-| `src/server.mjs` / `worker.mjs` | app-only MCP、每次身份校验、串行读取、超时 |
+| `src/server.mjs` / `worker.mjs` | app-only MCP、每次身份校验 |
+| `src/data/reader.mjs` / `runner.mjs` | worker 读取客户端（超时、取消、繁忙上限）与串行执行（跳过已放弃的读取） |
 | `src/data/service.mjs` | 会话缓存、历史分页、查询/排序、基线、分块、事件导航 |
 | `src/domain/trajectory.mjs` | 快照重建、角色组成、可读内容、已记录身份配对、Diff |
 | `ui/state.mjs` | 按会话保存视图状态；不授权 |
