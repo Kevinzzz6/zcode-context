@@ -1,5 +1,5 @@
 import { estimateTokens, inputSummary } from "./trajectory.mjs";
-const COMPACT = new Set(["compact.started", "compact.completed", "compact.auto.started", "compact.auto.completed",
+const COMPACT = new Set(["compact.started", "compact.completed", "compact.failed", "compact.auto.started", "compact.auto.completed",
   "compact.auto.failed", "compact.reactive.started", "compact.reactive.completed", "compact.reactive.failed", "compact.micro.applied"]);
 const OTHER = { "session.model.updated": "model", "rewind.conversation.completed": "rewind",
   "conversation.command.edit_user_query.completed": "rewind", "mcp.tools.registered": "tools" };
@@ -13,7 +13,8 @@ export function contextEvent(record, sessionId) {
   const context = record.context ?? {};
   const base = { kind, event: record.event, timestamp: Date.parse(record.timestamp) || 0, turnId: record.turnId ?? null,
     spanId: typeof record.spanId === "string" ? record.spanId : null, evidence: "logged" };
-  if (kind === "compaction") return { ...base, status: record.event.split(".").at(-1),
+  // A cancelled manual compaction is logged as compact.failed with status "cancelled".
+  if (kind === "compaction") return { ...base, status: record.event === "compact.failed" && record.status === "cancelled" ? "interrupted" : record.event.split(".").at(-1),
     reason: context.compactReason ?? context.trigger ?? null, durationMs: count(record.durationMs), queryId: context.queryId ?? null,
     tokensSavedEstimate: count(context.tokensSaved), clearedMessageCount: count(context.clearedMessageCount) };
   if (kind === "model") {
@@ -26,7 +27,7 @@ export function contextEvent(record, sessionId) {
   return { ...base, toolCount: count(context.registeredToolCount), serverCount: count(context.serverCount) };
 }
 
-const RANK = { started: 0, applied: 1, completed: 2, failed: 3 };
+const RANK = { started: 0, applied: 1, completed: 2, failed: 3, interrupted: 3 };
 // A compaction logs started and completed (or failed) under one span; an edited question logs the edit and its rewind under one span.
 export function mergeEvents(events) {
   const merged = new Map();
@@ -52,7 +53,9 @@ const TEXT_CHARS = 1500, NEEDLE_CHARS = 300;
 const parse = text => { try { const value = JSON.parse(text); return value && typeof value === "object" ? value : {}; } catch { return {}; } };
 const number = value => typeof value === "number" && Number.isFinite(value) ? value : null;
 const modelLabel = selection => !selection ? null : selection.label ?? ([selection.providerId ?? selection.providerID, selection.modelId ?? selection.modelID].filter(Boolean).join("/") || null);
-const statusOf = value => /fail|error/i.test(String(value)) ? "failed" : /run|pend|progress|start/i.test(String(value)) ? "started" : "completed";
+// ZCode's compact timeline statuses. A summarized boundary is evidence of completion; any other status is not guessed.
+const STATUSES = new Set(["started", "retrying", "completed", "failed", "interrupted", "skipped"]);
+const statusOf = (value, boundary) => STATUSES.has(value) ? value : value == null && boundary ? "completed" : "unknown";
 // A message the runtime put into the conversation for the model: not the user's own prompt and not hidden from the provider.
 const injected = m => m.role === "user" && m.visibility !== "hidden" && m.kind !== "compact_summary" && m.kind !== "user_prompt"
   && (m.origin === "agent_runtime" || m.synthetic === 1 || m.kind != null);
@@ -64,7 +67,7 @@ export function conversationEvents(cache) {
     if (part.type === "text") { const list = texts.get(part.messageId) ?? []; list.push(part); texts.set(part.messageId, list); }
     else if (part.type === "tool" && part.tool === "Skill") events.push({ kind: "inject", evidence: "recorded", id: "p:" + part.id, form: "skill",
       name: typeof part.skill === "string" ? part.skill : null, timestamp: number(part.toolEnd) ?? part.created,
-      tokens: part.outputChars != null ? Math.round(part.outputChars / 4) : null, toolCallId: part.callId ?? null });
+      tokens: part.outputChars != null ? sampled(part.outputSample, part.outputChars) : null, toolCallId: part.callId ?? null });
     else if (part.type === "timeline" && part.timelineType === "model_change") {
       const data = parse(part.raw), from = modelLabel(data.fromModelSelection), to = modelLabel(data.toModelSelection ?? data.toModel);
       if (to && from !== to) events.push({ kind: "model", evidence: "recorded", id: "t:" + part.id, timestamp: number(data.time?.start) ?? part.created, from, to });
@@ -87,14 +90,14 @@ export function conversationEvents(cache) {
     if (!text) continue;
     const chars = (texts.get(m.id) ?? []).reduce((n, x) => n + (x.textChars ?? 0), 0);
     events.push({ kind: "inject", evidence: "recorded", id: "m:" + m.id, form: m.kind ?? "context", source: m.source ?? m.metaSource ?? null,
-      timestamp: m.created, tokens: estimateTokens(text) + (chars > text.length ? Math.round((chars - text.length) / 4) : 0),
+      timestamp: m.created, tokens: sampled(text, chars),
       text: text.slice(0, TEXT_CHARS), truncated: chars > TEXT_CHARS, needle: text.slice(0, NEEDLE_CHARS) });
   }
   for (const g of groups.values()) {
-    const start = number(g.start) ?? g.created, end = number(g.end), status = statusOf(g.status);
+    const start = number(g.start) ?? g.created, end = number(g.end), status = statusOf(g.status, g.lastSummarizedId != null || g.summarizedCount != null);
     const summary = g.summaryMessageId ? cache.messages.get(g.summaryMessageId) : null, last = g.lastSummarizedId ? cache.messages.get(g.lastSummarizedId) : null;
     events.push({ kind: "compaction", evidence: "recorded", id: "c:" + g.boundaryId, event: g.trigger === "auto" ? "compact.auto." + status : "compact." + status,
-      status, trigger: g.trigger ?? null, reason: g.reason ?? null, timestamp: start, endedAt: status === "started" ? null : end ?? start,
+      status, trigger: g.trigger ?? null, reason: g.reason ?? null, timestamp: start, endedAt: status === "started" || status === "retrying" ? null : end ?? start,
       durationMs: end != null ? end - start : null, preTokens: number(g.preTokens), postTokens: number(g.postTokens),
       tokensSavedEstimate: number(g.preTokens) != null && number(g.postTokens) != null ? g.preTokens - g.postTokens : null,
       summarizedCount: number(g.summarizedCount), keptCount: number(g.keptCount), queryId: g.queryId ?? null,
@@ -117,7 +120,7 @@ export function summarizedItems(messages) {
       else if (p.type === "reasoning" && p.text) items.push({ role: "reasoning", chip: null, title: firstLine(p.text), tokens: sampled(p.text, p.textChars) });
       else if (p.type === "tool") {
         let input = null; try { input = p.input == null ? null : JSON.parse(p.input); } catch {}
-        items.push({ role: "tool", chip: p.tool ?? null, title: inputSummary(input) ?? "", tokens: Math.round(((p.input?.length ?? 0) + (p.outputChars ?? 0)) / 4) });
+        items.push({ role: "tool", chip: p.tool ?? null, title: inputSummary(input) ?? "", tokens: estimateTokens(p.input ?? "") + sampled(p.outputSample, p.outputChars) });
       }
     }
   }

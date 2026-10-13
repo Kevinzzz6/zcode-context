@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import {readSessionContext,sanitizeSessionSegment} from "../src/domain/session.mjs";
 import {normalizeFact,summarizeFacts} from "../src/domain/usage.mjs";
 import {foldRecord,diffRecords,composition,estimateTokens} from "../src/domain/trajectory.mjs";
-import {contextEvent,mergeEvents} from "../src/domain/events.mjs";
+import {contextEvent,mergeEvents,conversationEvents,summarizedItems} from "../src/domain/events.mjs";
 import {modelRecord} from "./fixtures.mjs";
 test("only the host namespace binds a session; transport IDs and arguments cannot bind it",()=>{
   assert.throws(()=>readSessionContext({session_id:"sess_wrong"}),{code:"binding_unavailable"});
@@ -114,4 +114,26 @@ test("token estimates weigh CJK characters far above Latin ones and stay consist
   assert.equal(diff.tokensDelta,cn);
   assert.equal(diff.categories.find(x=>x.role==="user").tokensDelta,cn);
   assert.equal(composition(after).tokenMethod,"script_weighted");
+});
+test("compaction statuses follow ZCode's timeline values; a retry, cancellation or skip is never shown as completed",()=>{
+  const part=(id,data)=>[id,{id,messageId:"m",created:1000,type:"compaction",raw:JSON.stringify({operationId:"op_"+id,time:{start:1000,end:1500},...data})}];
+  const events=conversationEvents({messages:new Map(),parts:new Map([part("a",{timelineStatus:"retrying"}),part("b",{timelineStatus:"interrupted"}),part("c",{timelineStatus:"skipped"}),
+    part("d",{timelineStatus:"boundary_pending"}),part("e",{timelineStatus:"failed"}),part("f",{compactBoundary:{boundaryId:"bd_f",summarizedMessageCount:3}})])});
+  const status=Object.fromEntries(events.map(e=>[e.id,e.status]));
+  assert.deepEqual(status,{"c:op_a":"retrying","c:op_b":"interrupted","c:op_c":"skipped","c:op_d":"unknown","c:op_e":"failed","c:bd_f":"completed"});
+  assert.equal(events.find(e=>e.id==="c:op_a").endedAt,null);assert.equal(events.find(e=>e.id==="c:op_b").endedAt,1500);
+  const log=(event,extra={})=>contextEvent({sessionId:"sess_A",event,timestamp:"2026-10-13T09:00:00Z",turnId:"turn_1",spanId:"span_1",context:{},...extra},"sess_A");
+  const [failed]=mergeEvents([log("compact.started"),log("compact.failed",{timestamp:"2026-10-13T09:00:05Z",status:"failed"})]);
+  assert.equal(failed.status,"failed");assert.equal(failed.endedAt,Date.parse("2026-10-13T09:00:05Z"));
+  const [cancelled]=mergeEvents([log("compact.started"),log("compact.failed",{timestamp:"2026-10-13T09:00:05Z",status:"cancelled"})]);
+  assert.equal(cancelled.status,"interrupted");
+});
+test("event token estimates use the script-weighted measure, scaled from a sample for long outputs",()=>{
+  const chinese="请检查缓存过期逻辑并修复",output=chinese.repeat(100),sample=output.slice(0,400);
+  const [skill]=conversationEvents({messages:new Map(),parts:new Map([["s",{id:"s",messageId:"m",created:1,type:"tool",tool:"Skill",skill:"demo",outputChars:output.length,outputSample:sample}]])});
+  const near=(actual,expected)=>assert.ok(Math.abs(actual-expected)<=3,actual+" ≈ "+expected);
+  near(skill.tokens,estimateTokens(output));
+  const [tool]=summarizedItems([{role:"assistant",parts:[{type:"tool",tool:"Read",input:JSON.stringify({file_path:"a.ts"}),outputChars:output.length,outputSample:sample}]}]);
+  near(tool.tokens,estimateTokens(JSON.stringify({file_path:"a.ts"}))+estimateTokens(output));
+  assert.ok(skill.tokens>output.length/1.5-1,"Chinese output is not counted at a quarter token per character");
 });
