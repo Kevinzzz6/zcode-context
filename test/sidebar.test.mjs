@@ -131,3 +131,22 @@ test("summaries skip system reminders and keep response tool calls",()=>{
   const summary=trajectorySummary(record,"k");
   assert.equal(summary.userPreview,"真正的问题");assert.deepEqual(summary.responseCalls,[{name:"Bash",title:"npm test"}]);
 });
+test("step and turn ordinals count agent requests only and remain stable as the window slides",()=>fixture([
+  modelRecord("sess_A","a",[{role:"user",content:"a"}],{turnId:"t1"}),
+  modelRecord("sess_A","title",[{role:"user",content:"a"}],{turnId:"t1",querySource:"session_title"}),
+  modelRecord("sess_A","b",[{role:"user",content:"b"}],{turnId:"t1"}),
+  modelRecord("sess_A","c",[{role:"user",content:"c"}],{turnId:"t2"})],async(service,o)=>{
+    assert.deepEqual(o.trajectories.map(x=>[x.step,x.turn]),[[1,1],[null,1],[2,1],[3,2]]);
+  }));
+test("groups give every category its own first page and changes are grouped by category",()=>fixture([
+  modelRecord("sess_A","one",[{role:"system",content:"rules"},...Array.from({length:30},(_,i)=>({role:"tool",content:"old "+i}))]),
+  modelRecord("sess_A","two",[{role:"system",content:"rules"},...Array.from({length:30},(_,i)=>({role:"tool",content:"old "+i})),
+    ...Array.from({length:50},(_,i)=>({role:"tool",content:"new "+"x".repeat(i)})),{role:"user",content:"small"}])],async(service,o)=>{
+    const d=await service.request("sess_A",{key:o.trajectories.at(-1).key});
+    assert.equal(d.groups.tool.count,80);assert.equal(d.groups.tool.items.length,40);
+    assert.equal(d.groups.user.count,1);assert.equal(d.groups.system.items[0].title,"rules");
+    assert.equal(d.diff.addedGroups.tool.count,50);assert.equal(d.diff.addedGroups.user.count,1);assert.equal(d.diff.addedKeys.length,51);
+    assert.deepEqual(d.diff.removedGroups,{});
+    const more=await service.request("sess_A",{key:o.trajectories.at(-1).key,role:"tool",page:1});
+    assert.equal(more.elements.length,40);assert.ok(more.elements.every(x=>x.role==="tool"));
+  }));
