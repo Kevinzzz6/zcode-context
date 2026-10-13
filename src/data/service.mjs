@@ -7,6 +7,15 @@ import { foldRecord, inputElements, composition, diffRecords, trajectorySummary,
 import { compactEvent } from "../domain/events.mjs";
 const digest = value => createHash("sha256").update(value).digest("hex").slice(0,24);
 const MAX_CACHE_CHARS = 32 * 1024 * 1024;
+// Each category returns its own bounded first page, so a grouped view never depends on a global page.
+function groupByRole(items, limit = 40) {
+  const groups = {};
+  for (const item of items) {
+    const group = groups[item.role] ??= { count: 0, items: [] };
+    group.count++; if (group.items.length < limit) group.items.push(item);
+  }
+  return groups;
+}
 export class ContextDataService {
   constructor(paths) { this.paths = paths; this.sessions = new Map(); }
   state(sessionId) {
@@ -23,7 +32,7 @@ export class ContextDataService {
     for (const directory of this.paths.trajectoryDirs) {
       const path = join(directory, "model-io-" + sanitizeSessionSegment(sessionId) + ".jsonl");
       let ledger = state.ledgers.get(path);
-      if (!ledger) { ledger = { tail: new JsonlTail(), previous: null, records: new Map(), chars: 0, segment: 0 }; state.ledgers.set(path, ledger); }
+      if (!ledger) { ledger = { tail: new JsonlTail(), previous: null, records: new Map(), chars: 0, segment: 0, steps: 0, turns: new Map() }; state.ledgers.set(path, ledger); }
       const status = await ledger.tail.scan(path, (raw, offset) => {
         if (raw.type !== "model_io" || raw.sessionId !== sessionId) { ledger.previous = null; ledger.segment++; return; }
         if (raw.modelIOReset) { ledger.previous = null; ledger.segment++; ledger.tail.markCoverage("history_reset"); }
@@ -31,13 +40,18 @@ export class ContextDataService {
         if (record.oversized) { ledger.previous = null; ledger.segment++; ledger.tail.markCoverage("context_limit"); return; }
         const serialized = canonical(record); const chars = serialized.length;
         const key = digest(sessionId + ":" + path + ":" + ledger.tail.generation + ":" + ledger.segment + ":" + offset + ":" + digest(serialized));
-        ledger.records.set(key, { key, record, chars, path, offset, segment:ledger.segment, summary:trajectorySummary(record,key) }); ledger.chars += chars; ledger.previous = record;
+        const summary = trajectorySummary(record,key);
+        // Ordinals count from the first record read in this file generation, so labels stay stable as the cache window slides.
+        const agent = isAgentSource(record.querySource);
+        if (agent && record.turnId && !ledger.turns.has(record.turnId)) ledger.turns.set(record.turnId, ledger.turns.size + 1);
+        summary.step = agent ? ++ledger.steps : null; summary.turn = record.turnId ? ledger.turns.get(record.turnId) ?? null : null;
+        ledger.records.set(key, { key, record, chars, path, offset, segment:ledger.segment, summary }); ledger.chars += chars; ledger.previous = record;
         while (ledger.records.size > 120 || ledger.chars > MAX_CACHE_CHARS) {
           const first = ledger.records.keys().next().value;
           ledger.chars -= ledger.records.get(first).chars; ledger.records.delete(first); ledger.tail.markCoverage("display_window");
         }
         this.trimCaches();
-      }, () => { ledger.previous = null; ledger.records.clear(); ledger.chars = 0; ledger.segment++; }, () => { ledger.previous = null; ledger.segment++; });
+      }, () => { ledger.previous = null; ledger.records.clear(); ledger.chars = 0; ledger.segment++; ledger.steps = 0; ledger.turns.clear(); }, () => { ledger.previous = null; ledger.segment++; });
       coverage.push(status);
     }
     // Event logs are a short diagnostic window; usage history comes from SQLite.
@@ -130,7 +144,10 @@ export class ContextDataService {
     if(!selected)throw new ContextError("request_expired","Request is outside the loaded trajectory window.");
     const record=selected.record,elements=inputElements(record),page=args.page??0,pageSize=40;
     let diff=this.comparison(all,selected,args.baselineKey);
+    const bySize=list=>args.sort==="order"?list:[...list].sort((a,b)=>b.chars-a.chars||a.key.localeCompare(b.key));
     if(diff.available)diff={...diff,addedCount:diff.added.length,removedCount:diff.removed.length,changedCount:diff.changed.length,
+      addedKeys:diff.added.slice(0,2000).map(x=>x.key),changedPairs:diff.changed.map(x=>({before:x.before.key,after:x.after.key})),
+      addedGroups:groupByRole(bySize(diff.added)),removedGroups:groupByRole(bySize(diff.removed)),
       added:diff.added.slice((args.changePage??0)*40,(args.changePage??0)*40+40),
       removed:diff.removed.slice((args.changePage??0)*40,(args.changePage??0)*40+40),changed:diff.changed.slice((args.changePage??0)*40,(args.changePage??0)*40+40)};
     const search=(args.search??"").toLowerCase(),role=args.role;
@@ -172,6 +189,7 @@ export class ContextDataService {
       baselineOptions:all.filter(x=>x.path===selected.path&&x.record.querySource===record.querySource&&all.indexOf(x)<all.indexOf(selected)).slice(-60).map(x=>({key:x.key,startedAt:x.record.startedAt,turnId:x.record.turnId,complete:x.record.messages.complete})),
       elementCount:elements.length,filteredCount:filtered.length,page,searchScope:args.searchScope==="loaded"&&search?"all_loaded_snapshots":"all_elements_in_selected_loaded_snapshot",loadedSnapshotCount:all.length,
       largest:filtered.length?filtered.reduce((largest,x)=>x.chars>largest.chars?x:largest):null,
+      groups:loadedSearch?null:groupByRole(filtered),
       elements:filtered.slice(page*pageSize,(page+1)*pageSize),content,bodyDiff};
   }
 }
