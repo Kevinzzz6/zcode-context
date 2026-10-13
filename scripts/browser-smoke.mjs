@@ -34,6 +34,11 @@ try {
   await a.locator("#show-usage").click();assert.equal(await a.locator("#calls").textContent(),"2");assert.match(await a.locator("#daily").textContent(),/200 \/ 20/);
   await a.locator("#usage-back").click();checks.push("secondary SQLite usage with daily totals");
 
+  await a.locator("#show-about").click();assert.match(await a.locator("#about-version").textContent(),/^\d+\.\d+\.\d+$/);
+  await a.locator("#about-repo").filter({hasText:"github.com/Kevinzzz6/zcode-context"}).waitFor();
+  await a.locator("#about-privacy").waitFor();
+  await a.locator("#about-back").click();await a.locator("#summary").waitFor();checks.push("about page shows version, licence, source and privacy note, and returns");
+
   const keys=await a.locator("#snapshot option").evaluateAll(options=>options.map(x=>x.value));
   const oldest=keys.at(-1);
   await a.locator("#snapshot").selectOption(oldest);await a.locator("#follow-state").filter({hasText:"正在查看历史请求"}).waitFor();

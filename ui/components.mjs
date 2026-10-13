@@ -72,6 +72,7 @@ export function renderApp(ctx) {
   const {view}=ctx,page=document.createDocumentFragment();
   const add=(...parts)=>page.append(...parts.filter(Boolean));
   add(toolbar(ctx),ctx.notice?noticeBar(ctx):null);
+  if(view.page==="about"){add(aboutPage(ctx));return page;}
   if(!ctx.overview){add(node("section",{class:"card"},node("p",{class:"muted",id:"loading"},ctx.t("loading"))));return page;}
   if(view.page==="usage"){add(usagePage(ctx),about(ctx));return page;}
   if(!ctx.items.length) {
@@ -89,6 +90,10 @@ function toolbar(ctx) {
     bar.append(button("‹ "+t("back"),()=>a.page("context"),{class:"btn ghost",id:"usage-back"}),node("h1",{class:"toolbar-title",id:"heading"},t("usageTitle")),spacer(),refresh);
     return bar;
   }
+  if(view.page==="about") {
+    bar.append(button("‹ "+t("back"),()=>a.page("context"),{class:"btn ghost",id:"about-back"}),node("h1",{class:"toolbar-title",id:"heading"},t("aboutPage")),spacer());
+    return bar;
+  }
   if(items.length) {
     const agents=items.filter(isAgent),selected=items.find(x=>x.key===view.selectedKey),index=agents.findIndex(x=>x.key===view.selectedKey);
     const prev=index>=0?agents[index-1]:selected?agents.findLast(x=>x.startedAt<selected.startedAt):null;
@@ -102,7 +107,8 @@ function toolbar(ctx) {
       button("‹",()=>a.select(prev?.key),{class:"icon-btn",id:"snapshot-previous",disabled:!prev,title:t("previous")+" (←)",ariaLabel:t("previous")}),select,
       button("›",()=>a.select(next?.key),{class:"icon-btn",id:"snapshot-next",disabled:!next,title:t("next")+" (→)",ariaLabel:t("next")})));
   } else bar.append(spacer());
-  bar.append(button(t("usage"),()=>a.page("usage"),{class:"btn",id:"show-usage"}),refresh);
+  bar.append(button(t("usage"),()=>a.page("usage"),{class:"btn",id:"show-usage"}),
+    button("ⓘ",()=>a.page("about"),{class:"icon-btn",id:"show-about",title:t("aboutPage"),ariaLabel:t("aboutPage")}),refresh);
   return bar;
 }
 function pinnedBar(ctx) {
@@ -614,4 +620,18 @@ function usagePage(ctx) {
     node("div",{class:"muted small"},[clock(fact.startedAt),fact.status,fact.durationMs!=null?(fact.durationMs/1000).toFixed(1)+"s":null].filter(Boolean).join(" · "))));
   card.append(node("h3",{},t("daily")),daily,node("h3",{},t("recent")),recent);
   return card;
+}
+// The plugin's own identity: version (same one the app announces to the host), author, licence, source and what it reads.
+function aboutPage(ctx) {
+  const {t,actions:a,version,demo}=ctx,row=(id,label,...value)=>node("div",{class:"about-row"},node("b",{},label),...value);
+  return node("section",{class:"card",id:"about-view"},
+    node("p",{class:"muted",id:"about-tagline"},t("aboutTagline")),
+    row("about-version",t("aboutVersion"),node("code",{id:"about-version"},version??"—")),
+    row("about-author",t("aboutAuthor"),"Kevinzzz6"),
+    row("about-license",t("aboutLicense"),"MIT"),
+    row("about-repo",t("aboutRepo"),node("code",{id:"about-repo"},"github.com/Kevinzzz6/zcode-context"),
+      button(t("copy"),()=>a.copy("https://github.com/Kevinzzz6/zcode-context"),{class:"btn small",id:"about-repo-copy"})),
+    node("p",{class:"note",id:"about-privacy"},t("aboutPrivacy")),
+    node("p",{class:"note"},t("aboutNotices")),
+    demo?node("p",{class:"note"},t("demo")):null);
 }

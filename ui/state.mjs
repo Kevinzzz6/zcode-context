@@ -8,7 +8,7 @@ export function restoreView(sessionId) {
     const saved=JSON.parse(localStorage.getItem(PREFIX+sessionId));
     if(!saved||typeof saved!=="object")return initialView();
     const view={...initialView(),...saved};
-    if(!["context","usage"].includes(view.page))view.page="context";
+    if(!["context","usage","about"].includes(view.page))view.page="context";
     if(!["total","delta"].includes(view.trend))view.trend="total";
     if(!["step","turn"].includes(view.granularity))view.granularity="step";
     view.trendAdaptive=view.trendAdaptive===true;

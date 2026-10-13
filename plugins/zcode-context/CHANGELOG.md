@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.5 — 2026-10-13
+
+- An About page (ⓘ in the toolbar) shows the plugin's version, author, licence, source repository, a pointer to the bundled dependency notices and the read-only/local-data privacy statement. The version it shows is the same literal the app announces to the host, so `npm run check` still catches drift.
+
 ## 0.3.4 — 2026-10-13
 
 - Token estimates weigh scripts: about 4 characters per token for English, code and JSON, about 1.5 for Chinese, Japanese and Korean. Every character used to count as a quarter token, so Chinese content looked several times smaller than it is and, on partial (tail) records, inflated "earlier messages (not recorded)", which is actual input minus the recorded estimate. Deltas now come from the server in tokens (`tokensDelta`) instead of the panel dividing characters by 4.

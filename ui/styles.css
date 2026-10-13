@@ -206,6 +206,9 @@ mark{background:#fde68a;color:#1f2328;border-radius:2px}mark.current{background:
 .kpi strong{display:block;font-size:20px;font-weight:700;font-variant-numeric:tabular-nums}
 #usage-view h3{font-size:12.5px;margin:14px 0 6px}
 #usage-view>.note{margin:8px 0 0}
+#about-view>.muted{margin:0 0 8px}
+#about-view .about-row{margin:8px 0;font-size:12px}
+#about-view>.note{margin:10px 0 0}
 .day{display:grid;grid-template-columns:84px 1fr auto;align-items:center;gap:8px;font-size:12px;padding:3px 0}
 .day-bar{height:6px;background:var(--bg2);border-radius:3px;overflow:hidden}.day-bar i{display:block;height:100%;background:var(--accent);border-radius:3px}
 .fact{padding:6px 0;border-top:1px solid var(--soft)}.fact-main{display:flex;align-items:center;gap:8px;font-size:12px}
