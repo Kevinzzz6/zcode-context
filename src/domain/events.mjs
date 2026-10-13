@@ -1,3 +1,4 @@
+import { estimateTokens, inputSummary } from "./trajectory.mjs";
 const COMPACT = new Set(["compact.started", "compact.completed", "compact.auto.started", "compact.auto.completed",
   "compact.auto.failed", "compact.reactive.started", "compact.reactive.completed", "compact.reactive.failed", "compact.micro.applied"]);
 const OTHER = { "session.model.updated": "model", "rewind.conversation.completed": "rewind",
@@ -13,7 +14,7 @@ export function contextEvent(record, sessionId) {
   const base = { kind, event: record.event, timestamp: Date.parse(record.timestamp) || 0, turnId: record.turnId ?? null,
     spanId: typeof record.spanId === "string" ? record.spanId : null, evidence: "logged" };
   if (kind === "compaction") return { ...base, status: record.event.split(".").at(-1),
-    reason: context.compactReason ?? context.trigger ?? null, durationMs: count(record.durationMs),
+    reason: context.compactReason ?? context.trigger ?? null, durationMs: count(record.durationMs), queryId: context.queryId ?? null,
     tokensSavedEstimate: count(context.tokensSaved), clearedMessageCount: count(context.clearedMessageCount) };
   if (kind === "model") {
     // Without a previous model this is the session's first selection, not a switch.
@@ -37,7 +38,7 @@ export function mergeEvents(events) {
     const next = { ...last, endedAt: Math.max(last.endedAt ?? 0, event.timestamp), turnId: last.turnId ?? event.turnId };
     if (event.kind === "compaction") {
       if (RANK[event.status] >= RANK[last.status]) { next.status = event.status; next.event = event.event; }
-      for (const field of ["reason", "durationMs", "tokensSavedEstimate", "clearedMessageCount"]) next[field] = event[field] ?? last[field];
+      for (const field of ["reason", "durationMs", "tokensSavedEstimate", "clearedMessageCount", "queryId"]) next[field] = event[field] ?? last[field];
       next.durationMs ??= next.endedAt != null ? next.endedAt - last.timestamp : null;
     } else {
       next.edited = last.edited || event.edited; next.keptMessageCount = event.keptMessageCount ?? last.keptMessageCount;
@@ -45,4 +46,91 @@ export function mergeEvents(events) {
     merged.set(key, next);
   }
   return [...merged.values()].sort((a, b) => a.timestamp - b.timestamp);
+}
+
+const TEXT_CHARS = 1500, NEEDLE_CHARS = 300;
+const parse = text => { try { const value = JSON.parse(text); return value && typeof value === "object" ? value : {}; } catch { return {}; } };
+const number = value => typeof value === "number" && Number.isFinite(value) ? value : null;
+const modelLabel = selection => !selection ? null : selection.label ?? ([selection.providerId ?? selection.providerID, selection.modelId ?? selection.modelID].filter(Boolean).join("/") || null);
+const statusOf = value => /fail|error/i.test(String(value)) ? "failed" : /run|pend|progress|start/i.test(String(value)) ? "started" : "completed";
+// A message the runtime put into the conversation for the model: not the user's own prompt and not hidden from the provider.
+const injected = m => m.role === "user" && m.visibility !== "hidden" && m.kind !== "compact_summary" && m.kind !== "user_prompt"
+  && (m.origin === "agent_runtime" || m.synthetic === 1 || m.kind != null);
+
+// Context events from ZCode's conversation store. Sources are ZCode's own labels (semantics.kind / semantics.source), never inferred from text.
+export function conversationEvents(cache) {
+  const events = [], texts = new Map(), groups = new Map();
+  for (const part of [...cache.parts.values()].sort((a, b) => a.created - b.created)) {
+    if (part.type === "text") { const list = texts.get(part.messageId) ?? []; list.push(part); texts.set(part.messageId, list); }
+    else if (part.type === "tool" && part.tool === "Skill") events.push({ kind: "inject", evidence: "recorded", id: "p:" + part.id, form: "skill",
+      name: typeof part.skill === "string" ? part.skill : null, timestamp: number(part.toolEnd) ?? part.created,
+      tokens: part.outputChars != null ? Math.round(part.outputChars / 4) : null, toolCallId: part.callId ?? null });
+    else if (part.type === "timeline" && part.timelineType === "model_change") {
+      const data = parse(part.raw), from = modelLabel(data.fromModelSelection), to = modelLabel(data.toModelSelection ?? data.toModel);
+      if (to && from !== to) events.push({ kind: "model", evidence: "recorded", id: "t:" + part.id, timestamp: number(data.time?.start) ?? part.created, from, to });
+    } else if (part.type === "compaction" || (part.type === "timeline" && part.timelineType === "context_compaction")) {
+      // A compaction writes a separator part, a boundary part and a timeline part; they share one boundary id.
+      const data = parse(part.raw), boundary = data.compactBoundary ?? {}, key = data.boundaryId ?? boundary.boundaryId ?? data.operationId;
+      if (!key) continue;
+      const group = groups.get(key) ?? { boundaryId: key };
+      for (const [name, value] of Object.entries({ operationId: data.operationId, queryId: data.sourceCommandId, trigger: data.trigger ?? boundary.trigger,
+        reason: data.compactReason ?? boundary.compactReason, status: data.status ?? data.timelineStatus, start: data.time?.start, end: data.time?.end,
+        preTokens: data.preCompactTokenCount ?? boundary.preCompactTokenCount, postTokens: data.truePostCompactTokenCount ?? boundary.truePostCompactTokenCount,
+        summarizedCount: boundary.summarizedMessageCount, keptCount: boundary.keptMessageCount, lastSummarizedId: boundary.lastSummarizedMessageId,
+        summaryMessageId: data.summaryMessageId ?? boundary.summaryMessageId, created: part.created })) if (value != null) group[name] ??= value;
+      groups.set(key, group);
+    }
+  }
+  for (const m of cache.messages.values()) {
+    if (!injected(m)) continue;
+    const text = (texts.get(m.id) ?? []).map(x => x.text ?? "").join("\n").trim();
+    if (!text) continue;
+    const chars = (texts.get(m.id) ?? []).reduce((n, x) => n + (x.textChars ?? 0), 0);
+    events.push({ kind: "inject", evidence: "recorded", id: "m:" + m.id, form: m.kind ?? "context", source: m.source ?? m.metaSource ?? null,
+      timestamp: m.created, tokens: estimateTokens(text) + (chars > text.length ? Math.round((chars - text.length) / 4) : 0),
+      text: text.slice(0, TEXT_CHARS), truncated: chars > TEXT_CHARS, needle: text.slice(0, NEEDLE_CHARS) });
+  }
+  for (const g of groups.values()) {
+    const start = number(g.start) ?? g.created, end = number(g.end), status = statusOf(g.status);
+    const summary = g.summaryMessageId ? cache.messages.get(g.summaryMessageId) : null, last = g.lastSummarizedId ? cache.messages.get(g.lastSummarizedId) : null;
+    events.push({ kind: "compaction", evidence: "recorded", id: "c:" + g.boundaryId, event: g.trigger === "auto" ? "compact.auto." + status : "compact." + status,
+      status, trigger: g.trigger ?? null, reason: g.reason ?? null, timestamp: start, endedAt: status === "started" ? null : end ?? start,
+      durationMs: end != null ? end - start : null, preTokens: number(g.preTokens), postTokens: number(g.postTokens),
+      tokensSavedEstimate: number(g.preTokens) != null && number(g.postTokens) != null ? g.preTokens - g.postTokens : null,
+      summarizedCount: number(g.summarizedCount), keptCount: number(g.keptCount), queryId: g.queryId ?? null,
+      summarySequence: summary?.sequence ?? null, lastSummarizedSequence: last?.sequence ?? null });
+  }
+  return events.sort((a, b) => a.timestamp - b.timestamp);
+}
+
+// Text is read as a bounded sample; its token estimate scales the sample's script mix to the full length.
+const sampled = (text, chars) => !text ? 0 : Math.round(estimateTokens(text) * Math.max(1, (chars ?? text.length) / text.length));
+const firstLine = text => String(text ?? "").split("\n").map(x => x.trim()).find(x => x && !/^<\/?[a-z][\w-]*>$/i.test(x))?.slice(0, 160) ?? "";
+// One row per model-visible part of the summarized messages: prompts, replies, reasoning, tool calls and injected context.
+export function summarizedItems(messages) {
+  const items = [];
+  for (const m of messages) {
+    if (m.visibility === "hidden") continue;
+    for (const p of m.parts) {
+      if (p.type === "text" && p.text) items.push({ role: p.synthetic === 1 || injected(m) ? "inject" : m.role === "user" ? "user" : "assistant",
+        chip: p.synthetic === 1 || injected(m) ? m.source ?? m.kind ?? p.textSource ?? null : null, title: firstLine(p.text), tokens: sampled(p.text, p.textChars) });
+      else if (p.type === "reasoning" && p.text) items.push({ role: "reasoning", chip: null, title: firstLine(p.text), tokens: sampled(p.text, p.textChars) });
+      else if (p.type === "tool") {
+        let input = null; try { input = p.input == null ? null : JSON.parse(p.input); } catch {}
+        items.push({ role: "tool", chip: p.tool ?? null, title: inputSummary(input) ?? "", tokens: Math.round(((p.input?.length ?? 0) + (p.outputChars ?? 0)) / 4) });
+      }
+    }
+  }
+  return items;
+}
+
+// Recorded events are authoritative for what the store covers; logs add rewinds, MCP registrations and compactions the store
+// has no part for (a failed attempt, say). The same compaction is recognised by its command id or by overlapping time.
+export function combineEvents(recorded, logged) {
+  if (!recorded.length) return logged;
+  const compactions = recorded.filter(e => e.kind === "compaction");
+  const same = e => compactions.some(c => (e.queryId && e.queryId === c.queryId) || (e.timestamp <= (c.endedAt ?? c.timestamp) + 2000 && (e.endedAt ?? e.timestamp) >= c.timestamp - 2000));
+  const recordedModels = recorded.some(e => e.kind === "model");
+  return [...recorded, ...logged.filter(e => e.kind === "compaction" ? !same(e) : e.kind === "model" ? !recordedModels : true)]
+    .sort((a, b) => a.timestamp - b.timestamp);
 }

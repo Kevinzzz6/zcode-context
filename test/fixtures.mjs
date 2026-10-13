@@ -25,3 +25,38 @@ export function modelRecord(sessionId,requestId,messages,extra={}) {
     model:{providerId:"demo",modelId:"demo-model"},request:{messages,messagesKind:"full",messageCount:messages.length,toolNames:[]},
     response:{text:"done",usage:{inputTokens:100,outputTokens:10}},...extra};
 }
+// ZCode's conversation store: message and part rows whose data is the JSON the reader extracts fields from.
+export function conversationStore(db) {
+  db.exec(`CREATE TABLE IF NOT EXISTS message(id TEXT PRIMARY KEY,session_id TEXT NOT NULL,time_created INTEGER NOT NULL,time_updated INTEGER NOT NULL,data TEXT NOT NULL,sequence INTEGER);
+    CREATE TABLE IF NOT EXISTS part(id TEXT PRIMARY KEY,message_id TEXT NOT NULL,session_id TEXT NOT NULL,time_created INTEGER NOT NULL,time_updated INTEGER NOT NULL,data TEXT NOT NULL,sequence INTEGER)`);
+  const message=db.prepare("INSERT INTO message VALUES (?,?,?,?,?,?)"),part=db.prepare("INSERT INTO part VALUES (?,?,?,?,?,?,?)");
+  let sequence=0;
+  return {
+    message(sessionId,id,time,data){message.run(id,sessionId,time,time,JSON.stringify(data),++sequence);return id;},
+    part(sessionId,messageId,id,time,data){part.run(id,messageId,sessionId,time,time,JSON.stringify(data),0);return id;},
+    reminder(sessionId,id,time,text,kind="todo_reminder",source="todo_reminder"){
+      this.message(sessionId,id,time,{role:"user",synthetic:true,semantics:{origin:"agent_runtime",kind,source,providerVisibility:"visible"}});
+      this.part(sessionId,id,id+"_text",time,{type:"text",text,synthetic:true,metadata:{source}});
+    },
+    prompt(sessionId,id,time,text){
+      this.message(sessionId,id,time,{role:"user",semantics:{origin:"real_user",kind:"user_prompt",providerVisibility:"visible"}});
+      this.part(sessionId,id,id+"_text",time,{type:"text",text});
+    },
+    reply(sessionId,id,time,text,tools=[]){
+      this.message(sessionId,id,time,{role:"assistant",semantics:{origin:"model",kind:"assistant_response",providerVisibility:"visible"}});
+      this.part(sessionId,id,id+"_text",time,{type:"text",text});
+      for(const [i,[tool,input,output,callID]] of tools.entries())this.part(sessionId,id,id+"_tool"+i,time,{type:"tool",tool,callID:callID??id+"_call"+i,state:{status:"completed",input,output,time:{start:time,end:time+5}}});
+    },
+    compaction(sessionId,id,time,{summaryId,lastSummarizedId,pre=90000,post=11000,count=3,trigger="auto"}){
+      this.message(sessionId,summaryId,time+50,{role:"user",summary:{title:"Compact summary",body:"Summary body"},semantics:{origin:"agent_runtime",kind:"compact_summary",providerVisibility:"visible"}});
+      const boundary={boundaryId:"compact_"+id,trigger,summarizedMessageCount:count,keptMessageCount:0,lastSummarizedMessageId:lastSummarizedId,summaryMessageId:summaryId};
+      this.part(sessionId,summaryId,id+"_sep",time,{type:"compaction",trigger,boundaryId:"compact_"+id,operationId:"cmp_"+id,summaryMessageId:summaryId,preCompactTokenCount:pre,truePostCompactTokenCount:post,time:{start:time,end:time+40},timelineStatus:"completed"});
+      this.part(sessionId,summaryId,id+"_boundary",time,{type:"compaction",trigger,compactBoundary:boundary});
+    },
+    modelChange(sessionId,id,time,from,to){
+      this.message(sessionId,id,time,{role:"assistant",semantics:{origin:"system",kind:"timeline_event",providerVisibility:"hidden"}});
+      this.part(sessionId,id,id+"_timeline",time,{type:"timeline",timelineType:"model_change",time:{start:time,end:time},fromModelSelection:{label:from},toModelSelection:{label:to}});
+    },
+    remove(id){db.prepare("DELETE FROM part WHERE message_id=?").run(id);db.prepare("DELETE FROM message WHERE id=?").run(id);}
+  };
+}
