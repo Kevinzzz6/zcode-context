@@ -62,11 +62,45 @@ function bucketsOf(item) {
 function compactKind(event) {
   return event.includes(".micro")?"microCompact":event.includes(".auto")?"autoCompact":event.includes(".reactive")?"reactiveCompact":"manualCompact";
 }
-// Compaction anchors use the agent-request series that the trend shows, not auxiliary requests.
-function anchors(items,event) {
-  const agents=items.filter(isAgent);
-  return {before:agents.findLast(x=>x.startedAt<=event.timestamp)??null,after:agents.find(x=>x.startedAt>event.timestamp)??null};
+// Event anchors use the agent-request series that the trend shows, not auxiliary requests:
+// the last request sent before the operation began and the first one sent after it ended.
+// With earlier steps not loaded, an event older than the first loaded step has no known neighbour on either side.
+function anchors(items,event,older=false) {
+  const agents=items.filter(isAgent),before=agents.findLast(x=>x.startedAt<=event.timestamp)??null;
+  if(!before&&older&&agents.length)return {before:null,after:null,earlier:true};
+  return {before,after:agents.find(x=>x.startedAt>(event.endedAt??event.timestamp))??null};
 }
+const TRUNCATED=["display_window","history_window","history_reset","source_rotated"];
+const olderUnloaded=ctx=>Boolean(ctx.hasOlder)||ctx.items.length<(ctx.overview?.history?.loadedCount??0)
+  ||(ctx.overview?.trajectory?.coverage??[]).some(code=>TRUNCATED.includes(code));
+const GLYPH={compaction:"✂",rewind:"↶",model:"⇄",tools:"+"};
+// Compaction and rewind remove content between two requests, so their focus compares the request after with the one before.
+const BOUNDARY=new Set(["compaction","rewind"]);
+const modelName=id=>String(id).split("/").at(-1);
+function eventLabel(t,e) {
+  if(e.kind==="compaction")return t(compactKind(e.event));
+  if(e.kind==="rewind")return t(e.edited?"kind.edit":"kind.rewind");
+  return t("kind."+e.kind);
+}
+function eventDetail(t,e) {
+  if(e.kind==="compaction")return [t(e.status==="started"?"inProgress":e.status),e.durationMs!=null&&e.status!=="started"?t("took",{s:(e.durationMs/1000).toFixed(1)}):null,e.reason].filter(Boolean).join(" · ");
+  if(e.kind==="model")return modelName(e.from)+" → "+modelName(e.to);
+  if(e.kind==="rewind")return e.keptMessageCount!=null?t("kept",{n:full(e.keptMessageCount)}):"";
+  if(e.kind==="tools")return e.toolCount!=null?t("toolsRegistered",{n:e.toolCount}):"";
+  return "";
+}
+function eventAt(t,e,{before,after,earlier}) {
+  if(earlier)return t("eventEarlier");
+  if(BOUNDARY.has(e.kind)&&before&&after) {
+    const turn=before.turn!=null&&before.turn===after.turn?t("turnShort",{n:after.turn})+" · ":"";
+    return turn+t("stepGap",{a:before.step,b:after.step});
+  }
+  if(after)return t("fromStep",{n:after.step});
+  if(before)return t("afterStep",{n:before.step});
+  return null;
+}
+const KINDS=["compaction","rewind","model","tools"];
+export const eventKinds=events=>KINDS.filter(kind=>(events??[]).some(e=>e.kind===kind));
 
 export function renderApp(ctx) {
   const {view}=ctx,page=document.createDocumentFragment();
@@ -284,7 +318,11 @@ function trendCard(ctx) {
   }
   const selectedItem=items.find(x=>x.key===view.selectedKey);
   const cuts=new Map();
-  for(const event of o.events??[]){const after=anchors(items,event).after;if(after)cuts.set(after.key,event);}
+  for(const event of o.events??[]) {
+    if(!BOUNDARY.has(event.kind))continue;
+    const target=anchors(items,event,olderUnloaded(ctx));
+    if(target.after&&!(cuts.get(target.after.key)?.kind==="compaction"))cuts.set(target.after.key,{event,...target});
+  }
   const plot=node("div",{class:"plot",onmouseleave:e=>e.currentTarget.closest(".chart-main")?.querySelector(".trend-tip")?.remove()});
   const dense=columns.length>14;
   let lastTurn,parity=0;
@@ -310,7 +348,8 @@ function trendCard(ctx) {
     for(const x of neg)down.append(node("span",{dataset:{v:x.v,role:x.role},style:{background:palette[x.role]},...hoverRole(x.role)}));
     if(missing)up.append(node("span",{class:"missing",title:t("deltaUnknown")},"?"));
     const cut=c.items.map(x=>cuts.get(x.key)).find(Boolean);
-    if(cut)bar.append(node("span",{class:"cut",title:t(compactKind(cut.event))+" · "+clock(cut.timestamp)},"✂"));
+    if(cut)bar.append(node("span",{class:"cut "+cut.event.kind,title:eventLabel(t,cut.event)+" · "+clock(cut.event.timestamp)+" · "+t("eventFocusTip"),
+      onclick:e=>{e.stopPropagation();a.focusEvent(focusOf(cut.event,cut));}},GLYPH[cut.event.kind]));
     const number=turns?c.turn:s.step??i+1,showLabel=!dense||selected||i===0||number%5===0;
     bar.append(node("span",{class:"bar-area",style:{height:H+"px"}},up,down),node("span",{class:"bar-x"},showLabel?(turns?t("turnShort",{n:number}):String(number)):""));
     if(!turns)bar.append(node("span",{class:"bar-turn"+(parity?" alt":"")+(columns[i+1]?.turn===c.turn?" joined":"")},first&&c.turn!=null?t("turnShort",{n:c.turn}):""));
@@ -350,6 +389,7 @@ function browserCard(ctx) {
   if(!d||d.summary?.key!==view.selectedKey){card.append(node("p",{class:"muted pad"},t("loading")));return card;}
   if(d.searchScope==="all_loaded_snapshots"){card.append(loadedResults(ctx));return card;}
   const notes=[];
+  if(view.eventNote?.key===view.selectedKey&&view.mode==="all")notes.push(t("eventNotComparable",{reason:t(view.eventNote.reason)}));
   if(view.mode==="changes"&&!d.diff.available&&arrivals) {
     notes.push(t("arrivalsOnly",{since:t("step",{n:arrivals.sinceStep})}));
     if(arrivals.unknownCount)notes.push(t("arrivalsUnknown",{n:arrivals.unknownCount}));
@@ -577,20 +617,32 @@ export function markdown(text) {
   return fragment;
 }
 
+const eventId=event=>event.kind+":"+event.timestamp;
+const focusOf=(event,{before,after})=>({id:eventId(event),after:after?.key??null,before:before?.key??null,compare:BOUNDARY.has(event.kind)});
 function eventsCard(ctx) {
-  const {t,view,overview:o,items,actions:a}=ctx,events=[...(o.events??[])].reverse();
-  const card=node("section",{class:"card events",id:"events"},node("div",{class:"card-head"},node("h2",{},t("events")),muted(t("eventsWindow"))));
-  if(!events.length){card.append(node("p",{class:"muted"},t("noEvents")));return card;}
-  for(const event of events) {
-    const status=event.event.split(".").at(-1),{before,after}=anchors(items,event);
+  const {t,view,overview:o,items,actions:a}=ctx,all=o.events??[],kinds=eventKinds(all);
+  const picked=view.eventKinds?.filter(k=>kinds.includes(k)),shown=picked?.length?picked:kinds;
+  const head=node("div",{class:"card-head wrap"},node("h2",{},t("events")),muted(t("eventsWindow")),spacer());
+  if(kinds.length>1)head.append(node("div",{class:"event-kinds",id:"event-kinds"},...kinds.map(kind=>{
+    const on=shown.includes(kind),n=all.filter(e=>e.kind===kind).length;
+    return button([t("kindName."+kind),node("span",{class:"kind-n"},String(n))],()=>a.eventKind(kind,kinds),{class:"toggle"+(on&&picked?.length?" on":""),dataset:{kind},ariaPressed:String(on&&Boolean(picked?.length))});
+  })));
+  const card=node("section",{class:"card events",id:"events"},head);
+  if(!all.length){card.append(node("p",{class:"muted"},t("noEvents")));return card;}
+  for(const event of [...all].reverse()) {
+    if(!shown.includes(event.kind))continue;
+    const target=anchors(items,event,olderUnloaded(ctx)),{before,after}=target,at=eventAt(t,event,target),detail=eventDetail(t,event);
     const evidence=t(event.navigation?.evidence==="turn_range"?"turnEvidence":"timeEvidence");
-    card.append(node("div",{class:"event"+(status==="failed"?" failed":"")},
-      node("div",{class:"event-head"},node("span",{class:"kind"},"✂ "+t(compactKind(event.event))),node("span",{},t(status)),event.reason?muted("· "+event.reason):null,spacer(),
-        event.tokensSavedEstimate!=null?node("span",{class:"badge down",title:t("saved",{n:full(event.tokensSavedEstimate)})},"−"+compact(event.tokensSavedEstimate)):null,muted(clock(event.timestamp))),
-      node("div",{class:"event-nav"},
-        button(t("before")+(before?" · "+itemName(t,before):""),()=>a.select(before?.key),{class:"btn small"+(before&&before.key===view.selectedKey?" on":""),disabled:!before,title:evidence}),
-        button(t("after")+(after?" · "+itemName(t,after):""),()=>a.select(after?.key),{class:"btn small"+(after&&after.key===view.selectedKey?" on":""),disabled:!after,title:evidence}),
-        event.clearedMessageCount!=null?muted(t("cleared",{n:full(event.clearedMessageCount)})):null)));
+    const on=Boolean(after&&after.key===view.selectedKey&&view.eventKey===eventId(event));
+    const saved=event.tokensSavedEstimate!=null?node("span",{class:"badge down",title:t("saved",{n:full(event.tokensSavedEstimate)})},"−"+compact(event.tokensSavedEstimate)):null;
+    const main=button([node("span",{class:"event-glyph"},GLYPH[event.kind]??"•"),node("span",{class:"kind"},eventLabel(t,event)),
+      detail?node("span",{class:"event-detail",title:detail},detail):null,spacer(),saved,muted(clock(event.timestamp))],
+      ()=>a.focusEvent(focusOf(event,target)),{class:"event-main",disabled:!after,title:after?t(BOUNDARY.has(event.kind)?"eventCompareTip":"eventFocusTip"):t(target.earlier?"eventEarlierTip":"eventNoAfter"),ariaPressed:String(on)});
+    const nav=node("div",{class:"event-nav"},at?node("span",{class:"event-at",title:evidence},at):null,
+      event.clearedMessageCount!=null?muted(t("cleared",{n:full(event.clearedMessageCount)})):null,spacer(),
+      BOUNDARY.has(event.kind)&&before?button(t(event.kind==="rewind"?"rewindBefore":"before")+" · "+itemName(t,before),()=>a.select(before.key),
+        {class:"btn small ghost"+(before.key===view.selectedKey?" on":""),title:evidence}):null);
+    card.append(node("div",{class:"event "+event.kind+(event.status==="failed"?" failed":"")+(on?" on":""),dataset:{kind:event.kind}},main,nav));
   }
   return card;
 }

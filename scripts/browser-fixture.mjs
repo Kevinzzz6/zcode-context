@@ -43,7 +43,9 @@ const http=createServer(async(req,res)=>{
     if(url.pathname==="/append"){await append(sessionId,url.searchParams.get("large")==="1",url.searchParams.get("bulk")==="1",url.searchParams.get("gap")==="1");res.writeHead(200,{"content-type":"application/json"});res.end('{"ok":true}');return;}
     if(url.pathname==="/event"){
       const date=new Date(),stamp=date.getFullYear()+"-"+String(date.getMonth()+1).padStart(2,"0")+"-"+String(date.getDate()).padStart(2,"0");
-      await appendFile(join(root,"log","zcode-"+stamp+".jsonl"),JSON.stringify({sessionId,event:"compact.auto.completed",timestamp:date.toISOString(),turnId:"turn_fixture_"+counter,context:{compactReason:"token_pressure",tokensSaved:120}})+"\n");res.writeHead(204);res.end();return;
+      const span={sessionId,turnId:"turn_fixture_"+counter,spanId:"span_fixture_"+Date.now()};
+      await appendFile(join(root,"log","zcode-"+stamp+".jsonl"),JSON.stringify({...span,event:"compact.auto.started",timestamp:new Date(date-50).toISOString(),context:{compactReason:"token_pressure"}})+"\n"
+        +JSON.stringify({...span,event:"compact.auto.completed",timestamp:date.toISOString(),durationMs:50,context:{compactReason:"token_pressure",tokensSaved:120}})+"\n");res.writeHead(204);res.end();return;
     }
     if(url.pathname==="/call"&&req.method==="POST"){
       const chunks=[];let size=0;

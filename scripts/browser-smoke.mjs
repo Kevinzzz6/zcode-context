@@ -102,7 +102,11 @@ try {
     await page.locator("iframe").evaluateAll((frames,width)=>frames.forEach(x=>x.style.width=width+"px"),width);
     for(const mode of ["all","changes"]) {
       await a.locator("#mode-"+mode).click();
-      for(const frame of page.frames().slice(1))assert.ok(await frame.locator("body").evaluate(body=>body.scrollWidth<=body.clientWidth+1),mode+" overflow at "+width);
+      for(const frame of page.frames().slice(1)) {
+        const wide=await frame.locator("body").evaluate(body=>body.scrollWidth<=body.clientWidth+1?null
+          :body.scrollWidth+"/"+body.clientWidth+" "+[...body.querySelectorAll("*")].filter(el=>el.getBoundingClientRect().right>body.clientWidth+1||getComputedStyle(el).overflowX==="visible"&&[...el.childNodes].some(n=>{if(n.nodeType!==3)return false;const r=document.createRange();r.selectNodeContents(n);return r.getBoundingClientRect().right>body.clientWidth+1;})).map(el=>el.tagName.toLowerCase()+(el.id?"#"+el.id:"")+(el.className?"."+String(el.className).replaceAll(" ","."):"")).slice(0,6).join(" "));
+        assert.equal(wide,null,mode+" overflow at "+width+": "+wide);
+      }
     }
     await a.locator("#mode-all").click();
     await page.screenshot({path:fileURLToPath(new URL("sidebar-"+width+".png",out)),fullPage:true});
@@ -135,12 +139,21 @@ try {
   assert.equal(await a.locator("#snapshot").inputValue(),oldest);
   await a.locator("#search-scope").click();await a.locator("#element-search").fill("");checks.push("bounded cross-request search opens content and jumps to its step");
 
+  // The fixture's data service keeps events it already read, so a rerun against the same fixture starts with earlier ones.
+  const priorCompactions=await a.locator(".event.compaction").count();
   await page.request.get(base+"/event?session=sess_A");await page.request.get(base+"/append?session=sess_A&gap=1");
   await refresh(a);await a.locator("#latest").click();await a.locator("#mode-changes").click();
   await a.locator("#diff-status").filter({hasText:"两次记录之间有缺口"}).waitFor();checks.push("history gap suppresses deletion and negative Delta");
-  await a.locator(".event").filter({hasText:"自动压缩"}).first().waitFor();
-  await a.locator(".event-nav button").first().click();await a.locator("#follow-state").filter({hasText:"正在查看历史请求"}).waitFor();
-  checks.push("readable logged compaction with before/after step navigation");
+  const compactions=a.locator(".event.compaction");await compactions.filter({hasText:"自动压缩"}).first().waitFor();
+  assert.equal(await compactions.count(),priorCompactions+1);await compactions.first().filter({hasText:"完成"}).filter({hasText:"用时 0.1s"}).waitFor();
+  checks.push("a compaction's started and completed records render as one row");
+  await compactions.first().locator(".event-main").click();
+  await a.locator("#browser .note").filter({hasText:"无法和事件之前的一步逐项对比"}).waitFor();
+  assert.equal(await a.locator("#mode-all").getAttribute("aria-pressed"),"true");assert.equal(await compactions.first().locator(".event-main").getAttribute("aria-pressed"),"true");
+  assert.ok(await a.locator("#browser").evaluate(el=>{const r=el.getBoundingClientRect();return r.top>=0&&r.top<innerHeight;}));
+  checks.push("focusing a compaction pins the step after it, scrolls to the browser and explains a non-comparable baseline");
+  await compactions.first().locator(".event-nav button").click();await a.locator("#follow-state").filter({hasText:"正在查看历史请求"}).waitFor();
+  checks.push("compaction before-step navigation");
 
   await a.locator("#trend-delta").click();await a.locator("#trend-scroll .bar").first().click();
   assert.equal(await a.locator("#trend-scroll .bar").first().getAttribute("aria-pressed"),"true");checks.push("trend Delta mode and bar selection");
