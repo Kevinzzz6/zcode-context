@@ -1,0 +1,123 @@
+<!doctype html>
+<!--
+  "Click an event, see what it brought" diagram, rendered by docs/images/src/render.sh at 1200 x 860, device scale factor 2.
+  Query: raw=<directory URL of the raw shots, ending in />, lang=zh|en, theme=light|dark,
+         rows=<JSON from shots.mjs: event rows with their y centre inside sidebar-events>.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  :root {
+    --sans: "Segoe UI Variable Display", "Segoe UI", -apple-system, "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+    --inject: #3b82f6; --compact: #f97316;
+    --bg1: #f8f9fc; --bg2: #eef1f6; --ring: rgba(16,24,40,.08); --ink: #1d2129; --muted: #667085; --panel: #fff;
+    --shadow: 0 0 0 1px rgba(16,24,40,.07), 0 1px 2px rgba(16,24,40,.06), 0 18px 40px -16px rgba(16,24,40,.28);
+    --dots: rgba(16,24,40,.07);
+  }
+  .dark {
+    --bg1: #141821; --bg2: #0d1016; --ring: rgba(255,255,255,.08); --ink: #e8eaf0; --muted: #97a0b2; --panel: #17181c;
+    --shadow: 0 0 0 1px rgba(255,255,255,.09), 0 2px 6px rgba(0,0,0,.35), 0 26px 50px -18px rgba(0,0,0,.8);
+    --dots: rgba(255,255,255,.06); --inject: #60a5fa; --compact: #fb923c;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { width: 1200px; height: 860px; background: transparent; overflow: hidden; font-family: var(--sans); -webkit-font-smoothing: antialiased; }
+  .canvas { position: relative; width: 1200px; height: 860px; border-radius: 26px; overflow: hidden; isolation: isolate; color: var(--ink);
+    background:
+      radial-gradient(520px 380px at 12% 0%, color-mix(in srgb, var(--inject) 12%, transparent), transparent 70%),
+      radial-gradient(520px 420px at 100% 100%, color-mix(in srgb, var(--compact) 10%, transparent), transparent 70%),
+      linear-gradient(180deg, var(--bg1), var(--bg2));
+    box-shadow: inset 0 0 0 1px var(--ring); }
+  .canvas::before { content: ""; position: absolute; inset: 0; z-index: -1;
+    background-image: radial-gradient(var(--dots) 1px, transparent 1.2px); background-size: 22px 22px;
+    -webkit-mask-image: radial-gradient(760px 520px at 50% 50%, #000 30%, transparent 80%); }
+
+  .shot { position: absolute; overflow: hidden; border-radius: 16px; background: var(--panel); box-shadow: var(--shadow); }
+  .shot img { display: block; width: 420px; }
+  .events { left: 56px; width: 420px; }
+
+  .callout { position: absolute; left: 692px; width: 452px; padding: 16px; border-radius: 20px;
+    background: color-mix(in srgb, var(--panel) 72%, transparent); backdrop-filter: blur(10px);
+    box-shadow: inset 0 0 0 1px var(--ring), 0 18px 40px -24px rgba(0,0,0,.35); }
+  .callout header { display: flex; flex-direction: column; gap: 5px; padding: 2px 4px 14px; }
+  .callout .title { display: flex; align-items: center; gap: 10px; font-size: 17px; font-weight: 650; letter-spacing: -.005em; }
+  .callout .tag { padding: 3px 9px; border-radius: 7px; font-size: 13px; font-weight: 700; color: #fff; background: var(--c); }
+  .callout .hint { font-size: 13.5px; line-height: 1.45; color: var(--muted); }
+  .callout .window { position: relative; overflow: hidden; border-radius: 13px; background: var(--panel); box-shadow: var(--shadow); }
+  .callout .window img { display: block; width: 420px; }
+  .callout .window::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 56px;
+    background: linear-gradient(to bottom, transparent, var(--panel) 92%); }
+
+  .ring { position: absolute; left: 66px; width: 400px; height: 58px; border-radius: 12px;
+    box-shadow: 0 0 0 2px var(--c), 0 0 0 7px color-mix(in srgb, var(--c) 18%, transparent); }
+  .num { position: absolute; width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center;
+    font-size: 14px; font-weight: 750; color: #fff; background: var(--c); box-shadow: 0 0 0 4px color-mix(in srgb, var(--c) 22%, transparent); }
+  svg { position: absolute; inset: 0; overflow: visible; }
+</style>
+</head>
+<body>
+<div class="canvas" id="canvas">
+  <div class="shot events" id="events"><img id="events-img" alt=""></div>
+  <section class="callout" id="c-compact" style="--c:var(--compact)">
+    <header><div class="title"><span class="tag" data-i18n="compactTag"></span><span data-i18n="compactTitle"></span></div><p class="hint" data-i18n="compactHint"></p></header>
+    <div class="window" style="height:292px"><img data-src="sidebar-summarized" alt=""></div>
+  </section>
+  <section class="callout" id="c-inject" style="--c:var(--inject)">
+    <header><div class="title"><span class="tag" data-i18n="injectTag"></span><span data-i18n="injectTitle"></span></div><p class="hint" data-i18n="injectHint"></p></header>
+    <div class="window" style="height:292px"><img data-src="sidebar-event-focus" style="margin-top:-100px" alt=""></div>
+  </section>
+  <svg id="links"></svg>
+</div>
+<script>
+  const text = {
+    zh: {
+      injectTag: "注入", injectTitle: "打开携带它的那条消息",
+      injectHint: "按工具调用 ID 或原文在下一次请求里定位，标出它进入上下文的回合与步骤",
+      compactTag: "压缩", compactTitle: "展开被摘要掉的内容",
+      compactHint: "来自 ZCode 会话记录，默认记录下也能看；点事件本身则与压缩前一步对比",
+    },
+    en: {
+      injectTag: "Injected", injectTitle: "Opens the message that carried it",
+      injectHint: "Found in the next request by tool-call ID or exact text, stamped with the turn and step it entered",
+      compactTag: "Compaction", compactTitle: "Expands what was summarized away",
+      compactHint: "Read from ZCode's conversation store, even under default recording; the event itself compares with the step before",
+    },
+  };
+  const q = new URLSearchParams(location.search), lang = q.get("lang") === "en" ? "en" : "zh", dark = q.get("theme") === "dark";
+  if (dark) document.body.classList.add("dark");
+  document.documentElement.lang = lang === "en" ? "en" : "zh-CN";
+  for (const el of document.querySelectorAll("[data-i18n]")) el.textContent = text[lang][el.dataset.i18n];
+  const suffix = (lang === "en" ? ".en" : "") + (dark ? ".dark" : "") + ".png", raw = q.get("raw") ?? "";
+  for (const img of document.querySelectorAll("img[data-src]")) img.src = raw + img.dataset.src + suffix;
+  const rows = JSON.parse(q.get("rows") ?? "[]");
+  const events = document.getElementById("events"), img = document.getElementById("events-img");
+  img.src = raw + "sidebar-events" + suffix;
+  const H = 860, ci = document.getElementById("c-inject"), cc = document.getElementById("c-compact");
+  const layout = () => {
+    const eh = img.naturalHeight / 2, top = Math.round((H - eh) / 2);
+    events.style.top = top + "px";
+    const gap = 26, total = ci.offsetHeight + gap + cc.offsetHeight, start = Math.round((H - total) / 2);
+    cc.style.top = start + "px"; ci.style.top = start + cc.offsetHeight + gap + "px";
+    const svg = document.getElementById("links"), canvas = document.getElementById("canvas");
+    const pick = (kind, match) => rows.find(r => r.kind === kind && (!match || match.test(r.label)));
+    const links = [[pick("compaction"), cc, "var(--compact)", 1], [pick("inject", /TodoWrite/), ci, "var(--inject)", 2]];
+    for (const [row, card, color, n] of links) {
+      if (!row) continue;
+      const y = top + row.y;
+      const ring = document.createElement("div"); ring.className = "ring"; ring.style.cssText = row.top != null ? `--c:${color};top:${top + row.top + 2}px;height:${row.bottom - row.top - 4}px` : `--c:${color};top:${y - 20}px`; canvas.append(ring);
+      const x1 = 476 + 10, x2 = 692 - 8, y2 = card.offsetTop + 30;
+      const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      path.setAttribute("d", `M ${x1} ${y + 9} C ${x1 + 110} ${y + 9}, ${x2 - 110} ${y2}, ${x2} ${y2}`);
+      path.setAttribute("fill", "none"); path.setAttribute("stroke", color); path.setAttribute("stroke-width", "2.5");
+      path.setAttribute("stroke-linecap", "round"); path.setAttribute("stroke-dasharray", "1 7");
+      const head = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      head.setAttribute("d", `M ${x2 - 9} ${y2 - 6} L ${x2} ${y2} L ${x2 - 9} ${y2 + 6}`);
+      head.setAttribute("fill", "none"); head.setAttribute("stroke", color); head.setAttribute("stroke-width", "2.5"); head.setAttribute("stroke-linecap", "round"); head.setAttribute("stroke-linejoin", "round");
+      svg.append(path, head);
+      const dot = document.createElement("div"); dot.className = "num"; dot.style.cssText = `--c:${color};left:${x1 - 13 + 3}px;top:${y + 9 - 13}px`; dot.textContent = n; canvas.append(dot);
+    }
+  };
+  img.complete ? layout() : img.onload = layout;
+</script>
+</body>
+</html>

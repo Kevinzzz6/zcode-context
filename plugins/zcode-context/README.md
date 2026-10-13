@@ -7,8 +7,8 @@
 <br>
 <br>
 
-**在 ZCode 会话侧栏里看清上下文**<br>
-每次请求带了什么 · 哪类内容占得最多 · 这一步新进来了什么 · 压缩前后少了什么
+**在 ZCode 会话侧栏里，看清每一次请求的上下文**<br>
+<sub>每次请求带了什么 · 哪类内容占得最多 · 这一步新进来了什么 · 运行时注入了什么 · 压缩摘要掉了什么</sub>
 
 <br>
 
@@ -21,11 +21,14 @@
 
 <br>
 
-[功能](#它能回答什么) &nbsp;·&nbsp; [安装](#安装) &nbsp;·&nbsp; [数字怎么读](#数字怎么读) &nbsp;·&nbsp; [工作原理与隐私](#工作原理与隐私) &nbsp;·&nbsp; [开发](#开发) &nbsp;·&nbsp; [**English**](README.en.md)
+[功能](#它能回答什么) &nbsp;·&nbsp; [上下文事件](#上下文事件) &nbsp;·&nbsp; [安装](#安装) &nbsp;·&nbsp; [数字怎么读](#数字怎么读) &nbsp;·&nbsp; [工作原理与隐私](#工作原理与隐私) &nbsp;·&nbsp; [开发](#开发) &nbsp;·&nbsp; [**English**](README.en.md)
 
 </div>
 
 <br>
+
+> [!TIP]
+> **0.3.6 新功能：上下文事件。** 注入、压缩和模型切换现在直接读自 ZCode 的会话记录，覆盖整个会话，不再只看最近 3 天的日志。点一下事件，就能在浏览器里打开它带进上下文的那一项；压缩还能展开「被摘要的内容」，默认记录设置下也能看。[看看怎么用 ↓](#上下文事件)
 
 独立、只读、离线的 ZCode UI 插件，面向 Desktop 本地工作区。它不联网、不调用模型，也不修改 ZCode 的任何设置，只把 ZCode 已经记录在本机的数据整理成一个随会话更新的侧栏面板。
 
@@ -34,29 +37,87 @@
 <table>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/frame-overview.png" alt="请求概览与上下文趋势">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="docs/images/frame-overview.dark.png">
+        <img src="docs/images/frame-overview.png" alt="请求概览与上下文趋势">
+      </picture>
       <h4>上下文为什么这么大？</h4>
-      每次请求的大小、按类别（系统指令、工具定义、用户消息、助手消息、工具结果）的组成，以及随步骤的变化趋势。
+      每次请求的大小、按类别（系统指令、工具定义、用户消息、助手消息、工具结果）的组成，以及随步骤的变化趋势。悬停任一类别，它会在各处同步高亮。
     </td>
     <td width="50%" valign="top">
-      <img src="docs/images/frame-changes.png" alt="压缩后的仅变化视图">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="docs/images/frame-changes.dark.png">
+        <img src="docs/images/frame-changes.png" alt="压缩后的仅变化视图">
+      </picture>
       <h4>压缩前后少了什么？</h4>
-      压缩等上下文事件，点击后直接在浏览器里对比压缩前后两步，看到被移除的具体内容。「仅变化」只列出新增和移除（需要完整记录，见<a href="#默认记录与完整保留">下文</a>）。
+      点击压缩事件，浏览器选中压缩后的一步并与压缩前一步对比；「仅变化」只列出新增和移除，被移除的条目带删除线（需要完整记录，见<a href="#默认记录与完整保留">下文</a>）。
     </td>
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/frame-tool-card.png" alt="展开的工具结果卡片">
-      <h4>这一步新进来了什么？</h4>
-      上一步回复之后进入上下文的内容，通常是工具结果，参数和正文可以直接展开。每条消息还标出它从第几轮第几步进入上下文，例如 <code>T4 S17</code>。
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="docs/images/frame-events.dark.png">
+        <img src="docs/images/frame-events.png" alt="上下文事件卡片：注入、压缩、模型切换和 MCP 工具注册">
+      </picture>
+      <h4>运行时往上下文里塞了什么？<sup>新</sup></h4>
+      TodoWrite 提醒、Agent 列表、后台任务通知、Skill 加载这些不是你写的内容，每条一行，带估算大小和进入的步骤；压缩、模型切换和 MCP 工具注册也在同一条时间线上。
     </td>
     <td width="50%" valign="top">
-      <img src="docs/images/frame-schemas.png" alt="工具定义的调用次数">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="docs/images/frame-tool-card.dark.png">
+        <img src="docs/images/frame-tool-card.png" alt="展开的工具结果卡片">
+      </picture>
+      <h4>这一步新进来了什么？</h4>
+      上一步回复之后进入上下文的内容，通常是工具结果，参数和正文可以直接展开。每条消息还标出它从第几轮第几步进入上下文，例如 <code>T4 S18</code>。
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="docs/images/frame-summarized.dark.png">
+        <img src="docs/images/frame-summarized.png" alt="一次自动压缩被摘要掉的提问、回复和工具调用">
+      </picture>
+      <h4>压缩摘要掉了什么？<sup>新</sup></h4>
+      压缩前后的 token、用时和被摘要的消息数；展开「被摘要的内容」，逐条列出被换成摘要、之后不再发给模型的提问、回复、思考和工具调用。
+    </td>
+    <td width="50%" valign="top">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="docs/images/frame-schemas.dark.png">
+        <img src="docs/images/frame-schemas.png" alt="工具定义的调用次数">
+      </picture>
       <h4>哪些工具定义白占 token？</h4>
-      每个工具定义本会话被调用了几次，以及从未调用的工具定义每次请求占多少。
+      每个工具定义本会话被调用了几次，以及从未调用的工具定义每次请求占多少。可按大小、调用次数或名称排序。
     </td>
   </tr>
 </table>
+
+## 上下文事件
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/events-flow.dark.png">
+    <img src="docs/images/events-flow.png" width="100%" alt="点击上下文事件：压缩展开被摘要的内容，注入在浏览器里打开携带它的那条消息">
+  </picture>
+</p>
+
+上下文里有不少内容不是你或模型写的，而是 ZCode 运行时在请求之间加进去或换掉的。「上下文事件」卡片把它们按时间列出来，每一条都能点开，直接看到它对上下文做了什么。
+
+| 事件 | 卡片上显示 | 点击后 |
+|---|---|---|
+| ↳ **注入** | TodoWrite 提醒、Agent 列表、恢复的上下文、后台任务通知、子代理消息、Skill 加载，每条一行，带估算大小 | 在浏览器里打开携带它的那条消息，并标出它进入上下文的回合与步骤；那次请求已不可读时，显示会话记录里的原文 |
+| ✂ **压缩** | 状态（完成、失败、进行中、重试、中断或跳过）、用时、压缩前后的 token、被摘要的消息数 | 选中压缩后的一步，与压缩前一步对比；「被摘要的内容」逐条列出被摘要的提问、回复、思考和工具调用 |
+| ⇄ **模型切换** | 从哪个模型换到哪个 | 选中切换后的第一步，在请求概览里看到新模型 |
+| ↶ **回退 / 编辑提问** | 保留的消息数 | 选中之后的第一步，并与回退前一步对比 |
+| ⚙ **MCP 工具注册** | 注册的工具数 | 在工具定义里筛出 `mcp__` 工具 |
+
+- **数据从哪来**：注入、压缩和模型切换读自 ZCode 数据库里的会话记录（`message` 与 `part` 表），覆盖整个会话，标题旁显示「整个会话」。读取是增量的，只取需要的 JSON 字段，大段工具输出不会进入插件。回退、编辑提问和 MCP 工具注册只记在日志里，因此只看最近 3 天；会话记录里没有的压缩（例如失败的尝试）也从日志补上。读不到会话记录时，整张卡片退回日志，标题改为「最近 3 天」。
+- **怎么定位**：一条注入会随下一次请求发给模型，插件在那次请求里按工具调用 ID 或原文找到它，越过分页也能直接展开。早于已加载步骤的事件，点击后会先加载更早的步骤；仍然找不到时会明确说明，不会停在一个相近的步骤上。
+- **跟随当前分支**：回退不会删除 ZCode 会话记录里的消息，「被摘要的内容」只列当前对话分支上的消息；压缩本身位于已回退的分支上时，会说明无法确定它摘要了什么。
+- **怎么合并**：ZCode 把一次压缩的开始和完成记成两条日志，这里合并为一行并带上最终状态；编辑提问和它触发的回退同样合并。
+- **怎么筛选**：出现多种事件时，标题下方有按类型筛选的按钮；列表默认显示最新 12 条，「显示全部」展开其余。趋势图里的 ✂ 和 ↶ 标记点击效果与事件相同。
+
+> [!NOTE]
+> 默认记录设置下，模型 I/O 记录只保留每次请求的最近 64 条消息，压缩前一步的完整内容通常已经不在了。这时「被摘要的内容」是唯一能看到一次压缩移除了什么的地方，它来自会话记录，与模型 I/O 记录的保留设置无关。
 
 ## 界面一览
 
@@ -65,11 +126,11 @@
 <table>
   <tr><th align="left">区域</th><th align="left">内容</th></tr>
   <tr><td nowrap><b>步骤选择</b></td><td><kbd>‹</kbd> <kbd>›</kbd> 或 <kbd>←</kbd> <kbd>→</kbd> 在主请求之间切换；下拉框另列出标题生成、压缩等辅助请求。默认跟随最新，展开内容阅读时暂停跟随，选中历史请求时提示有几个新请求</td></tr>
-  <tr><td nowrap><b>请求概览</b></td><td>输入大小、较上一步的变化、实际输入/输出/缓存；按类别的堆叠条与图例；「本轮 / 输入 / 回复」三行摘要</td></tr>
+  <tr><td nowrap><b>请求概览</b></td><td>输入大小、较上一步的变化、实际输入/输出/缓存与模型；按类别的堆叠条与图例；「本轮 / 输入 / 回复」三行摘要</td></tr>
   <tr><td nowrap><b>上下文趋势</b></td><td>每个主请求一根柱，带纵轴、回合带和 ✂ 压缩标记；可切换总量/变化、步骤/轮次；「自适应」按可见范围缩放；悬停查看各类别数值，悬停类别会在各处同步高亮</td></tr>
   <tr><td nowrap><b>上下文浏览器</b></td><td>按类别折叠和分页；对比基线可选上一步、上一轮或更早任一步；「仅变化」只看新增和移除；条目按工具名和关键参数命名，如 <code>Read · src/cache.ts</code></td></tr>
   <tr><td nowrap><b>条目详情</b></td><td>行内展开：工具卡片（参数表、成功/错误）、工具定义的参数表、正文（可读 / Markdown / 原始、复制、查找、分段）</td></tr>
-  <tr><td nowrap><b>上下文事件</b></td><td>来自 ZCode 会话记录、覆盖整个会话：注入（TodoWrite 提醒、Agent 列表、恢复的上下文、后台任务通知、Skill 等，每条一行）、压缩（前后 token、被摘要的消息数和内容）、模型切换；回退与 MCP 工具注册来自最近 3 天日志。点击事件在浏览器里打开它对应的那一项，压缩与之前的一步对比并可展开被摘要的内容，请求记录不可读时直接显示原文。趋势里的 ✂ 标记也可点击</td></tr>
+  <tr><td nowrap><b>上下文事件</b></td><td>注入、压缩、模型切换、回退和 MCP 工具注册的时间线，点击打开对应的那一项，详见<a href="#上下文事件">上文</a></td></tr>
   <tr><td nowrap><b>用量</b></td><td>次级页面：近 30 天的逻辑用量、每日汇总和最近请求</td></tr>
   <tr><td nowrap><b>关于</b></td><td>次级页面（工具栏 <kbd>ⓘ</kbd>）：版本、作者、许可、源码仓库，以及只读本机数据、不联网的说明</td></tr>
 </table>
@@ -92,9 +153,14 @@
 | 移除了什么、按类别的变化量 | ❌ 无法得知，界面会说明 | ✅ 可用 |
 | 替换内容的正文 Diff | ❌ 不可用 | ✅ 可用（仅限有唯一身份的工具结果和工具定义） |
 | 工具调用次数、入场标记 | ✅ 可用 | ✅ 可用 |
+| 上下文事件、被摘要的内容 | ✅ 可用（来自会话记录，覆盖整个会话） | ✅ 可用 |
 
 <p align="center">
-  <img src="docs/images/frame-partial.png" width="400" alt="默认设置下的请求概览：未记录部分以斜纹显示"><br>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/frame-partial.dark.png">
+    <img src="docs/images/frame-partial.png" width="400" alt="默认设置下的请求概览：未记录部分以斜纹显示">
+  </picture>
+  <br>
   <sub>默认设置下，未记录的更早消息在堆叠条和趋势里以斜纹显示</sub>
 </p>
 
@@ -169,7 +235,7 @@ npm run build
 
 插件开关只决定 ZCode 加载插件；面板取数据时要调用插件自带的两个工具，ZCode 对它们照常执行工具权限规则：
 
-- `mcp__plugin_zcode-context_context__get_context_summary`：概览和趋势，有变化时每 3 秒轮询，长时间无变化时逐步放慢到 10 秒
+- `mcp__plugin_zcode-context_context__get_context_summary`：概览、趋势和上下文事件，有变化时每 3 秒轮询，长时间无变化时逐步放慢到 10 秒
 - `mcp__plugin_zcode-context_context__get_context_request`：某一步的内容、对比和正文
 
 > [!IMPORTANT]
@@ -182,26 +248,18 @@ npm run build
 - **步序号和回合号**：从当前可读的第一条记录开始计数，不是整个会话的绝对序号。ZCode 会定期重置长会话的记录文件，之后历史会从头开始，趋势图下方会说明。
 - **入场标记** `T2 S7`：按消息的绝对位置追溯得到。追到已加载的最早记录、记录缺口、重置或压缩时仍然存在的消息，显示「更早」，不猜步骤。
 - **工具调用次数**：来自整个会话的调用记录，包括所选步骤之后的调用和已被压缩掉的调用。读不到调用记录时显示未知，不显示 ×0。
-- **压缩**：以日志为准，只读最近 3 天的日志。内容变少不代表发生了压缩，没读到事件也不能证明没有压缩。
+- **注入大小** `+47`：这条注入正文的估算 token；大段的 Skill 输出按开头一段的文字构成折算全文，不把全文读进插件。
+- **压缩**：压缩前后的 token 由 ZCode 在压缩时记录，`−12.1k` 是两者之差；被摘要的消息数和内容来自会话记录。内容变少不代表发生了压缩，只有会话记录或日志里有记载的才算。
 - **用量页**：来自 ZCode 数据库的逻辑请求统计，包含标题、压缩等辅助调用，和趋势中的记录分开计算，不做强行对应。
 
 ## 工作原理与隐私
 
-```mermaid
-flowchart LR
-  panel["上下文面板<br/>ZCode 会话侧栏"]
-  server["插件服务<br/>MCP · stdio"]
-  worker["数据 worker<br/>串行 · 限时 · 限内存"]
-  subgraph local["本机 ~/.zcode/cli（只读）"]
-    db[("db/db.sqlite<br/>用量 · 工具调用次数 · 会话记录")]
-    traj["rollout/ · debug/<br/>模型 I/O 记录"]
-    log["log/<br/>回退 · MCP 注册"]
-  end
-  panel -- "两个只读工具<br/>按会话身份绑定" --> server --> worker
-  worker --> db
-  worker --> traj
-  worker --> log
-```
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/architecture.dark.png">
+    <img src="docs/images/architecture.png" width="100%" alt="数据流：上下文面板通过两个只读工具调用插件服务，数据 worker 只读本机 ~/.zcode/cli 下的会话记录、用量统计、模型 I/O 记录和日志">
+  </picture>
+</p>
 
 - **只读**：不修改 ZCode 的代码、设置、数据库或权限，不运行迁移，数据库连接为只读。
 - **离线**：不联网，不调用模型；所有数据留在本机。
@@ -237,13 +295,15 @@ npm run verify       # 以上全部，结果写入 output/verification
 | `npm run preview` | 演示数据页面，打开 <http://127.0.0.1:4173/?demo=1> |
 | `npm run fixture:browser` + `npm run test:browser -- <playwright/index.mjs 的绝对路径>` | 浏览器交互回归（25 组），使用已有的 Playwright 和本机 Chrome，不下载浏览器 |
 
-浏览器测试验证官方 App/AppBridge 握手、真实 stdio/SQLite 和双会话隔离，但不代替在 ZCode 桌面侧栏中的验收。README 的头图和截图外框由 [`docs/images/src/render.sh`](docs/images/src/render.sh) 从原始截图生成。
+浏览器测试验证官方 App/AppBridge 握手、真实 stdio/SQLite 和双会话隔离，但不代替在 ZCode 桌面侧栏中的验收。
+
+README 里的图全部由 [`docs/images/src/render.sh`](docs/images/src/render.sh) 生成：它构建一份独立的面板副本，用带会话记录的合成会话截取中英文、浅色与深色两套截图，再合成头图、截图外框、上下文事件示意图和数据流图。运行方式：`PLAYWRIGHT=<playwright/index.mjs 的绝对路径> bash docs/images/src/render.sh`，需要 Chrome、curl 和 ImageMagick。
 
 ## 当前状态
 
 - ✅ 0.3.x 已用真实会话（约 60 万 token、默认记录模式）在只读预览中验证，单元测试与浏览器交互测试全部通过。
 - ⏳ 0.3.x 在 ZCode 桌面侧栏中的验收尚未完成；0.2.0 曾完成基础 Electron 接入。
-- ⚠️ 上游内部存储格式变化时，读取适配可能需要更新。
+- ⚠️ 上游内部存储格式（模型 I/O 记录、会话记录的表结构）变化时，读取适配可能需要更新。
 
 ## 文档
 
