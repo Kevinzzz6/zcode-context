@@ -20,6 +20,17 @@ try {
   await a.locator("#summary").evaluate(el=>{el.dataset.probe="idle";});await page.waitForTimeout(3600);
   assert.equal(await a.locator("#summary").getAttribute("data-probe"),"idle");checks.push("polling without new data does not rebuild the page");
 
+  const schemas=a.locator('.category[data-role="schema"]'),schemaTitles=()=>schemas.locator(".el .el-title").allTextContents();
+  await schemas.locator(".cat-head").click();
+  assert.equal(await schemas.locator('.el:has-text("Read") .calls').textContent(),"×2");
+  assert.equal(await schemas.locator('.el:has-text("Glob") .calls.zero').textContent(),"×0");
+  await a.locator("#schema-unused").filter({hasText:"1 个工具定义本会话从未调用"}).waitFor();
+  await a.locator("#schema-sort-name").click();await a.locator("#schema-sort-name[aria-pressed=true]").waitFor();
+  await schemas.locator(".el").first().filter({hasText:"Glob"}).waitFor();assert.deepEqual(await schemaTitles(),["Glob","Read"]);
+  await a.locator("#schema-sort-calls").click();await schemas.locator(".el").first().filter({hasText:"Read"}).waitFor();
+  await a.locator("#schema-sort-size").click();await a.locator("#schema-sort-size[aria-pressed=true]").waitFor();
+  await schemas.locator(".cat-head").click();checks.push("schema rows show session call counts (×N, muted ×0), unused total and Size/Calls/Name sort");
+
   await a.locator("#show-usage").click();assert.equal(await a.locator("#calls").textContent(),"2");assert.match(await a.locator("#daily").textContent(),/200 \/ 20/);
   await a.locator("#usage-back").click();checks.push("secondary SQLite usage with daily totals");
 
@@ -102,6 +113,15 @@ try {
   await a.locator("#content").filter({hasText:"SEARCH_BEYOND_FIRST_PAGE"}).waitFor();checks.push("search beyond the first 40 elements");
   await a.locator("#element-search").fill("");await a.locator('.category[data-role="tool"] .more').click();
   await a.locator('.category[data-role="tool"] .el').nth(40).waitFor();checks.push("per-category show more loads that category's next page");
+  const [,step,turn]=(await a.locator("#snapshot option:checked").textContent()).match(/第 (\d+) 步 · 回合 (\d+)/);
+  const appended=a.locator('.category[data-role="tool"] .el[data-element="message:10"] .stamp');
+  assert.equal(await appended.textContent(),"T"+turn+" S"+step);assert.equal(await appended.getAttribute("title"),"首次随第 "+turn+" 轮第 "+step+" 步进入上下文");
+  // Every fixture request rewrites its messages, so only the unchanged system message traces back to the oldest loaded step.
+  await a.locator('.category[data-role="system"] .cat-head').click();
+  const earlier=a.locator('.category[data-role="system"] .el .stamp.before');
+  assert.equal(await earlier.textContent(),"更早");assert.match(await earlier.getAttribute("title"),/第 1 步时已在上下文中/);
+  await a.locator('.category[data-role="system"] .cat-head').click();
+  checks.push("entry stamps name the step a message entered, or say earlier with the step it was traced to");
 
   await a.locator("#element-search").fill("fixture_1");await a.locator("#search-scope").click();
   const hit=a.locator(".loaded-results .el").filter({hasText:"Recorded input"}).first();
