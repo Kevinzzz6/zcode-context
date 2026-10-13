@@ -63,8 +63,12 @@ html[lang^=zh] .legend{grid-template-columns:repeat(2,minmax(0,1fr))}
 .pct{color:var(--muted);font-size:11px;min-width:28px;text-align:right;font-variant-numeric:tabular-nums;flex:none}
 .dot{width:8px;height:8px;border-radius:2px;flex:none;display:inline-block}
 .brief{margin-top:10px;border-top:1px solid var(--soft);padding-top:6px;display:flex;flex-direction:column}
-.brief-row{display:flex;align-items:center;gap:8px;border:0;background:transparent;padding:4px;margin:0 -4px;border-radius:6px;text-align:left;font-size:12px;width:calc(100% + 8px)}
-.brief-row.clickable:hover{background:var(--bg2)}
+.brief-row{display:flex;align-items:flex-start;gap:8px;padding:4px 0;font-size:12px}
+.brief-label{padding-top:1px;cursor:help}
+.brief-list{display:flex;flex-direction:column;gap:1px;flex:1}
+.brief-item{display:flex;align-items:center;gap:6px;border:0;background:transparent;padding:1px 4px;margin:0 -4px;border-radius:5px;text-align:left;font-size:12px;width:calc(100% + 8px)}
+.brief-item.clickable:hover{background:var(--bg2)}
+.brief-more{align-self:flex-start;height:20px;padding:0 4px;margin-left:-4px}
 .brief-label{flex:none;width:62px;color:var(--muted);font-size:11.5px}
 html[lang^=zh] .brief-label{width:28px}
 .brief-body{display:flex;align-items:center;gap:6px;flex:1}
