@@ -150,3 +150,10 @@ test("groups give every category its own first page and changes are grouped by c
     const more=await service.request("sess_A",{key:o.trajectories.at(-1).key,role:"tool",page:1});
     assert.equal(more.elements.length,40);assert.ok(more.elements.every(x=>x.role==="tool"));
   }));
+test("tail records keep the declared message total and user previews drop injected host blocks",()=>{
+  const messages=[{role:"user",content:"<in-app-browser-context source=\"ambient-ui-state\">\nstate\n</in-app-browser-context>\n\n## My request for ZCode:\n真实问题"}];
+  const record=foldRecord(modelRecord("s","r",messages,{request:{messages,messagesKind:"tail",messageOffset:500,messageCount:501}}));
+  const summary=trajectorySummary(record,"k");
+  assert.equal(summary.complete,false);assert.equal(summary.messageTotal,501);assert.equal(summary.messageCount,1);
+  assert.equal(summary.userPreview,"真实问题");assert.equal(elementSummary(inputElements(record)[0]).title,"真实问题");
+});

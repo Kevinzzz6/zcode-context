@@ -6,7 +6,14 @@ const messages={
  agentRequests:["主请求","Agent requests"],auxRequests:["辅助请求","Auxiliary requests"],
  "source.session_title":["标题生成","Title generation"],"source.compact":["压缩请求","Compaction request"],"source.main_turn":["主请求","Agent request"],
  "source.subagent":["子代理","Subagent"],"source.workflow_child":["工作流子任务","Workflow child"],"source.unknown":["其他请求","Other request"],
- estimate:["输入估算","estimated input"],vsPrevious:["较上一步","vs previous"],notComparable:["无法对比","Not comparable"],
+ estimate:["输入估算","estimated input"],actualInput:["实际输入","actual input"],actualShort:["实际","actual"],
+ actualDeltaTip:["记录不完整，按 provider 上报的实际输入计算","Record is partial; computed from provider-reported input"],
+ recorded:["已记录部分","Recorded part"],recordedMessages:["最近 {n} / {total} 条消息 + 工具定义","latest {n} of {total} messages + tool schemas"],
+ recordedTip:["已记录的消息和工具定义按 4 字符 ≈ 1 token 估算","Recorded messages and tool schemas, estimated at about 4 characters per token"],
+ unrecorded:["更早消息（未记录）","Earlier messages (not recorded)"],
+ unrecordedTip:["实际输入减去已记录部分的估算；这部分内容没有被记录，无法查看或按类别拆分","Actual input minus the recorded estimate; this content was not recorded and cannot be viewed or split by category"],
+ actualOnly:["记录不完整，只能显示实际输入的变化，无法按类别拆分","Partial record: only the change in actual input is known, not per category"],
+ partialHint:["这条记录只保留了最近 {n} 条消息（共 {total} 条），更早的内容无法查看，变化也无法按类别对比。在 ZCode「设置 → 通用」打开「完整保留模型 I/O」后，之后的请求会记录完整内容。","This record keeps only the latest {n} of {total} messages, so earlier content cannot be viewed or compared by category. Turn on complete Model I/O retention in ZCode Settings → General to record full input for later requests."],vsPrevious:["较上一步","vs previous"],notComparable:["无法对比","Not comparable"],
  actualIn:["实际输入","Actual in"],output:["输出","Output"],cache:["缓存","Cache"],
  briefTurn:["本轮","Turn"],briefInput:["输入","In"],briefReply:["回复","Reply"],noInputs:["（无新增）","(nothing new)"],moreItems:["还有 {n} 项","+{n} more"],
  briefTurnTip:["这一轮开场时用户发送的消息；同一轮的每一步都显示这一条","The message that opened this turn; every step of the turn shows it"],
@@ -79,4 +86,4 @@ export function translator(locale="zh-CN") {
 }
 // Fixed category order and colours shared by the summary bar, trend and browser.
 export const ORDER=["system","schema","user","assistant","tool","unknown"];
-export const palette={system:"#6366f1",schema:"#f59e0b",user:"#22c55e",assistant:"#3b82f6",tool:"#14b8a6",unknown:"#94a3b8"};
+export const palette={system:"#6366f1",schema:"#f59e0b",user:"#22c55e",assistant:"#3b82f6",tool:"#14b8a6",unknown:"#94a3b8",unrecorded:"#cbd5e1",actual:"#94a3b8"};

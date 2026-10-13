@@ -62,6 +62,8 @@ html[lang^=zh] .legend{grid-template-columns:repeat(2,minmax(0,1fr))}
 .legend-name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .pct{color:var(--muted);font-size:11px;min-width:28px;text-align:right;font-variant-numeric:tabular-nums;flex:none}
 .dot{width:8px;height:8px;border-radius:2px;flex:none;display:inline-block}
+.dot.unrecorded,.unrecorded,.stack [data-role=unrecorded]{background:repeating-linear-gradient(135deg,var(--border) 0 3px,transparent 3px 6px)!important;background-color:var(--bg2)!important}
+.partial-hint{margin:8px 0 0}
 .brief{margin-top:10px;border-top:1px solid var(--soft);padding-top:6px;display:flex;flex-direction:column}
 .brief-row{display:flex;align-items:flex-start;gap:8px;padding:4px 0;font-size:12px}
 .brief-label{padding-top:1px;cursor:help}
