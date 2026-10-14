@@ -1,10 +1,23 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {readSessionContext,sanitizeSessionSegment} from "../src/domain/session.mjs";
-import {normalizeFact,summarizeFacts} from "../src/domain/usage.mjs";
+import {mkdtemp,rm} from "node:fs/promises";
+import {tmpdir} from "node:os";
+import {join} from "node:path";
+import {normalizeFact} from "../src/domain/usage.mjs";
+import {readUsage} from "../src/data/sqlite.mjs";
 import {foldRecord,diffRecords,composition,estimateTokens} from "../src/domain/trajectory.mjs";
 import {contextEvent,mergeEvents,conversationEvents,summarizedItems} from "../src/domain/events.mjs";
-import {modelRecord} from "./fixtures.mjs";
+import {modelRecord,usageDatabase} from "./fixtures.mjs";
+// The per-request semantics the SQL aggregate must reproduce: unknown fields stay out of sums, a hit rate needs both sides.
+function summarizeFacts(facts) {
+  const sum=key=>{const known=facts.filter(f=>f[key]!==null);return known.length?known.reduce((s,f)=>s+f[key],0):null;};
+  const eligible=facts.filter(f=>f.inputTokens!==null&&f.cacheReadTokens!==null),input=eligible.reduce((s,f)=>s+f.inputTokens,0);
+  return {requestCount:facts.length,reportedCount:facts.filter(f=>f.hasUsage).length,missingUsageCount:facts.filter(f=>!f.hasUsage).length,
+    inputTokens:sum("inputTokens"),outputTokens:sum("outputTokens"),totalTokens:sum("totalTokens"),
+    cacheHitRate:input>0?eligible.reduce((s,f)=>s+f.cacheReadTokens,0)/input:null,
+    errorCount:facts.filter(f=>f.status==="error").length,retryCount:facts.reduce((s,f)=>s+f.retryCount,0)};
+}
 test("only the host namespace binds a session; transport IDs and arguments cannot bind it",()=>{
   assert.throws(()=>readSessionContext({session_id:"sess_wrong"}),{code:"binding_unavailable"});
   assert.throws(()=>readSessionContext(undefined),{code:"binding_unavailable"});
@@ -136,4 +149,24 @@ test("event token estimates use the script-weighted measure, scaled from a sampl
   const [tool]=summarizedItems([{role:"assistant",parts:[{type:"tool",tool:"Read",input:JSON.stringify({file_path:"a.ts"}),outputChars:output.length,outputSample:sample}]}]);
   near(tool.tokens,estimateTokens(JSON.stringify({file_path:"a.ts"}))+estimateTokens(output));
   assert.ok(skill.tokens>output.length/1.5-1,"Chinese output is not counted at a quarter token per character");
+});
+
+test("the SQL usage aggregate equals the per-request normalization summed",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"context-usage-parity-"));
+  try {
+    const fixture=usageDatabase(root),now=Date.now();
+    const insert=fixture.db.prepare("INSERT INTO model_usage(id,session_id,status,started_at,input_tokens,output_tokens,cache_read_input_tokens,cache_creation_input_tokens,provider_total_tokens,computed_total_tokens,retry_count,raw_usage_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)");
+    const rows=[["excluded-cache","completed",100,20,80,0,null,120,0,'{"inputTokens":100,"outputTokens":20}'],
+      ["included-cache","completed",20,20,80,0,120,null,1,'{"inputTokens":20,"outputTokens":20}'],
+      ["cache-write","completed",50,10,0,30,null,null,0,'{"inputTokens":50,"outputTokens":10,"cacheWriteTokens":30}'],
+      ["absent","completed",0,0,0,0,null,0,0,null],["zero","completed",0,0,0,0,null,0,0,'{"inputTokens":0,"outputTokens":0}'],
+      ["input-only","error",100,0,0,0,null,null,2,'{"inputTokens":100}'],["total-only","completed",0,0,0,0,50,0,0,'{"totalTokens":50}']];
+    for(const [i,[id,status,...v]] of rows.entries())insert.run(id,"sess_A",status,now-1000+i,...v);
+    const usage=readUsage(fixture.path,"sess_A",now),expected=summarizeFacts(usage.facts);
+    assert.equal(usage.facts.length,rows.length);
+    for(const key of ["requestCount","reportedCount","missingUsageCount","inputTokens","outputTokens","totalTokens","errorCount","retryCount"])
+      assert.equal(usage.totals[key],expected[key],key);
+    assert.ok(Math.abs(usage.totals.cacheHitRate-expected.cacheHitRate)<1e-12);
+    fixture.db.close();
+  } finally { await rm(root,{recursive:true,force:true}); }
 });

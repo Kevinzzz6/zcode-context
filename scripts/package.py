@@ -12,6 +12,7 @@ plugin_dir = root / "plugins/zcode-context"
 files = {prefix + "marketplace.json": root / "marketplace.json"}
 for path in sorted(p for p in plugin_dir.rglob("*") if p.is_file()):
     files[prefix + "plugins/zcode-context/" + path.relative_to(plugin_dir).as_posix()] = path
+(root / "output/verification").mkdir(parents=True, exist_ok=True)
 assert len(files) > 1 and all(p.is_file() for p in files.values()), "Build the marketplace first (npm run build)"
 with ZipFile(archive, "w", compression=ZIP_DEFLATED, compresslevel=9) as bundle:
     for name, path in files.items():
