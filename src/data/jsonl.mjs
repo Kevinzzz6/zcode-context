@@ -8,6 +8,7 @@ const hash = value => createHash("sha256").update(value).digest("hex");
 export class JsonlTail {
   offset = 0; pending = Buffer.alloc(0); skipping = false; generation = 0;
   identity = null; headHash = null; headLength = 0; mtime = 0; missing = false; coverage = [];
+  constructor(openFile = open) { this.openFile = openFile; }
   markCoverage(reason) { if (!this.coverage.includes(reason)) this.coverage.push(reason); }
   reset(state, size, onReset) {
     this.identity = state; this.offset = Math.max(0, size - COLD_BYTES); this.pending = Buffer.alloc(0);
@@ -17,7 +18,7 @@ export class JsonlTail {
   async scan(path, onRow, onReset, onGap) {
     let file;
     try {
-      file = await open(path, "r"); const st = await file.stat(); const identity = st.dev + ":" + st.ino;
+      file = await this.openFile(path, "r"); const st = await file.stat(); const identity = st.dev + ":" + st.ino;
       const prefix = Buffer.alloc(this.headLength || Math.min(256, st.size)); await file.read(prefix, 0, prefix.length, 0);
       const changed = this.identity !== identity || st.size < this.offset || this.missing ||
         (this.headHash !== null && hash(prefix) !== this.headHash) ||
@@ -61,7 +62,10 @@ export class JsonlTail {
       return { available: true, scanning: this.offset < st.size, pendingLine: this.pending.length > 0,
         generation: this.generation, coverage: [...new Set(this.coverage)] };
     } catch (error) {
-      this.missing = true;
+      // A missing file may come back as a different one, so it is read again from scratch. A transient system error
+      // (a scanner or backup briefly holding the file) keeps the position; anything else is a defect and also restarts.
+      if (typeof error.code !== "string") console.error("[zcode-context] trajectory scan", error);
+      if (error.code === "ENOENT" || typeof error.code !== "string") this.missing = true;
       return { available: false, code: error.code === "ENOENT" ? "trajectory_missing" : "file_unavailable", scanning: false, coverage: [...new Set(this.coverage)] };
     } finally { await file?.close(); }
   }

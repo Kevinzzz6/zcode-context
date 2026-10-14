@@ -92,11 +92,13 @@ export class ContextDataService {
     }
     const records = this.records(state);
     const usage = readUsage(this.paths.db, sessionId); state.toolCalls = readToolCalls(this.paths.db, sessionId);
-    // A busy database keeps the last events; any other failure falls back to the logs alone.
+    // A busy or briefly unopenable database keeps the last events; a missing database or an unsupported schema falls back to the logs alone.
     const conversation = readConversation(this.paths.db, sessionId, state.conversation);
     if (conversation.available) { if (conversation.changed || !state.conversation) state.recorded = conversationEvents(conversation.cache); state.conversation = conversation.cache; }
-    else if (conversation.code !== "database_busy") { state.conversation = null; state.recorded = []; }
-    if (records.length && coverage.every(item => !item.available)) coverage.push({ coverage: ["source_rotated"], scanning: false });
+    else if (!["database_busy", "database_unavailable"].includes(conversation.code)) { state.conversation = null; state.recorded = []; }
+    // A file that could not be opened this time is not evidence of rotation.
+    if (records.length && coverage.every(item => !item.available) && !coverage.some(item => item.code === "file_unavailable"))
+      coverage.push({ coverage: ["source_rotated"], scanning: false });
     const cutoff = Date.now() - 3 * 86400000;
     for (const [key,event] of state.events) if (event.timestamp < cutoff) state.events.delete(key);
     while (state.logTails.size > 3) state.logTails.delete(state.logTails.keys().next().value);

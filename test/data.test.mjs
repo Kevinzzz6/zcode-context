@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile, appendFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, appendFile, rm, open } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -45,6 +45,18 @@ test("JSONL buffers partial UTF-8 lines and invalidates replaced file state",()=
   await reader.scan(path,row=>rows.push(row),()=>resets++);assert.equal(rows[0].text,"你好🙂");
   await writeFile(path,'{"text":"new"}\n');await reader.scan(path,row=>rows.push(row),()=>resets++);
   assert.equal(rows.at(-1).text,"new");assert.ok(resets>=2);
+}));
+test("a transient read failure keeps the JSONL position instead of reading the window again",()=>temporary(async root=>{
+  const path=join(root,"model.jsonl");await writeFile(path,'{"n":1}\n');
+  let busy=false;const opener=(...args)=>busy?Promise.reject(Object.assign(new Error("busy"),{code:"EBUSY"})):open(...args);
+  const reader=new JsonlTail(opener);const rows=[];let resets=0;
+  await reader.scan(path,row=>rows.push(row),()=>resets++);
+  busy=true;const failed=await reader.scan(path,row=>rows.push(row),()=>resets++);busy=false;
+  assert.equal(failed.available,false);assert.equal(failed.code,"file_unavailable");
+  await appendFile(path,'{"n":2}\n');const after=await reader.scan(path,row=>rows.push(row),()=>resets++);
+  assert.deepEqual(rows.map(x=>x.n),[1,2]);assert.equal(resets,1);assert.equal(after.generation,1);
+  await rm(path);assert.equal((await reader.scan(path,()=>{})).code,"trajectory_missing");
+  await writeFile(path,'{"n":3}\n');await reader.scan(path,row=>rows.push(row),()=>resets++);assert.equal(resets,2);
 }));
 test("malformed complete rows are marked; unfinished rows are not",()=>temporary(async root=>{
   const path=join(root,"model.jsonl");await writeFile(path,'bad json\n{"text":"unfinished"');

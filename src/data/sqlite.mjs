@@ -5,6 +5,11 @@ import { normalizeFact } from "../domain/usage.mjs";
 const FIELDS = ["id", "logical_request_id", "session_id", "turn_id", "trace_id", "query_source", "provider_id", "model_id",
   "status", "started_at", "duration_ms", "time_to_first_token_ms", "input_tokens", "output_tokens", "reasoning_tokens",
   "cache_creation_input_tokens", "cache_read_input_tokens", "provider_total_tokens", "computed_total_tokens", "retry_count", "raw_usage_json"];
+// Busy and other open or I/O failures (a backup holding the file, say) are transient; a missing file or an
+// unsupported schema is not.
+export const classifyDbError = error => error.code === "ENOENT" ? "database_missing"
+  : error.code === "SQLITE_BUSY" || /locked|busy/i.test(error.message) ? "database_busy"
+  : error instanceof ContextError ? error.code : "database_unavailable";
 export function readUsage(dbPath, sessionId, now = Date.now()) {
   let db;
   try {
@@ -71,7 +76,7 @@ export function readUsage(dbPath, sessionId, now = Date.now()) {
       windowDays: 30, timelineLimited: Number(aggregate.requestCount ?? 0) > facts.length };
   } catch (error) {
     if (db) { try { db.exec("ROLLBACK"); } catch {} }
-    const code = error.code === "ENOENT" ? "database_missing" : error.code === "SQLITE_BUSY" || /locked|busy/i.test(error.message) ? "database_busy" : error instanceof ContextError ? error.code : "database_unavailable";
+    const code = classifyDbError(error);
     return { available: false, code, facts: [], days: [], totals: null, windowDays: 30 };
   } finally { db?.close(); }
 }
@@ -87,15 +92,15 @@ export function readToolCalls(dbPath, sessionId) {
       throw new ContextError("schema_unsupported", "This database does not have the supported tool_usage schema.");
     }
     const errors = columns.has("status") ? "sum(CASE WHEN status='error' THEN 1 ELSE 0 END)" : "NULL";
-    const rows = db.prepare("SELECT tool_name AS name, count(*) AS count, " + errors + " AS errorCount FROM tool_usage" +
-      " WHERE session_id=? AND tool_name IS NOT NULL GROUP BY tool_name ORDER BY count DESC, tool_name LIMIT 500").all(sessionId);
+    const fetched = db.prepare("SELECT tool_name AS name, count(*) AS count, " + errors + " AS errorCount FROM tool_usage" +
+      " WHERE session_id=? AND tool_name IS NOT NULL GROUP BY tool_name ORDER BY count DESC, tool_name LIMIT 501").all(sessionId), rows = fetched.slice(0, 500);
     db.exec("COMMIT");
     const byName = Object.create(null);
     for (const row of rows) byName[String(row.name).slice(0, 160)] = { count: Number(row.count), errorCount: row.errorCount == null ? null : Number(row.errorCount) };
-    return { available: true, scope: "session", byName, callCount: rows.reduce((n, row) => n + Number(row.count), 0), truncated: rows.length === 500 };
+    return { available: true, scope: "session", byName, callCount: rows.reduce((n, row) => n + Number(row.count), 0), truncated: fetched.length > 500 };
   } catch (error) {
     if (db) { try { db.exec("ROLLBACK"); } catch {} }
-    const code = error.code === "ENOENT" ? "database_missing" : error.code === "SQLITE_BUSY" || /locked|busy/i.test(error.message) ? "database_busy" : error instanceof ContextError ? error.code : "database_unavailable";
+    const code = classifyDbError(error);
     return { available: false, code, byName: {} };
   } finally { db?.close(); }
 }
