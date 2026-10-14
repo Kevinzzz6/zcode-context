@@ -5,7 +5,7 @@ import { parentPort, workerData } from "node:worker_threads";
 
 // src/data/service.mjs
 import { join } from "node:path";
-import { createHash as createHash2 } from "node:crypto";
+import { createHash as createHash3 } from "node:crypto";
 
 // src/data/sqlite.mjs
 import { DatabaseSync } from "node:sqlite";
@@ -211,257 +211,7 @@ function readToolCalls(dbPath, sessionId) {
 // src/data/conversation.mjs
 import { DatabaseSync as DatabaseSync2 } from "node:sqlite";
 import { statSync as statSync2 } from "node:fs";
-var TEXT_CHARS = 4e3;
-var SAMPLE_CHARS = 400;
-var DETAIL_ROWS = 400;
-var REQUIRED = ["id", "session_id", "time_created", "time_updated", "data"];
-function open(dbPath) {
-  if (!statSync2(dbPath).isFile()) throw new ContextError("database_missing", "Session database is not a regular file.");
-  const db = new DatabaseSync2(dbPath, { readOnly: true });
-  try {
-    db.exec("PRAGMA query_only = ON; PRAGMA busy_timeout = 100; BEGIN");
-    const columns = (table) => new Set(db.prepare("PRAGMA table_info(" + table + ")").all().map((row) => row.name));
-    const message = columns("message"), part = columns("part");
-    if (!REQUIRED.every((key) => message.has(key)) || !REQUIRED.every((key) => part.has(key)) || !part.has("message_id"))
-      throw new ContextError("schema_unsupported", "This database does not have the supported message/part schema.");
-    return { db, sequence: message.has("sequence") ? "sequence" : "NULL" };
-  } catch (error) {
-    try {
-      db.exec("ROLLBACK");
-    } catch {
-    }
-    db.close();
-    throw error;
-  }
-}
-var field = (path) => "CASE WHEN ok THEN json_extract(data,'" + path + "') END";
-var MESSAGE_FIELDS = [
-  "role:$.role",
-  "origin:$.semantics.origin",
-  "kind:$.semantics.kind",
-  "source:$.semantics.source",
-  "visibility:$.semantics.providerVisibility",
-  "synthetic:$.synthetic",
-  "metaSource:$.metadata.source"
-];
-var PART_FIELDS = [
-  "type:$.type",
-  "tool:$.tool",
-  "callId:$.callID",
-  "skill:$.state.input.skill",
-  "toolEnd:$.state.time.end",
-  "synthetic:$.synthetic",
-  "textSource:$.metadata.source",
-  "timelineType:$.timelineType"
-];
-var INJECTED_TEXT = "ok AND json_extract(data,'$.type')='text' AND json_extract(data,'$.synthetic')=1";
-var select = (fields) => fields.map((x) => {
-  const [name, path] = x.split(":");
-  return field(path) + " AS " + name;
-}).join(",");
-function readConversation(dbPath, sessionId, cache = null) {
-  let handle;
-  try {
-    handle = open(dbPath);
-    const { db, sequence } = handle;
-    const stat = (table) => db.prepare("SELECT count(*) AS n, max(time_updated) AS u FROM " + table + " WHERE session_id=?").get(sessionId);
-    const messageStat = stat("message"), partStat = stat("part");
-    const c = cache ?? { messageCursor: -1, partCursor: -1, messageCount: 0, partCount: 0, messages: /* @__PURE__ */ new Map(), parts: /* @__PURE__ */ new Map() };
-    if (c.messageCursor === (messageStat.u ?? -1) && c.partCursor === (partStat.u ?? -1) && c.messageCount === messageStat.n && c.partCount === partStat.n) {
-      db.exec("COMMIT");
-      return { available: true, changed: false, cache: c };
-    }
-    const messages = db.prepare("SELECT id," + sequence + " AS sequence,time_created AS created,time_updated AS updated," + select(MESSAGE_FIELDS) + ",CASE WHEN ok THEN substr(json_extract(data,'$.summary.body'),1," + TEXT_CHARS + ") END AS summary FROM (SELECT *,json_valid(data) AS ok FROM message WHERE session_id=? AND time_updated>=?)").all(sessionId, c.messageCursor);
-    for (const row of messages) c.messages.set(row.id, row);
-    const parts = db.prepare("SELECT id,message_id AS messageId,time_created AS created,time_updated AS updated," + select(PART_FIELDS) + ",CASE WHEN " + INJECTED_TEXT + " THEN substr(json_extract(data,'$.text'),1," + TEXT_CHARS + ") END AS text,CASE WHEN " + INJECTED_TEXT + " THEN length(json_extract(data,'$.text')) END AS textChars,CASE WHEN ok AND json_extract(data,'$.tool')='Skill' THEN length(json_extract(data,'$.state.output')) END AS outputChars,CASE WHEN ok AND json_extract(data,'$.tool')='Skill' THEN substr(json_extract(data,'$.state.output'),1," + SAMPLE_CHARS + ") END AS outputSample,CASE WHEN ok AND json_extract(data,'$.type') IN ('compaction','timeline') THEN data END AS raw FROM (SELECT *,json_valid(data) AS ok FROM part WHERE session_id=? AND time_updated>=?)").all(sessionId, c.partCursor);
-    for (const row of parts) {
-      const keep = row.type === "compaction" || row.type === "timeline" || row.type === "tool" && row.tool === "Skill" || row.type === "text" && row.synthetic === 1;
-      if (keep) c.parts.set(row.id, row);
-      else c.parts.delete(row.id);
-    }
-    if (cache) {
-      const live = (table, ids) => new Set(db.prepare("SELECT t.id FROM " + table + " t JOIN json_each(?) j ON t.id=j.value WHERE t.session_id=?").all(JSON.stringify(ids), sessionId).map((row) => row.id));
-      for (const [table, map] of [["message", c.messages], ["part", c.parts]]) {
-        const found = live(table, [...map.keys()]);
-        for (const id of [...map.keys()]) if (!found.has(id)) map.delete(id);
-      }
-    }
-    db.exec("COMMIT");
-    Object.assign(c, { messageCursor: messageStat.u ?? -1, partCursor: partStat.u ?? -1, messageCount: messageStat.n, partCount: partStat.n });
-    return { available: true, changed: true, cache: c };
-  } catch (error) {
-    if (handle) {
-      try {
-        handle.db.exec("ROLLBACK");
-      } catch {
-      }
-    }
-    return { available: false, code: classifyDbError(error), cache };
-  } finally {
-    handle?.db.close();
-  }
-}
-function activeSequences(db, sessionId) {
-  if (!new Set(db.prepare("PRAGMA table_info(session)").all().map((row) => row.name)).has("revert")) return null;
-  const raw = db.prepare("SELECT revert FROM session WHERE id=?").get(sessionId)?.revert;
-  let revert = null;
-  try {
-    revert = raw == null ? null : JSON.parse(raw);
-  } catch {
-    throw new ContextError("branch_unknown", "The rewind state is unreadable.");
-  }
-  if (!revert?.targetMessageID) return null;
-  const rows = db.prepare("SELECT id,sequence FROM message WHERE session_id=? ORDER BY sequence").all(sessionId);
-  const index = (id) => rows.findIndex((row) => row.id === id), target = index(revert.targetMessageID);
-  const keptIds = Array.isArray(revert.keptMessageIDs) ? new Set(revert.keptMessageIDs) : null;
-  if (!keptIds && target < 0) return null;
-  const kept = keptIds ? rows.filter((row) => keptIds.has(row.id)) : rows.slice(0, target);
-  const cut = revert.branchCutAfterMessageID ? index(revert.branchCutAfterMessageID) : -1, created = revert.createdMessageID ? index(revert.createdMessageID) : -1;
-  const from = revert.branchCutAfterMessageID ? cut < 0 ? rows.length : cut + 1 : created < 0 ? rows.length : created;
-  return new Set([...kept, ...rows.slice(from)].map((row) => row.sequence));
-}
-function readSummarizedMessages(dbPath, sessionId, { after = [], through, summary = null }) {
-  let handle;
-  try {
-    handle = open(dbPath);
-    const { db, sequence } = handle;
-    if (sequence === "NULL") throw new ContextError("schema_unsupported", "Messages have no sequence.");
-    const active = activeSequences(db, sessionId), live = (value) => !active || active.has(value);
-    if (!live(through) || summary != null && !live(summary)) throw new ContextError("rewound_branch", "This compaction is on a rewound branch.");
-    const ids = db.prepare("SELECT id,sequence FROM message WHERE session_id=? AND sequence>? AND sequence<=? ORDER BY sequence").all(sessionId, after.find(live) ?? -1, through).filter((row) => live(row.sequence));
-    const message = db.prepare("SELECT id,sequence," + select(MESSAGE_FIELDS) + " FROM (SELECT *,json_valid(data) AS ok FROM message WHERE session_id=? AND id=?)");
-    const parts = db.prepare("SELECT id,message_id AS messageId,time_created AS created," + select(PART_FIELDS) + ",CASE WHEN ok THEN substr(json_extract(data,'$.text'),1,400) END AS text,CASE WHEN ok THEN length(json_extract(data,'$.text')) END AS textChars,CASE WHEN ok THEN json_extract(data,'$.state.input') END AS input,CASE WHEN ok THEN length(json_extract(data,'$.state.output')) END AS outputChars,CASE WHEN ok THEN substr(json_extract(data,'$.state.output'),1," + SAMPLE_CHARS + ") END AS outputSample FROM (SELECT *,json_valid(data) AS ok FROM part WHERE session_id=? AND message_id=?) ORDER BY created,id");
-    const rows = ids.slice(0, DETAIL_ROWS).map((row) => ({ ...message.get(sessionId, row.id), parts: parts.all(sessionId, row.id) }));
-    db.exec("COMMIT");
-    return { available: true, messages: rows, total: ids.length };
-  } catch (error) {
-    if (handle) {
-      try {
-        handle.db.exec("ROLLBACK");
-      } catch {
-      }
-    }
-    return { available: false, code: classifyDbError(error), messages: [], total: 0 };
-  } finally {
-    handle?.db.close();
-  }
-}
-
-// src/data/jsonl.mjs
-import { open as open2 } from "node:fs/promises";
 import { createHash } from "node:crypto";
-var CHUNK = 128 * 1024;
-var COLD_BYTES = 24 * 1024 * 1024;
-var SCAN_BYTES = 8 * 1024 * 1024;
-var LINE_BYTES = 8 * 1024 * 1024;
-var hash = (value) => createHash("sha256").update(value).digest("hex");
-var JsonlTail = class {
-  offset = 0;
-  pending = Buffer.alloc(0);
-  skipping = false;
-  generation = 0;
-  identity = null;
-  headHash = null;
-  headLength = 0;
-  mtime = 0;
-  missing = false;
-  coverage = [];
-  constructor(openFile = open2) {
-    this.openFile = openFile;
-  }
-  markCoverage(reason) {
-    if (!this.coverage.includes(reason)) this.coverage.push(reason);
-  }
-  reset(state, size, onReset) {
-    this.identity = state;
-    this.offset = Math.max(0, size - COLD_BYTES);
-    this.pending = Buffer.alloc(0);
-    this.skipping = this.offset > 0;
-    this.headHash = null;
-    this.headLength = 0;
-    this.generation++;
-    this.coverage = this.offset > 0 ? ["history_window"] : [];
-    onReset?.();
-  }
-  async scan(path, onRow, onReset, onGap) {
-    let file;
-    try {
-      file = await this.openFile(path, "r");
-      const st = await file.stat();
-      const identity = st.dev + ":" + st.ino;
-      const prefix = Buffer.alloc(this.headLength || Math.min(256, st.size));
-      await file.read(prefix, 0, prefix.length, 0);
-      const changed = this.identity !== identity || st.size < this.offset || this.missing || this.headHash !== null && hash(prefix) !== this.headHash || st.size === this.offset && st.mtimeMs !== this.mtime;
-      if (this.identity === null || changed) this.reset(identity, st.size, onReset);
-      if (this.headHash === null) {
-        this.headLength = Math.min(256, st.size);
-        const head = Buffer.alloc(this.headLength);
-        await file.read(head, 0, head.length, 0);
-        this.headHash = hash(head);
-      }
-      this.missing = false;
-      const stop = Math.min(st.size, this.offset + SCAN_BYTES);
-      while (this.offset < stop) {
-        const buffer = Buffer.alloc(Math.min(CHUNK, stop - this.offset));
-        const { bytesRead } = await file.read(buffer, 0, buffer.length, this.offset);
-        if (!bytesRead) break;
-        let start = 0;
-        const base = this.offset;
-        this.offset += bytesRead;
-        for (let i = 0; i < bytesRead; i++) {
-          if (buffer[i] !== 10) continue;
-          const piece = buffer.subarray(start, i);
-          if (this.skipping) {
-            this.skipping = false;
-            this.pending = Buffer.alloc(0);
-            onGap?.();
-          } else if (this.pending.length + piece.length > LINE_BYTES) {
-            this.markCoverage("oversized_line");
-            this.pending = Buffer.alloc(0);
-            onGap?.();
-          } else {
-            const line = Buffer.concat([this.pending, piece]).toString("utf8").trim();
-            this.pending = Buffer.alloc(0);
-            if (line) {
-              try {
-                const value = JSON.parse(line);
-                if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid row");
-                onRow(value, base + i);
-              } catch {
-                this.markCoverage("malformed_line");
-                onGap?.();
-              }
-            }
-          }
-          start = i + 1;
-        }
-        const rest = buffer.subarray(start, bytesRead);
-        if (!this.skipping) {
-          if (this.pending.length + rest.length > LINE_BYTES) {
-            this.pending = Buffer.alloc(0);
-            this.skipping = true;
-            this.markCoverage("oversized_line");
-            onGap?.();
-          } else this.pending = Buffer.concat([this.pending, rest]);
-        }
-      }
-      this.mtime = st.mtimeMs;
-      return {
-        available: true,
-        scanning: this.offset < st.size,
-        pendingLine: this.pending.length > 0,
-        generation: this.generation,
-        coverage: [...new Set(this.coverage)]
-      };
-    } catch (error) {
-      if (typeof error.code !== "string") console.error("[zcode-context] trajectory scan", error);
-      if (error.code === "ENOENT" || typeof error.code !== "string") this.missing = true;
-      return { available: false, code: error.code === "ENOENT" ? "trajectory_missing" : "file_unavailable", scanning: false, coverage: [...new Set(this.coverage)] };
-    } finally {
-      await file?.close();
-    }
-  }
-};
 
 // src/domain/trajectory.mjs
 var MAX_CONTEXT_CHARS = 24 * 1024 * 1024;
@@ -802,6 +552,291 @@ function textDifference(before, after) {
   return rows;
 }
 
+// src/data/conversation.mjs
+var TEXT_CHARS = 4e3;
+var SAMPLE_CHARS = 400;
+var DETAIL_ROWS = 400;
+var VERIFY_CHARS = 2 * 1024 * 1024;
+var REQUIRED = ["id", "session_id", "time_created", "time_updated", "data"];
+function open(dbPath) {
+  if (!statSync2(dbPath).isFile()) throw new ContextError("database_missing", "Session database is not a regular file.");
+  const db = new DatabaseSync2(dbPath, { readOnly: true });
+  try {
+    db.exec("PRAGMA query_only = ON; PRAGMA busy_timeout = 100; BEGIN");
+    const columns = (table) => new Set(db.prepare("PRAGMA table_info(" + table + ")").all().map((row) => row.name));
+    const message = columns("message"), part = columns("part");
+    if (!REQUIRED.every((key) => message.has(key)) || !REQUIRED.every((key) => part.has(key)) || !part.has("message_id"))
+      throw new ContextError("schema_unsupported", "This database does not have the supported message/part schema.");
+    return { db, sequence: message.has("sequence") ? "sequence" : "NULL" };
+  } catch (error) {
+    try {
+      db.exec("ROLLBACK");
+    } catch {
+    }
+    db.close();
+    throw error;
+  }
+}
+var field = (path) => "CASE WHEN ok THEN json_extract(data,'" + path + "') END";
+var MESSAGE_FIELDS = [
+  "role:$.role",
+  "origin:$.semantics.origin",
+  "kind:$.semantics.kind",
+  "source:$.semantics.source",
+  "visibility:$.semantics.providerVisibility",
+  "synthetic:$.synthetic",
+  "metaSource:$.metadata.source"
+];
+var PART_FIELDS = [
+  "type:$.type",
+  "tool:$.tool",
+  "callId:$.callID",
+  "skill:$.state.input.skill",
+  "toolEnd:$.state.time.end",
+  "synthetic:$.synthetic",
+  "textSource:$.metadata.source",
+  "timelineType:$.timelineType"
+];
+var INJECTED_TEXT = "ok AND json_extract(data,'$.type')='text' AND json_extract(data,'$.synthetic')=1";
+var select = (fields) => fields.map((x) => {
+  const [name, path] = x.split(":");
+  return field(path) + " AS " + name;
+}).join(",");
+var fresh = () => ({ messageCursor: -1, partCursor: -1, messageCount: 0, partCount: 0, messages: /* @__PURE__ */ new Map(), parts: /* @__PURE__ */ new Map(), partIds: /* @__PURE__ */ new Set() });
+var fingerprint = (text) => {
+  const value = text.trim();
+  return { prefix: value.slice(0, 1e3), chars: value.length, hash: createHash("sha256").update(value).digest("hex") };
+};
+function readConversation(dbPath, sessionId, cache = null) {
+  let handle;
+  try {
+    handle = open(dbPath);
+    const { db, sequence } = handle;
+    const stat = (table) => db.prepare("SELECT count(*) AS n, max(time_updated) AS u FROM " + table + " WHERE session_id=?").get(sessionId);
+    const messageStat = stat("message"), partStat = stat("part");
+    let c = cache?.partIds && (messageStat.u ?? -1) >= cache.messageCursor && (partStat.u ?? -1) >= cache.partCursor ? cache : fresh();
+    if (c.messageCursor === (messageStat.u ?? -1) && c.partCursor === (partStat.u ?? -1) && c.messageCount === messageStat.n && c.partCount === partStat.n) {
+      db.exec("COMMIT");
+      return { available: true, changed: false, cache: c };
+    }
+    const messages = db.prepare("SELECT id," + sequence + " AS sequence,time_created AS created,time_updated AS updated," + select(MESSAGE_FIELDS) + ",CASE WHEN ok THEN substr(json_extract(data,'$.summary.body'),1," + TEXT_CHARS + ") END AS summary FROM (SELECT *,json_valid(data) AS ok FROM message WHERE session_id=? AND time_updated>=?)");
+    const parts = db.prepare("SELECT id,message_id AS messageId,time_created AS created,time_updated AS updated," + select(PART_FIELDS) + ",CASE WHEN " + INJECTED_TEXT + " THEN substr(json_extract(data,'$.text'),1," + TEXT_CHARS + ") END AS text,CASE WHEN " + INJECTED_TEXT + " THEN length(json_extract(data,'$.text')) END AS textChars,CASE WHEN ok AND json_extract(data,'$.tool')='Skill' THEN length(json_extract(data,'$.state.output')) END AS outputChars,CASE WHEN ok AND json_extract(data,'$.tool')='Skill' THEN substr(json_extract(data,'$.state.output'),1," + SAMPLE_CHARS + ") END AS outputSample,CASE WHEN ok AND json_extract(data,'$.type') IN ('compaction','timeline') THEN data END AS raw FROM (SELECT *,json_valid(data) AS ok FROM part WHERE session_id=? AND time_updated>=?)");
+    const fullText = db.prepare("SELECT json_extract(data,'$.text') AS text FROM part WHERE session_id=? AND id=?");
+    const ingest = (c2) => {
+      for (const row of messages.all(sessionId, c2.messageCursor)) c2.messages.set(row.id, row);
+      for (const row of parts.all(sessionId, c2.partCursor)) {
+        c2.partIds.add(row.id);
+        const keep = row.type === "compaction" || row.type === "timeline" || row.type === "tool" && row.tool === "Skill" || row.type === "text" && row.synthetic === 1;
+        if (!keep) {
+          c2.parts.delete(row.id);
+          continue;
+        }
+        row.truncated = row.type === "text" && row.textChars > TEXT_CHARS;
+        if (row.truncated)
+          row.verify = row.textChars <= VERIFY_CHARS ? fingerprint(String(fullText.get(sessionId, row.id)?.text ?? "")) : null;
+        c2.parts.set(row.id, row);
+      }
+    };
+    ingest(c);
+    if (c.messages.size !== messageStat.n || c.partIds.size !== partStat.n) {
+      const ids = (table) => new Set(db.prepare("SELECT id FROM " + table + " WHERE session_id=?").all(sessionId).map((row) => row.id));
+      const liveMessages = ids("message"), liveParts = ids("part");
+      if ([...liveMessages].some((id) => !c.messages.has(id)) || [...liveParts].some((id) => !c.partIds.has(id))) {
+        c = fresh();
+        ingest(c);
+      } else {
+        for (const id of [...c.messages.keys()]) if (!liveMessages.has(id)) c.messages.delete(id);
+        for (const id of [...c.partIds]) if (!liveParts.has(id)) {
+          c.partIds.delete(id);
+          c.parts.delete(id);
+        }
+      }
+    }
+    db.exec("COMMIT");
+    Object.assign(c, { messageCursor: messageStat.u ?? -1, partCursor: partStat.u ?? -1, messageCount: messageStat.n, partCount: partStat.n });
+    return { available: true, changed: true, cache: c };
+  } catch (error) {
+    if (handle) {
+      try {
+        handle.db.exec("ROLLBACK");
+      } catch {
+      }
+    }
+    return { available: false, code: classifyDbError(error), cache };
+  } finally {
+    handle?.db.close();
+  }
+}
+function activeSequences(db, sessionId) {
+  if (!new Set(db.prepare("PRAGMA table_info(session)").all().map((row) => row.name)).has("revert")) return null;
+  const raw = db.prepare("SELECT revert FROM session WHERE id=?").get(sessionId)?.revert;
+  let revert = null;
+  try {
+    revert = raw == null ? null : JSON.parse(raw);
+  } catch {
+    throw new ContextError("branch_unknown", "The rewind state is unreadable.");
+  }
+  if (!revert?.targetMessageID) return null;
+  const rows = db.prepare("SELECT id,sequence FROM message WHERE session_id=? ORDER BY sequence").all(sessionId);
+  const index = (id) => rows.findIndex((row) => row.id === id), target = index(revert.targetMessageID);
+  const keptIds = Array.isArray(revert.keptMessageIDs) ? new Set(revert.keptMessageIDs) : null;
+  if (!keptIds && target < 0) return null;
+  const kept = keptIds ? rows.filter((row) => keptIds.has(row.id)) : rows.slice(0, target);
+  const cut = revert.branchCutAfterMessageID ? index(revert.branchCutAfterMessageID) : -1, created = revert.createdMessageID ? index(revert.createdMessageID) : -1;
+  const from = revert.branchCutAfterMessageID ? cut < 0 ? rows.length : cut + 1 : created < 0 ? rows.length : created;
+  return new Set([...kept, ...rows.slice(from)].map((row) => row.sequence));
+}
+function readSummarizedMessages(dbPath, sessionId, { after = [], through, summary = null }) {
+  let handle;
+  try {
+    handle = open(dbPath);
+    const { db, sequence } = handle;
+    if (sequence === "NULL") throw new ContextError("schema_unsupported", "Messages have no sequence.");
+    const active = activeSequences(db, sessionId), live = (value) => !active || active.has(value);
+    if (!live(through) || summary != null && !live(summary)) throw new ContextError("rewound_branch", "This compaction is on a rewound branch.");
+    const ids = db.prepare("SELECT id,sequence FROM message WHERE session_id=? AND sequence>? AND sequence<=? ORDER BY sequence").all(sessionId, after.find(live) ?? -1, through).filter((row) => live(row.sequence));
+    const message = db.prepare("SELECT id,sequence," + select(MESSAGE_FIELDS) + " FROM (SELECT *,json_valid(data) AS ok FROM message WHERE session_id=? AND id=?)");
+    const parts = db.prepare("SELECT id,message_id AS messageId,time_created AS created," + select(PART_FIELDS) + ",CASE WHEN ok THEN substr(json_extract(data,'$.text'),1,400) END AS text,CASE WHEN ok THEN length(json_extract(data,'$.text')) END AS textChars,CASE WHEN ok THEN length(json_extract(data,'$.state.input')) END AS inputChars,CASE WHEN ok THEN substr(json_extract(data,'$.state.input'),1," + SAMPLE_CHARS + ") END AS inputSample," + SUMMARY_KEYS.map((key) => "CASE WHEN ok AND json_type(data,'$.state.input." + key + "')='text' THEN substr(json_extract(data,'$.state.input." + key + "'),1,160) END AS in_" + key).join(",") + ",CASE WHEN ok THEN length(json_extract(data,'$.state.output')) END AS outputChars,CASE WHEN ok THEN substr(json_extract(data,'$.state.output'),1," + SAMPLE_CHARS + ") END AS outputSample FROM (SELECT *,json_valid(data) AS ok FROM part WHERE session_id=? AND message_id=?) ORDER BY created,id");
+    const bounded = (part) => {
+      const inputFields = {};
+      for (const key of SUMMARY_KEYS) {
+        if (part["in_" + key] != null) inputFields[key] = part["in_" + key];
+        delete part["in_" + key];
+      }
+      return { ...part, inputFields };
+    };
+    const rows = ids.slice(0, DETAIL_ROWS).map((row) => ({ ...message.get(sessionId, row.id), parts: parts.all(sessionId, row.id).map(bounded) }));
+    db.exec("COMMIT");
+    return { available: true, messages: rows, total: ids.length };
+  } catch (error) {
+    if (handle) {
+      try {
+        handle.db.exec("ROLLBACK");
+      } catch {
+      }
+    }
+    return { available: false, code: classifyDbError(error), messages: [], total: 0 };
+  } finally {
+    handle?.db.close();
+  }
+}
+
+// src/data/jsonl.mjs
+import { open as open2 } from "node:fs/promises";
+import { createHash as createHash2 } from "node:crypto";
+var CHUNK = 128 * 1024;
+var COLD_BYTES = 24 * 1024 * 1024;
+var SCAN_BYTES = 8 * 1024 * 1024;
+var LINE_BYTES = 8 * 1024 * 1024;
+var hash = (value) => createHash2("sha256").update(value).digest("hex");
+var JsonlTail = class {
+  offset = 0;
+  pending = Buffer.alloc(0);
+  skipping = false;
+  generation = 0;
+  identity = null;
+  headHash = null;
+  headLength = 0;
+  mtime = 0;
+  missing = false;
+  coverage = [];
+  constructor(openFile = open2) {
+    this.openFile = openFile;
+  }
+  markCoverage(reason) {
+    if (!this.coverage.includes(reason)) this.coverage.push(reason);
+  }
+  reset(state, size, onReset) {
+    this.identity = state;
+    this.offset = Math.max(0, size - COLD_BYTES);
+    this.pending = Buffer.alloc(0);
+    this.skipping = this.offset > 0;
+    this.headHash = null;
+    this.headLength = 0;
+    this.generation++;
+    this.coverage = this.offset > 0 ? ["history_window"] : [];
+    onReset?.();
+  }
+  async scan(path, onRow, onReset, onGap) {
+    let file;
+    try {
+      file = await this.openFile(path, "r");
+      const st = await file.stat();
+      const identity = st.dev + ":" + st.ino;
+      const prefix = Buffer.alloc(this.headLength || Math.min(256, st.size));
+      await file.read(prefix, 0, prefix.length, 0);
+      const changed = this.identity !== identity || st.size < this.offset || this.missing || this.headHash !== null && hash(prefix) !== this.headHash || st.size === this.offset && st.mtimeMs !== this.mtime;
+      if (this.identity === null || changed) this.reset(identity, st.size, onReset);
+      if (this.headHash === null) {
+        this.headLength = Math.min(256, st.size);
+        const head = Buffer.alloc(this.headLength);
+        await file.read(head, 0, head.length, 0);
+        this.headHash = hash(head);
+      }
+      this.missing = false;
+      const stop = Math.min(st.size, this.offset + SCAN_BYTES);
+      while (this.offset < stop) {
+        const buffer = Buffer.alloc(Math.min(CHUNK, stop - this.offset));
+        const { bytesRead } = await file.read(buffer, 0, buffer.length, this.offset);
+        if (!bytesRead) break;
+        let start = 0;
+        const base = this.offset;
+        this.offset += bytesRead;
+        for (let i = 0; i < bytesRead; i++) {
+          if (buffer[i] !== 10) continue;
+          const piece = buffer.subarray(start, i);
+          if (this.skipping) {
+            this.skipping = false;
+            this.pending = Buffer.alloc(0);
+            onGap?.();
+          } else if (this.pending.length + piece.length > LINE_BYTES) {
+            this.markCoverage("oversized_line");
+            this.pending = Buffer.alloc(0);
+            onGap?.();
+          } else {
+            const line = Buffer.concat([this.pending, piece]).toString("utf8").trim();
+            this.pending = Buffer.alloc(0);
+            if (line) {
+              try {
+                const value = JSON.parse(line);
+                if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid row");
+                onRow(value, base + i);
+              } catch {
+                this.markCoverage("malformed_line");
+                onGap?.();
+              }
+            }
+          }
+          start = i + 1;
+        }
+        const rest = buffer.subarray(start, bytesRead);
+        if (!this.skipping) {
+          if (this.pending.length + rest.length > LINE_BYTES) {
+            this.pending = Buffer.alloc(0);
+            this.skipping = true;
+            this.markCoverage("oversized_line");
+            onGap?.();
+          } else this.pending = Buffer.concat([this.pending, rest]);
+        }
+      }
+      this.mtime = st.mtimeMs;
+      return {
+        available: true,
+        scanning: this.offset < st.size,
+        pendingLine: this.pending.length > 0,
+        generation: this.generation,
+        coverage: [...new Set(this.coverage)]
+      };
+    } catch (error) {
+      if (typeof error.code !== "string") console.error("[zcode-context] trajectory scan", error);
+      if (error.code === "ENOENT" || typeof error.code !== "string") this.missing = true;
+      return { available: false, code: error.code === "ENOENT" ? "trajectory_missing" : "file_unavailable", scanning: false, coverage: [...new Set(this.coverage)] };
+    } finally {
+      await file?.close();
+    }
+  }
+};
+
 // src/domain/events.mjs
 var COMPACT = /* @__PURE__ */ new Set([
   "compact.started",
@@ -942,7 +977,8 @@ function conversationEvents(cache) {
     if (!injected(m)) continue;
     const text = (texts.get(m.id) ?? []).map((x) => x.text ?? "").join("\n").trim();
     if (!text) continue;
-    const needles = (texts.get(m.id) ?? []).map((x) => (x.text ?? "").trim()).filter(Boolean);
+    const pieces = (texts.get(m.id) ?? []).filter((x) => x.text).map((x) => x.truncated ? x.verify ?? null : { text: x.text.trim() });
+    const needles = pieces.every(Boolean) ? pieces.filter((x) => x.text !== "") : null;
     const chars = (texts.get(m.id) ?? []).reduce((n, x) => n + (x.textChars ?? 0), 0);
     events.push({
       kind: "inject",
@@ -998,12 +1034,8 @@ function summarizedItems(messages) {
       });
       else if (p.type === "reasoning" && p.text) items.push({ role: "reasoning", chip: null, title: firstLine2(p.text), tokens: sampled(p.text, p.textChars) });
       else if (p.type === "tool") {
-        let input = null;
-        try {
-          input = p.input == null ? null : JSON.parse(p.input);
-        } catch {
-        }
-        items.push({ role: "tool", chip: p.tool ?? null, title: inputSummary(input) ?? "", tokens: estimateTokens(p.input ?? "") + sampled(p.outputSample, p.outputChars) });
+        const title = inputSummary(p.inputFields ?? {}) ?? inputSummary(p.inputSample) ?? "";
+        items.push({ role: "tool", chip: p.tool ?? null, title, tokens: sampled(p.inputSample, p.inputChars) + sampled(p.outputSample, p.outputChars) });
       }
     }
   }
@@ -1018,7 +1050,14 @@ function combineEvents(recorded, logged) {
 }
 
 // src/data/service.mjs
-var digest = (value) => createHash2("sha256").update(value).digest("hex").slice(0, 24);
+var digest = (value) => createHash3("sha256").update(value).digest("hex").slice(0, 24);
+var sha = (value) => createHash3("sha256").update(value).digest("hex");
+function contains(readable, needle) {
+  if (needle.text !== void 0) return readable.includes(needle.text);
+  for (let at = readable.indexOf(needle.prefix); at !== -1; at = readable.indexOf(needle.prefix, at + 1))
+    if (sha(readable.slice(at, at + needle.chars)) === needle.hash) return true;
+  return false;
+}
 var MAX_CACHE_CHARS = 32 * 1024 * 1024;
 var TRUNCATED = ["history_window", "display_window", "history_reset", "source_rotated"];
 function groupByRole(items, limit = 40) {
@@ -1076,7 +1115,7 @@ var ContextDataService = class {
       const path = join(directory, "model-io-" + sanitizeSessionSegment(sessionId) + ".jsonl");
       let ledger = state.ledgers.get(path);
       if (!ledger) {
-        ledger = { tail: new JsonlTail(), previous: null, records: /* @__PURE__ */ new Map(), chars: 0, segment: 0, steps: 0, turns: /* @__PURE__ */ new Map() };
+        ledger = { tail: new JsonlTail(), previous: null, records: /* @__PURE__ */ new Map(), chars: 0, segment: 0, baseSegment: null, steps: 0, turns: /* @__PURE__ */ new Map() };
         state.ledgers.set(path, ledger);
       }
       const status = await ledger.tail.scan(path, (raw, offset) => {
@@ -1105,7 +1144,7 @@ var ContextDataService = class {
         if (agent && record.turnId && !ledger.turns.has(record.turnId)) ledger.turns.set(record.turnId, ledger.turns.size + 1);
         summary.step = agent ? ++ledger.steps : null;
         summary.turn = record.turnId ? ledger.turns.get(record.turnId) ?? null : null;
-        ledger.records.set(key, { key, record, chars, path, offset, segment: ledger.segment, summary });
+        ledger.records.set(key, { key, record, chars, path, offset, segment: ledger.segment, fromStart: ledger.segment === ledger.baseSegment, summary });
         ledger.chars += chars;
         ledger.previous = record;
         while (ledger.records.size > 120 || ledger.chars > MAX_CACHE_CHARS) {
@@ -1120,6 +1159,7 @@ var ContextDataService = class {
         ledger.records.clear();
         ledger.chars = 0;
         ledger.segment++;
+        ledger.baseSegment = ledger.segment;
         ledger.steps = 0;
         ledger.turns.clear();
       }, () => {
@@ -1276,16 +1316,20 @@ var ContextDataService = class {
   // An injected message is first sent with the next agent request; it is found there by tool-call id or by its exact text,
   // the newest occurrence, since reminders repeat. When that request is not readable, or does not contain it, the event keeps no step.
   // A request only counts as the first after the event when nothing was skipped since the one before: same file and segment.
+  // The earliest readable request counts only when its file was read from the start without a gap or eviction.
+  // A result is reused while each file's earliest agent request is the same and the step it names is still cached.
   locate(state, records, event, complete) {
-    const agents = records.filter((x) => x.summary.step != null), first = agents[0]?.key ?? null, memo = state.targets.get(event.id);
-    if (memo && memo.first === first) return { ...event, ...memo.target };
+    const agents = records.filter((x) => x.summary.step != null), firsts = /* @__PURE__ */ new Map();
+    for (const x of agents) if (!firsts.has(x.path)) firsts.set(x.path, x.key);
+    const first = [...firsts.values()].join(","), memo = state.targets.get(event.id);
+    if (memo && memo.first === first && (!memo.target.stepKey || agents.some((x) => x.key === memo.target.stepKey))) return { ...event, ...memo.target };
     const index = agents.findIndex((x) => x.record.startedAt >= event.timestamp);
     if (index < 0) return { ...event, stepKey: null, elementKey: null, elementRole: null };
     let target = { stepKey: null, elementKey: null, elementRole: null };
     const record = agents[index], prior = agents[index - 1];
-    if (prior ? prior.path === record.path && prior.segment === record.segment : complete) {
+    if (prior ? prior.path === record.path && prior.segment === record.segment : complete && record.fromStart) {
       const elements = inputElements(record.record);
-      const element = event.toolCallId ? elements.find((x) => x.toolCallId === event.toolCallId) : event.needles?.length ? elements.findLast((x) => x.key.startsWith("message:") && event.needles.every((n) => x.readable.includes(n))) : null;
+      const element = event.toolCallId ? elements.find((x) => x.toolCallId === event.toolCallId) : event.needles?.length ? elements.findLast((x) => x.key.startsWith("message:") && event.needles.every((n) => contains(x.readable, n))) : null;
       if (element) target = { stepKey: record.key, elementKey: element.key, elementRole: element.role };
     }
     state.targets.set(event.id, { first, target });
