@@ -4,7 +4,7 @@ import { translator, ORDER } from "./i18n.mjs";
 import { renderApp, isAgent, CHUNK, layoutTrend, highlight, anchors, olderUnloaded, BOUNDARY, eventId, expandedRoles } from "./components.mjs";
 import { demoCall } from "./demo.mjs";
 const root=document.getElementById("root");
-const INFO={name:"zcode-context",version:"0.3.6"};
+const INFO={name:"zcode-context",version:"0.3.7"};
 const demo=new URLSearchParams(location.search).get("demo")==="1";
 let app=null,t=translator(),view=initialView(),boundSession=null,overview=null,items=[],hasOlder=false,historyPage=0;
 let detail=null,content=null,more={},notice=null,busy=false,activeLoads=0;

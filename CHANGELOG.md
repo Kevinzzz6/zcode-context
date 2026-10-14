@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.7 — 2026-10-14
 
 - The context browser follows one set of rules. What it shows is fixed by the step, the baseline, the set (All or Changes) and the filter, and each control changes only its own: picking a step, a category, the legend or an In item no longer resets the filter or the set. The rules are written down in docs/decisions.md.
 - Every number a category header can open is the number it lists. `m / n items` and the `+N −N` badges count the current filter; the size, share and token change on the right always describe the whole request. A `+3` on user messages could open a single, older message while a filter was active; it now reads `+0` (no badge), and the Changes toggle counts the same way, with the unfiltered total in its tooltip. The counts come from one server structure (`listing`) instead of six fields picked in the panel; `searchAddedGroups`, `searchRemovedGroups` and `arrivals.searchGroups` are gone.
