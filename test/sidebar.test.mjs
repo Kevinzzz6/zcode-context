@@ -163,6 +163,20 @@ test("tail records keep the declared message total and user previews drop inject
 // Production records keep only the newest messages: messagesKind "tail" with an absolute messageOffset.
 const tail=(id,all,keep,extra={})=>modelRecord("sess_A",id,[],{...extra,request:{messages:all.slice(-keep),messagesKind:"tail",messageOffset:all.length-keep,messageCount:all.length,...extra.request}});
 const tool=(name,size)=>({type:"function",function:{name,description:name+" "+"d".repeat(size),parameters:{type:"object"}}});
+// ZCode's default writer follows a tail with deltas against its untrimmed previous request.
+test("deltas after a tail keep the tail's recorded messages, still partial",()=>{
+  const history=Array.from({length:100},(_,i)=>({role:i%2?"assistant":"user",content:"m"+i}));
+  const next={role:"user",content:"m100"};
+  return fixture([tail("r1",history,64),
+    modelRecord("sess_A","r2",[],{request:{messages:[next],messagesKind:"delta",messageOffset:100,messageCount:101}}),
+    modelRecord("sess_A","r3",[],{request:{messages:[],messagesKind:"delta",messageOffset:101,messageCount:101}})],async(service,o)=>{
+    const [,second,third]=o.trajectories;
+    assert.equal(second.complete,false);assert.equal(second.messageCount,65);assert.equal(third.messageCount,65);
+    const d=await service.request("sess_A",{key:third.key});
+    assert.equal(d.elementCount,65);assert.equal(d.diff.available,false);
+    const last=await service.request("sess_A",{key:third.key,elementKey:"message:64"});assert.equal(last.content.text,"m100");
+  });
+});
 test("schema call counts come from session tool_usage, not the tail of recorded messages",()=>{
   const tools=[tool("Read",400),tool("Grep",100),tool("Write",300),tool("Unused",200)];
   const history=[{role:"system",content:"rules"},...Array.from({length:20},(_,i)=>({role:"user",content:"m"+i}))];
@@ -207,7 +221,9 @@ test("collections report the absolute offset of their first recorded item",()=>{
   const full=expandCollection([1,2,3],"full",0,3);assert.equal(full.offset,0);
   assert.equal(expandCollection([4,5],"tail",3,5).offset,3);assert.equal(expandCollection([4,5],"tail",undefined,5).offset,null);
   assert.equal(expandCollection([4],"delta",3,4,full).offset,0);assert.equal(expandCollection([4],"delta",3,4,full).items.length,4);
-  const partial=expandCollection([4,5],"tail",3,5);assert.equal(expandCollection([6],"delta",5,6,partial).offset,5);
+  const partial=expandCollection([4,5],"tail",3,5),continued=expandCollection([6],"delta",5,6,partial);
+  assert.equal(continued.offset,3);assert.deepEqual(continued.items,[4,5,6]);assert.equal(continued.complete,false);assert.equal(continued.reason,"tail");
+  const gap=expandCollection([9],"delta",8,9,partial);assert.equal(gap.offset,8);assert.deepEqual(gap.items,[9]);assert.equal(gap.reason,"missing_baseline");
   assert.equal(expandCollection([1],"weird",0,1).offset,null);
   assert.equal(foldRecord(tail("r",[1,2,3,4].map(n=>({role:"user",content:String(n)})),2)).messages.offset,2);
 });
@@ -224,7 +240,7 @@ test("entry stamps follow absolute indices across tail and delta records, includ
     assert.deepEqual(stamps(await service.request("sess_A",{key:keys[3]})),{0:"S3T2",1:"S4T2",2:"S4T2"});
     assert.deepEqual(stamps(await service.request("sess_A",{key:keys[1]})),{0:"before:S1",1:"S2T1",2:"S2T1"});
     assert.deepEqual(stamps(await service.request("sess_A",{key:keys[0]})),{0:"before:S1",1:"before:S1",2:"before:S1"});
-    assert.deepEqual(stamps(await service.request("sess_A",{key:keys[4]})),{0:"S5T2"});
+    assert.deepEqual(stamps(await service.request("sess_A",{key:keys[4]})),{0:"S3T2",1:"S4T2",2:"S4T2",3:"S5T2"});
     const d=await service.request("sess_A",{key:keys[3],search:"identical"});
     assert.deepEqual(d.elements.map(x=>x.entered.step),[3,4]);
   }));

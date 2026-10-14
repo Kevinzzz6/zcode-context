@@ -33,11 +33,16 @@ export function expandCollection(items, kind, offset, count, previous) {
   if (kind !== undefined && !["full","delta","tail"].includes(kind)) return { items, offset: null, complete: false, reason: "unsupported_encoding" };
   if (kind === "tail") return { items, offset: at, complete: offset === 0 && (count == null || count === items.length), reason: "tail" };
   if (kind === "delta") {
-    if (at === null || !previous?.complete || previous.items.length < offset) {
-      return { items, offset: at, complete: false, reason: "missing_baseline" };
+    if (at !== null && previous?.complete && previous.items.length >= offset) {
+      const expanded = previous.items.slice(0, offset).concat(items);
+      return { items: expanded, offset: 0, complete: count == null || expanded.length === count, reason: count == null || expanded.length === count ? null : "count_mismatch" };
     }
-    const expanded = previous.items.slice(0, offset).concat(items);
-    return { items: expanded, offset: 0, complete: count == null || expanded.length === count, reason: count == null || expanded.length === count ? null : "count_mismatch" };
+    // ZCode writes a delta against its own untrimmed previous request, so a delta after a tail continues the tail's
+    // recorded range. The earlier prefix stays unknown: the result keeps the tail's offset and is never complete.
+    const start = previous?.offset;
+    if (at !== null && Number.isInteger(start) && start <= at && start + previous.items.length >= at)
+      return { items: previous.items.slice(0, at - start).concat(items), offset: start, complete: false, reason: previous.reason ?? "missing_baseline" };
+    return { items, offset: at, complete: false, reason: "missing_baseline" };
   }
   return { items, offset: 0, complete: count == null || items.length === count, reason: count == null || items.length === count ? null : "count_mismatch" };
 }
