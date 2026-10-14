@@ -183,20 +183,22 @@ export class ContextDataService {
     const all=combineEvents(state.recorded,mergeEvents(state.events.values()));
     const kept=[...all.filter(e=>e.kind==="inject").slice(-150),...all.filter(e=>e.kind!=="inject").slice(-60)].sort((a,b)=>a.timestamp-b.timestamp);
     while(state.targets.size>400)state.targets.delete(state.targets.keys().next().value);
-    return kept.map(e=>e.kind==="inject"?this.locate(state,records,e,complete):this.eventNavigation(records,e)).map(({needle,...e})=>e);
+    return kept.map(e=>e.kind==="inject"?this.locate(state,records,e,complete):this.eventNavigation(records,e)).map(({needles,...e})=>e);
   }
   // An injected message is first sent with the next agent request; it is found there by tool-call id or by its exact text,
   // the newest occurrence, since reminders repeat. When that request is not readable, or does not contain it, the event keeps no step.
+  // A request only counts as the first after the event when nothing was skipped since the one before: same file and segment.
   locate(state,records,event,complete) {
     const agents=records.filter(x=>x.summary.step!=null),first=agents[0]?.key??null,memo=state.targets.get(event.id);
     if(memo&&memo.first===first)return {...event,...memo.target};
     const index=agents.findIndex(x=>x.record.startedAt>=event.timestamp);
     if(index<0)return {...event,stepKey:null,elementKey:null,elementRole:null};
     let target={stepKey:null,elementKey:null,elementRole:null};
-    if(index>0||complete) {
-      const record=agents[index],elements=inputElements(record.record);
+    const record=agents[index],prior=agents[index-1];
+    if(prior?prior.path===record.path&&prior.segment===record.segment:complete) {
+      const elements=inputElements(record.record);
       const element=event.toolCallId?elements.find(x=>x.toolCallId===event.toolCallId)
-        :event.needle?elements.findLast(x=>x.key.startsWith("message:")&&x.readable.includes(event.needle)):null;
+        :event.needles?.length?elements.findLast(x=>x.key.startsWith("message:")&&event.needles.every(n=>x.readable.includes(n))):null;
       if(element)target={stepKey:record.key,elementKey:element.key,elementRole:element.role};
     }
     state.targets.set(event.id,{first,target});

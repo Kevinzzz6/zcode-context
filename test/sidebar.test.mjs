@@ -296,6 +296,24 @@ test("the element being opened stays in its category's first page",()=>fixture([
     assert.ok(!plain.groups.tool.items.some(x=>x.key==="message:59"));
     const d=await service.request("sess_A",{key,focusKey:"message:59"});assert.ok(d.groups.tool.items.some(x=>x.key==="message:59"));
   }));
+test("reminders sharing a long opening are located by their own text, and a skipped record leaves them unlocated",()=>{
+  const now=Date.now(),at=ms=>new Date(now+ms).toISOString(),opening="The TodoWrite tool hasn't been used recently. ".repeat(10);
+  const a=opening+"Todos: [alpha]",b=opening+"Todos: [beta]",c=opening+"Todos: [gamma]";
+  return fixture([
+    modelRecord("sess_A","r0",[{role:"user",content:"start"}],{startedAt:at(-9000)}),
+    modelRecord("sess_A","r1",[{role:"user",content:"start"},{role:"user",content:a},{role:"user",content:b}],{startedAt:at(-6000)}),
+    "{not json",
+    modelRecord("sess_A","r2",[{role:"user",content:"start"},{role:"user",content:a},{role:"user",content:b},{role:"user",content:c}],{startedAt:at(-2000)})],
+    async(service,o)=>{
+      const find=id=>o.events.find(e=>e.id===id);
+      assert.equal(find("m:ra").stepKey,o.trajectories[1].key);assert.equal(find("m:ra").elementKey,"message:1");
+      assert.equal(find("m:rb").elementKey,"message:2");
+      // The first request after gamma may have been the malformed line, so it is not pinned to r2.
+      assert.equal(find("m:rc").stepKey,null);
+    },[],null,store=>{
+      store.reminder("sess_A","ra",now-7000,a);store.reminder("sess_A","rb",now-6500,b);store.reminder("sess_A","rc",now-4000,c);
+    });
+});
 test("recorded injections are matched to the item of the first agent request that carried them",()=>{
   const now=Date.now(),at=ms=>new Date(now+ms).toISOString(),reminder="The TodoWrite tool hasn't been used recently.";
   return fixture([
