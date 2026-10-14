@@ -7,7 +7,7 @@
 - 起因：点「MCP 工具注册」把 `mcp__` 写进了全局搜索框，筛选会跟着切步骤、重开面板一直留着；类别上的 `+3` 取自未筛选的对比，点开却只有筛选后的一条。按第一性原理整理成五条规则，写在 [decisions.md](decisions.md)「上下文浏览器的交互规则」。
 - 服务端 `get_context_request` 新增 `listing`（每类 total / matched / added / removed 及未筛选总数，新增/移除列表已按筛选过滤）、`toolPrefix`（只按工具名匹配 schema）、`noBaseline`（上一轮不存在时不退回上一步）；`focusKey` 指向的项即使不符合筛选也会列出并标 `pinned`。去掉了 `searchAddedGroups` / `searchRemovedGroups` / `arrivals.searchGroups`。
 - 界面新增事件焦点 `view.focus`（`ui/state.mjs` 的 `lens()` 决定实际生效的基线、集合和条件），不保存；`eventKey` 也不再保存。
-- 已通过 `npm run verify`（83 个单元测试）和 SDK 浏览器冒烟 34 组（新增 4 组）；尚未在真实 Electron 客户端中验收。
+- 已通过 `npm run verify`（83 个单元测试）和 SDK 浏览器冒烟 34 组（新增 4 组；当前 35 组）；尚未在真实 Electron 客户端中验收。
 
 ## 0.3.6 桌面验收（2026-10-14）
 
@@ -90,8 +90,14 @@ SQLite 与 traj 不强行关联 request ID。估算与实际 usage 分开，缺�
 |---|---|
 | `src/server.mjs` / `worker.mjs` | app-only MCP、每次身份校验 |
 | `src/data/reader.mjs` / `runner.mjs` | worker 读取客户端（超时、取消、繁忙上限）与串行执行（跳过已放弃的读取） |
-| `src/data/service.mjs` | 会话缓存、历史分页、查询/排序、基线、分块、事件导航 |
-| `src/domain/trajectory.mjs` | 快照重建、角色组成、可读内容、已记录身份配对、Diff |
+| `src/data/service.mjs` | 会话缓存、历史分页、查询/排序、基线（含“上一轮”）、分块、事件导航与注入定位 |
+| `src/data/jsonl.mjs` | 有界增量 JSONL 读取：追加、UTF-8 边界、残行、轮转识别（只有文件消失才重读窗口） |
+| `src/data/sqlite.mjs` | model_usage 汇总、tool_usage 调用数、共享的数据库错误归类 |
+| `src/data/conversation.mjs` | 会话记录（message/part）增量读取、删除核对、压缩被摘要内容 |
+| `src/data/paths.mjs` | 数据目录与数据库路径（环境变量覆盖） |
+| `src/domain/trajectory.mjs` | 快照重建（含 tail 后 delta 续接）、角色组成、可读内容、已记录身份配对、Diff |
+| `src/domain/events.mjs` | 日志事件合并、会话记录事件（注入/压缩/模型切换）、两者去重 |
+| `src/domain/usage.mjs` | 单条用量归一化（SQL 汇总与之有一致性测试） |
 | `ui/state.mjs` | 按会话保存视图状态；不授权 |
 | `ui/components.mjs` / `i18n.mjs` | 侧栏组件、纯文本安全渲染、固定配色与双语 |
 | `ui/app.mjs` | SDK 生命周期、共享选择、异步结果隔离与视图协调 |

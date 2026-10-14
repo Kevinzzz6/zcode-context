@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- Under default recording, a request recorded as a delta after a tail now keeps the tail's messages. ZCode writes the delta against its own untrimmed previous request, so after resuming a long session (or a size reset) every later request used to show only its newly added messages in the browser and the composition. The record stays partial: removals and Diff are still unavailable.
+- A trajectory file that cannot be opened for a moment (a scanner or backup holding it) keeps its read position instead of being treated as rotated, which used to reread the 24 MiB window, renumber steps and expire open requests. Only a missing file restarts it. A database that is briefly unopenable keeps the last context events, like a busy one.
+- Context events from a deleted message or part disappear even when new rows arrive in the same poll (ZCode removes the messages of a compaction whose persistence failed). Ordinary prompt and reply text no longer crosses into the plugin on a cold read.
+- Injections are located by their whole recorded text rather than its first 300 characters, so two TodoWrite reminders (whose fixed opening is longer than that) no longer point at the same item, and a request after a skipped record is not taken as the first one that carried an injection.
+- "Previous turn" is resolved by the service over its whole cache, so the earliest steps shown no longer say "no previous turn" when that turn is cached but not shown. A restored older selection shows its Delta.
+- Loading earlier steps twice in quick succession no longer skips a page; an event that is still loading history no longer overrides a step or item chosen meanwhile.
+- Searching all loaded requests replaces All / Changes with a note, since it lists matches across requests rather than changes. In Changes a category header counts its changes. A compaction with no step before it opens its continuation summary with the reason it cannot be compared.
+- Buttons without an id (category headers, items, events, trend bars) keep keyboard focus across rebuilds; arrow keys inside an open body no longer switch steps. A failed connection to ZCode says to reopen the panel and stops polling.
+- Unexpected errors are logged to stderr with the method; only ContextError codes reach the panel, so system codes such as ENOENT no longer leak as error codes. The server exits within two seconds on shutdown.
+- `kind.compaction` and English singulars ("1 item") are translated; the tool_usage truncation flag is exact at 500 names; summarized parts have a stable order; `package.py` creates its report directory before writing the archive; CI runs on pushes to main and on pull requests instead of twice for PR branches; an SQL-versus-per-request usage parity test replaces the test-only `summarizeFacts`.
+
 ## 0.3.7 — 2026-10-14
 
 - The context browser follows one set of rules. What it shows is fixed by the step, the baseline, the set (All or Changes) and the filter, and each control changes only its own: picking a step, a category, the legend or an In item no longer resets the filter or the set. The rules are written down in docs/decisions.md.
