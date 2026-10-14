@@ -7,7 +7,7 @@ export function readSessionContext(meta) {
   if (typeof sessionId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/.test(sessionId)) {
     throw new ContextError("binding_unavailable", "Host session metadata is missing or invalid.");
   }
-  return Object.freeze({ sessionId, workspacePath: typeof value.workspace_path === "string" ? value.workspace_path : null });
+  return Object.freeze({ sessionId });
 }
 export function sanitizeSessionSegment(value) {
   return value.replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80);

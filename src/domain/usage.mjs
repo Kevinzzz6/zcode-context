@@ -38,13 +38,3 @@ export function normalizeFact(row) {
     totalTokens, hasUsage: inputKnown || outputKnown || readKnown || writeKnown || totalTokens !== null
   };
 }
-export function summarizeFacts(facts) {
-  const sum = key => { const known = facts.filter(f=>f[key]!==null); return known.length ? known.reduce((s,f)=>s+f[key],0) : null; };
-  const eligible = facts.filter(f=>f.inputTokens!==null && f.cacheReadTokens!==null);
-  const input = eligible.reduce((s,f)=>s+f.inputTokens,0);
-  return {requestCount:facts.length,reportedCount:facts.filter(f=>f.hasUsage).length,
-    missingUsageCount:facts.filter(f=>!f.hasUsage).length,
-    inputTokens:sum("inputTokens"),outputTokens:sum("outputTokens"),totalTokens:sum("totalTokens"),
-    cacheHitRate:input>0?eligible.reduce((s,f)=>s+f.cacheReadTokens,0)/input:null,
-    errorCount:facts.filter(f=>f.status==="error").length,retryCount:facts.reduce((s,f)=>s+f.retryCount,0)};
-}

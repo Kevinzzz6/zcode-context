@@ -334,8 +334,7 @@ export class ContextDataService {
     if(args.diffBeforeElement&&element&&diff.available){
       const previous=all.find(x=>x.key===diff.previousKey);
       const original=inputElements(previous.record).find(x=>x.key===args.diffBeforeElement);
-      const full=diffRecords(previous.record,record);
-      if(!original||!full.changed.some(x=>x.before.key===original.key&&x.after.key===element.key))throw new ContextError("diff_identity_unavailable","No recorded identity for this replacement.");
+      if(!original||!diff.changedPairs.some(x=>x.before===original.key&&x.after===element.key))throw new ContextError("diff_identity_unavailable","No recorded identity for this replacement.");
       // Paginate the rendered difference by characters too: a single huge line cannot bypass limits.
       const unified=textDifference(original.readable,element.readable).map(x=>(x.kind==="added"?"+ ":x.kind==="removed"?"- ":"  ")+x.text).join("\n");
       const offset=args.offset??0;
