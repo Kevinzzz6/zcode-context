@@ -1,6 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { statSync } from "node:fs";
 import { ContextError } from "../domain/session.mjs";
+import { classifyDbError } from "./sqlite.mjs";
 const TEXT_CHARS = 4000;
 // Token estimates of large outputs scale the script mix of a short sample to the full length.
 const SAMPLE_CHARS = 400;
@@ -23,18 +24,19 @@ function open(dbPath) {
     throw error;
   }
 }
-const failure = error => error.code === "ENOENT" ? "database_missing" : error.code === "SQLITE_BUSY" || /locked|busy/i.test(error.message) ? "database_busy"
-  : error instanceof ContextError ? error.code : "database_unavailable";
 // Fields are read with json_extract so the large tool outputs inside part data never cross into JavaScript.
 const field = path => "CASE WHEN ok THEN json_extract(data,'" + path + "') END";
 const MESSAGE_FIELDS = ["role:$.role", "origin:$.semantics.origin", "kind:$.semantics.kind", "source:$.semantics.source",
   "visibility:$.semantics.providerVisibility", "synthetic:$.synthetic", "metaSource:$.metadata.source"];
 const PART_FIELDS = ["type:$.type", "tool:$.tool", "callId:$.callID", "skill:$.state.input.skill", "toolEnd:$.state.time.end",
   "synthetic:$.synthetic", "textSource:$.metadata.source", "timelineType:$.timelineType"];
+// Only injected text is kept, so ordinary replies and prompts never cross into JavaScript.
+const INJECTED_TEXT = "ok AND json_extract(data,'$.type')='text' AND json_extract(data,'$.synthetic')=1";
 const select = fields => fields.map(x => { const [name, path] = x.split(":"); return field(path) + " AS " + name; }).join(",");
 
 // The session's conversation store: message semantics, compaction and timeline parts, Skill loads and injected text.
-// Rows are read incrementally by time_updated; a shrinking row count (a deleted message or part) reloads everything.
+// Rows are read incrementally by time_updated. A deletion moves no cursor and can be offset by new rows in the same poll
+// (ZCode removes the messages of a compaction whose persistence failed), so cached ids are checked for existence.
 // A rewind deletes nothing: the abandoned branch stays in the store and session.revert records the active one.
 export function readConversation(dbPath, sessionId, cache = null) {
   let handle;
@@ -43,9 +45,7 @@ export function readConversation(dbPath, sessionId, cache = null) {
     const { db, sequence } = handle;
     const stat = table => db.prepare("SELECT count(*) AS n, max(time_updated) AS u FROM " + table + " WHERE session_id=?").get(sessionId);
     const messageStat = stat("message"), partStat = stat("part");
-    let c = cache;
-    if (!c || messageStat.n < c.messageCount || partStat.n < c.partCount)
-      c = { messageCursor: -1, partCursor: -1, messageCount: 0, partCount: 0, messages: new Map(), parts: new Map() };
+    const c = cache ?? { messageCursor: -1, partCursor: -1, messageCount: 0, partCount: 0, messages: new Map(), parts: new Map() };
     if (c.messageCursor === (messageStat.u ?? -1) && c.partCursor === (partStat.u ?? -1) && c.messageCount === messageStat.n && c.partCount === partStat.n) {
       db.exec("COMMIT");
       return { available: true, changed: false, cache: c };
@@ -55,8 +55,8 @@ export function readConversation(dbPath, sessionId, cache = null) {
       " FROM (SELECT *,json_valid(data) AS ok FROM message WHERE session_id=? AND time_updated>=?)").all(sessionId, c.messageCursor);
     for (const row of messages) c.messages.set(row.id, row);
     const parts = db.prepare("SELECT id,message_id AS messageId,time_created AS created,time_updated AS updated," + select(PART_FIELDS) +
-      ",CASE WHEN ok AND json_extract(data,'$.type')='text' THEN substr(json_extract(data,'$.text'),1," + TEXT_CHARS + ") END AS text" +
-      ",CASE WHEN ok AND json_extract(data,'$.type')='text' THEN length(json_extract(data,'$.text')) END AS textChars" +
+      ",CASE WHEN " + INJECTED_TEXT + " THEN substr(json_extract(data,'$.text'),1," + TEXT_CHARS + ") END AS text" +
+      ",CASE WHEN " + INJECTED_TEXT + " THEN length(json_extract(data,'$.text')) END AS textChars" +
       ",CASE WHEN ok AND json_extract(data,'$.tool')='Skill' THEN length(json_extract(data,'$.state.output')) END AS outputChars" +
       ",CASE WHEN ok AND json_extract(data,'$.tool')='Skill' THEN substr(json_extract(data,'$.state.output'),1," + SAMPLE_CHARS + ") END AS outputSample" +
       ",CASE WHEN ok AND json_extract(data,'$.type') IN ('compaction','timeline') THEN data END AS raw" +
@@ -66,12 +66,20 @@ export function readConversation(dbPath, sessionId, cache = null) {
       const keep = row.type === "compaction" || row.type === "timeline" || (row.type === "tool" && row.tool === "Skill") || (row.type === "text" && row.synthetic === 1);
       if (keep) c.parts.set(row.id, row); else c.parts.delete(row.id);
     }
+    if (cache) {
+      const live = (table, ids) => new Set(db.prepare("SELECT t.id FROM " + table + " t JOIN json_each(?) j ON t.id=j.value WHERE t.session_id=?")
+        .all(JSON.stringify(ids), sessionId).map(row => row.id));
+      for (const [table, map] of [["message", c.messages], ["part", c.parts]]) {
+        const found = live(table, [...map.keys()]);
+        for (const id of [...map.keys()]) if (!found.has(id)) map.delete(id);
+      }
+    }
     db.exec("COMMIT");
     Object.assign(c, { messageCursor: messageStat.u ?? -1, partCursor: partStat.u ?? -1, messageCount: messageStat.n, partCount: partStat.n });
     return { available: true, changed: true, cache: c };
   } catch (error) {
     if (handle) { try { handle.db.exec("ROLLBACK"); } catch {} }
-    return { available: false, code: failure(error), cache };
+    return { available: false, code: classifyDbError(error), cache };
   } finally { handle?.db.close(); }
 }
 
@@ -106,16 +114,16 @@ export function readSummarizedMessages(dbPath, sessionId, { after = [], through,
     const ids = db.prepare("SELECT id,sequence FROM message WHERE session_id=? AND sequence>? AND sequence<=? ORDER BY sequence")
       .all(sessionId, after.find(live) ?? -1, through).filter(row => live(row.sequence));
     const message = db.prepare("SELECT id,sequence," + select(MESSAGE_FIELDS) + " FROM (SELECT *,json_valid(data) AS ok FROM message WHERE session_id=? AND id=?)");
-    const parts = db.prepare("SELECT message_id AS messageId,time_created AS created," + select(PART_FIELDS) +
+    const parts = db.prepare("SELECT id,message_id AS messageId,time_created AS created," + select(PART_FIELDS) +
       ",CASE WHEN ok THEN substr(json_extract(data,'$.text'),1,400) END AS text,CASE WHEN ok THEN length(json_extract(data,'$.text')) END AS textChars" +
       ",CASE WHEN ok THEN json_extract(data,'$.state.input') END AS input,CASE WHEN ok THEN length(json_extract(data,'$.state.output')) END AS outputChars" +
       ",CASE WHEN ok THEN substr(json_extract(data,'$.state.output'),1," + SAMPLE_CHARS + ") END AS outputSample" +
-      " FROM (SELECT *,json_valid(data) AS ok FROM part WHERE session_id=? AND message_id=?) ORDER BY created");
+      " FROM (SELECT *,json_valid(data) AS ok FROM part WHERE session_id=? AND message_id=?) ORDER BY created,id");
     const rows = ids.slice(0, DETAIL_ROWS).map(row => ({ ...message.get(sessionId, row.id), parts: parts.all(sessionId, row.id) }));
     db.exec("COMMIT");
     return { available: true, messages: rows, total: ids.length };
   } catch (error) {
     if (handle) { try { handle.db.exec("ROLLBACK"); } catch {} }
-    return { available: false, code: failure(error), messages: [], total: 0 };
+    return { available: false, code: classifyDbError(error), messages: [], total: 0 };
   } finally { handle?.db.close(); }
 }

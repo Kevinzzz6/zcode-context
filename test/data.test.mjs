@@ -181,6 +181,11 @@ test("the conversation store is read incrementally, reloads after a deletion and
     store.remove("r1");
     const third=readConversation(fixture.path,"sess_A",second.cache);
     assert.deepEqual(conversationEvents(third.cache).map(e=>e.id),["m:r2"]);
+    // A deletion offset by new rows in the same poll leaves the counts unchanged; the removed event still goes.
+    store.remove("r2");store.reminder("sess_A","r3",now-500,"reminder three");store.prompt("sess_A","u2",now-400,"again");
+    const fourth=readConversation(fixture.path,"sess_A",third.cache);
+    assert.deepEqual(conversationEvents(fourth.cache).map(e=>e.id),["m:r3"]);
+    assert.ok([...fourth.cache.parts.values()].every(part=>part.type!=="text"||part.synthetic===1));
     fixture.db.exec("DROP TABLE part");
     assert.equal(readConversation(fixture.path,"sess_A").code,"schema_unsupported");
     fixture.db.close();
