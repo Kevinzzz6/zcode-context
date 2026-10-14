@@ -105,6 +105,7 @@ var FIELDS = [
   "retry_count",
   "raw_usage_json"
 ];
+var classifyDbError = (error) => error.code === "ENOENT" ? "database_missing" : error.code === "SQLITE_BUSY" || /locked|busy/i.test(error.message) ? "database_busy" : error instanceof ContextError ? error.code : "database_unavailable";
 function readUsage(dbPath, sessionId, now = Date.now()) {
   let db;
   try {
@@ -171,7 +172,7 @@ function readUsage(dbPath, sessionId, now = Date.now()) {
       } catch {
       }
     }
-    const code = error.code === "ENOENT" ? "database_missing" : error.code === "SQLITE_BUSY" || /locked|busy/i.test(error.message) ? "database_busy" : error instanceof ContextError ? error.code : "database_unavailable";
+    const code = classifyDbError(error);
     return { available: false, code, facts: [], days: [], totals: null, windowDays: 30 };
   } finally {
     db?.close();
@@ -188,11 +189,11 @@ function readToolCalls(dbPath, sessionId) {
       throw new ContextError("schema_unsupported", "This database does not have the supported tool_usage schema.");
     }
     const errors = columns.has("status") ? "sum(CASE WHEN status='error' THEN 1 ELSE 0 END)" : "NULL";
-    const rows = db.prepare("SELECT tool_name AS name, count(*) AS count, " + errors + " AS errorCount FROM tool_usage WHERE session_id=? AND tool_name IS NOT NULL GROUP BY tool_name ORDER BY count DESC, tool_name LIMIT 500").all(sessionId);
+    const fetched = db.prepare("SELECT tool_name AS name, count(*) AS count, " + errors + " AS errorCount FROM tool_usage WHERE session_id=? AND tool_name IS NOT NULL GROUP BY tool_name ORDER BY count DESC, tool_name LIMIT 501").all(sessionId), rows = fetched.slice(0, 500);
     db.exec("COMMIT");
     const byName = /* @__PURE__ */ Object.create(null);
     for (const row of rows) byName[String(row.name).slice(0, 160)] = { count: Number(row.count), errorCount: row.errorCount == null ? null : Number(row.errorCount) };
-    return { available: true, scope: "session", byName, callCount: rows.reduce((n, row) => n + Number(row.count), 0), truncated: rows.length === 500 };
+    return { available: true, scope: "session", byName, callCount: rows.reduce((n, row) => n + Number(row.count), 0), truncated: fetched.length > 500 };
   } catch (error) {
     if (db) {
       try {
@@ -200,7 +201,7 @@ function readToolCalls(dbPath, sessionId) {
       } catch {
       }
     }
-    const code = error.code === "ENOENT" ? "database_missing" : error.code === "SQLITE_BUSY" || /locked|busy/i.test(error.message) ? "database_busy" : error instanceof ContextError ? error.code : "database_unavailable";
+    const code = classifyDbError(error);
     return { available: false, code, byName: {} };
   } finally {
     db?.close();
@@ -233,7 +234,6 @@ function open(dbPath) {
     throw error;
   }
 }
-var failure = (error) => error.code === "ENOENT" ? "database_missing" : error.code === "SQLITE_BUSY" || /locked|busy/i.test(error.message) ? "database_busy" : error instanceof ContextError ? error.code : "database_unavailable";
 var field = (path) => "CASE WHEN ok THEN json_extract(data,'" + path + "') END";
 var MESSAGE_FIELDS = [
   "role:$.role",
@@ -254,6 +254,7 @@ var PART_FIELDS = [
   "textSource:$.metadata.source",
   "timelineType:$.timelineType"
 ];
+var INJECTED_TEXT = "ok AND json_extract(data,'$.type')='text' AND json_extract(data,'$.synthetic')=1";
 var select = (fields) => fields.map((x) => {
   const [name, path] = x.split(":");
   return field(path) + " AS " + name;
@@ -265,20 +266,25 @@ function readConversation(dbPath, sessionId, cache = null) {
     const { db, sequence } = handle;
     const stat = (table) => db.prepare("SELECT count(*) AS n, max(time_updated) AS u FROM " + table + " WHERE session_id=?").get(sessionId);
     const messageStat = stat("message"), partStat = stat("part");
-    let c = cache;
-    if (!c || messageStat.n < c.messageCount || partStat.n < c.partCount)
-      c = { messageCursor: -1, partCursor: -1, messageCount: 0, partCount: 0, messages: /* @__PURE__ */ new Map(), parts: /* @__PURE__ */ new Map() };
+    const c = cache ?? { messageCursor: -1, partCursor: -1, messageCount: 0, partCount: 0, messages: /* @__PURE__ */ new Map(), parts: /* @__PURE__ */ new Map() };
     if (c.messageCursor === (messageStat.u ?? -1) && c.partCursor === (partStat.u ?? -1) && c.messageCount === messageStat.n && c.partCount === partStat.n) {
       db.exec("COMMIT");
       return { available: true, changed: false, cache: c };
     }
     const messages = db.prepare("SELECT id," + sequence + " AS sequence,time_created AS created,time_updated AS updated," + select(MESSAGE_FIELDS) + ",CASE WHEN ok THEN substr(json_extract(data,'$.summary.body'),1," + TEXT_CHARS + ") END AS summary FROM (SELECT *,json_valid(data) AS ok FROM message WHERE session_id=? AND time_updated>=?)").all(sessionId, c.messageCursor);
     for (const row of messages) c.messages.set(row.id, row);
-    const parts = db.prepare("SELECT id,message_id AS messageId,time_created AS created,time_updated AS updated," + select(PART_FIELDS) + ",CASE WHEN ok AND json_extract(data,'$.type')='text' THEN substr(json_extract(data,'$.text'),1," + TEXT_CHARS + ") END AS text,CASE WHEN ok AND json_extract(data,'$.type')='text' THEN length(json_extract(data,'$.text')) END AS textChars,CASE WHEN ok AND json_extract(data,'$.tool')='Skill' THEN length(json_extract(data,'$.state.output')) END AS outputChars,CASE WHEN ok AND json_extract(data,'$.tool')='Skill' THEN substr(json_extract(data,'$.state.output'),1," + SAMPLE_CHARS + ") END AS outputSample,CASE WHEN ok AND json_extract(data,'$.type') IN ('compaction','timeline') THEN data END AS raw FROM (SELECT *,json_valid(data) AS ok FROM part WHERE session_id=? AND time_updated>=?)").all(sessionId, c.partCursor);
+    const parts = db.prepare("SELECT id,message_id AS messageId,time_created AS created,time_updated AS updated," + select(PART_FIELDS) + ",CASE WHEN " + INJECTED_TEXT + " THEN substr(json_extract(data,'$.text'),1," + TEXT_CHARS + ") END AS text,CASE WHEN " + INJECTED_TEXT + " THEN length(json_extract(data,'$.text')) END AS textChars,CASE WHEN ok AND json_extract(data,'$.tool')='Skill' THEN length(json_extract(data,'$.state.output')) END AS outputChars,CASE WHEN ok AND json_extract(data,'$.tool')='Skill' THEN substr(json_extract(data,'$.state.output'),1," + SAMPLE_CHARS + ") END AS outputSample,CASE WHEN ok AND json_extract(data,'$.type') IN ('compaction','timeline') THEN data END AS raw FROM (SELECT *,json_valid(data) AS ok FROM part WHERE session_id=? AND time_updated>=?)").all(sessionId, c.partCursor);
     for (const row of parts) {
       const keep = row.type === "compaction" || row.type === "timeline" || row.type === "tool" && row.tool === "Skill" || row.type === "text" && row.synthetic === 1;
       if (keep) c.parts.set(row.id, row);
       else c.parts.delete(row.id);
+    }
+    if (cache) {
+      const live = (table, ids) => new Set(db.prepare("SELECT t.id FROM " + table + " t JOIN json_each(?) j ON t.id=j.value WHERE t.session_id=?").all(JSON.stringify(ids), sessionId).map((row) => row.id));
+      for (const [table, map] of [["message", c.messages], ["part", c.parts]]) {
+        const found = live(table, [...map.keys()]);
+        for (const id of [...map.keys()]) if (!found.has(id)) map.delete(id);
+      }
     }
     db.exec("COMMIT");
     Object.assign(c, { messageCursor: messageStat.u ?? -1, partCursor: partStat.u ?? -1, messageCount: messageStat.n, partCount: partStat.n });
@@ -290,7 +296,7 @@ function readConversation(dbPath, sessionId, cache = null) {
       } catch {
       }
     }
-    return { available: false, code: failure(error), cache };
+    return { available: false, code: classifyDbError(error), cache };
   } finally {
     handle?.db.close();
   }
@@ -324,7 +330,7 @@ function readSummarizedMessages(dbPath, sessionId, { after = [], through, summar
     if (!live(through) || summary != null && !live(summary)) throw new ContextError("rewound_branch", "This compaction is on a rewound branch.");
     const ids = db.prepare("SELECT id,sequence FROM message WHERE session_id=? AND sequence>? AND sequence<=? ORDER BY sequence").all(sessionId, after.find(live) ?? -1, through).filter((row) => live(row.sequence));
     const message = db.prepare("SELECT id,sequence," + select(MESSAGE_FIELDS) + " FROM (SELECT *,json_valid(data) AS ok FROM message WHERE session_id=? AND id=?)");
-    const parts = db.prepare("SELECT message_id AS messageId,time_created AS created," + select(PART_FIELDS) + ",CASE WHEN ok THEN substr(json_extract(data,'$.text'),1,400) END AS text,CASE WHEN ok THEN length(json_extract(data,'$.text')) END AS textChars,CASE WHEN ok THEN json_extract(data,'$.state.input') END AS input,CASE WHEN ok THEN length(json_extract(data,'$.state.output')) END AS outputChars,CASE WHEN ok THEN substr(json_extract(data,'$.state.output'),1," + SAMPLE_CHARS + ") END AS outputSample FROM (SELECT *,json_valid(data) AS ok FROM part WHERE session_id=? AND message_id=?) ORDER BY created");
+    const parts = db.prepare("SELECT id,message_id AS messageId,time_created AS created," + select(PART_FIELDS) + ",CASE WHEN ok THEN substr(json_extract(data,'$.text'),1,400) END AS text,CASE WHEN ok THEN length(json_extract(data,'$.text')) END AS textChars,CASE WHEN ok THEN json_extract(data,'$.state.input') END AS input,CASE WHEN ok THEN length(json_extract(data,'$.state.output')) END AS outputChars,CASE WHEN ok THEN substr(json_extract(data,'$.state.output'),1," + SAMPLE_CHARS + ") END AS outputSample FROM (SELECT *,json_valid(data) AS ok FROM part WHERE session_id=? AND message_id=?) ORDER BY created,id");
     const rows = ids.slice(0, DETAIL_ROWS).map((row) => ({ ...message.get(sessionId, row.id), parts: parts.all(sessionId, row.id) }));
     db.exec("COMMIT");
     return { available: true, messages: rows, total: ids.length };
@@ -335,7 +341,7 @@ function readSummarizedMessages(dbPath, sessionId, { after = [], through, summar
       } catch {
       }
     }
-    return { available: false, code: failure(error), messages: [], total: 0 };
+    return { available: false, code: classifyDbError(error), messages: [], total: 0 };
   } finally {
     handle?.db.close();
   }
@@ -360,6 +366,9 @@ var JsonlTail = class {
   mtime = 0;
   missing = false;
   coverage = [];
+  constructor(openFile = open2) {
+    this.openFile = openFile;
+  }
   markCoverage(reason) {
     if (!this.coverage.includes(reason)) this.coverage.push(reason);
   }
@@ -377,7 +386,7 @@ var JsonlTail = class {
   async scan(path, onRow, onReset, onGap) {
     let file;
     try {
-      file = await open2(path, "r");
+      file = await this.openFile(path, "r");
       const st = await file.stat();
       const identity = st.dev + ":" + st.ino;
       const prefix = Buffer.alloc(this.headLength || Math.min(256, st.size));
@@ -445,7 +454,8 @@ var JsonlTail = class {
         coverage: [...new Set(this.coverage)]
       };
     } catch (error) {
-      this.missing = true;
+      if (typeof error.code !== "string") console.error("[zcode-context] trajectory scan", error);
+      if (error.code === "ENOENT" || typeof error.code !== "string") this.missing = true;
       return { available: false, code: error.code === "ENOENT" ? "trajectory_missing" : "file_unavailable", scanning: false, coverage: [...new Set(this.coverage)] };
     } finally {
       await file?.close();
@@ -484,11 +494,14 @@ function expandCollection(items, kind, offset, count2, previous) {
   if (kind !== void 0 && !["full", "delta", "tail"].includes(kind)) return { items, offset: null, complete: false, reason: "unsupported_encoding" };
   if (kind === "tail") return { items, offset: at, complete: offset === 0 && (count2 == null || count2 === items.length), reason: "tail" };
   if (kind === "delta") {
-    if (at === null || !previous?.complete || previous.items.length < offset) {
-      return { items, offset: at, complete: false, reason: "missing_baseline" };
+    if (at !== null && previous?.complete && previous.items.length >= offset) {
+      const expanded = previous.items.slice(0, offset).concat(items);
+      return { items: expanded, offset: 0, complete: count2 == null || expanded.length === count2, reason: count2 == null || expanded.length === count2 ? null : "count_mismatch" };
     }
-    const expanded = previous.items.slice(0, offset).concat(items);
-    return { items: expanded, offset: 0, complete: count2 == null || expanded.length === count2, reason: count2 == null || expanded.length === count2 ? null : "count_mismatch" };
+    const start = previous?.offset;
+    if (at !== null && Number.isInteger(start) && start <= at && start + previous.items.length >= at)
+      return { items: previous.items.slice(0, at - start).concat(items), offset: start, complete: false, reason: previous.reason ?? "missing_baseline" };
+    return { items, offset: at, complete: false, reason: "missing_baseline" };
   }
   return { items, offset: 0, complete: count2 == null || items.length === count2, reason: count2 == null || items.length === count2 ? null : "count_mismatch" };
 }
@@ -869,7 +882,6 @@ function mergeEvents(events) {
   return [...merged.values()].sort((a, b) => a.timestamp - b.timestamp);
 }
 var TEXT_CHARS2 = 1500;
-var NEEDLE_CHARS = 300;
 var parse = (text) => {
   try {
     const value = JSON.parse(text);
@@ -930,6 +942,7 @@ function conversationEvents(cache) {
     if (!injected(m)) continue;
     const text = (texts.get(m.id) ?? []).map((x) => x.text ?? "").join("\n").trim();
     if (!text) continue;
+    const needles = (texts.get(m.id) ?? []).map((x) => (x.text ?? "").trim()).filter(Boolean);
     const chars = (texts.get(m.id) ?? []).reduce((n, x) => n + (x.textChars ?? 0), 0);
     events.push({
       kind: "inject",
@@ -941,7 +954,7 @@ function conversationEvents(cache) {
       tokens: sampled(text, chars),
       text: text.slice(0, TEXT_CHARS2),
       truncated: chars > TEXT_CHARS2,
-      needle: text.slice(0, NEEDLE_CHARS)
+      needles
     });
   }
   for (const g of groups.values()) {
@@ -1138,11 +1151,12 @@ var ContextDataService = class {
     if (conversation.available) {
       if (conversation.changed || !state.conversation) state.recorded = conversationEvents(conversation.cache);
       state.conversation = conversation.cache;
-    } else if (conversation.code !== "database_busy") {
+    } else if (!["database_busy", "database_unavailable"].includes(conversation.code)) {
       state.conversation = null;
       state.recorded = [];
     }
-    if (records.length && coverage.every((item) => !item.available)) coverage.push({ coverage: ["source_rotated"], scanning: false });
+    if (records.length && coverage.every((item) => !item.available) && !coverage.some((item) => item.code === "file_unavailable"))
+      coverage.push({ coverage: ["source_rotated"], scanning: false });
     const cutoff = Date.now() - 3 * 864e5;
     for (const [key, event] of state.events) if (event.timestamp < cutoff) state.events.delete(key);
     while (state.logTails.size > 3) state.logTails.delete(state.logTails.keys().next().value);
@@ -1257,19 +1271,21 @@ var ContextDataService = class {
     const all = combineEvents(state.recorded, mergeEvents(state.events.values()));
     const kept = [...all.filter((e) => e.kind === "inject").slice(-150), ...all.filter((e) => e.kind !== "inject").slice(-60)].sort((a, b) => a.timestamp - b.timestamp);
     while (state.targets.size > 400) state.targets.delete(state.targets.keys().next().value);
-    return kept.map((e) => e.kind === "inject" ? this.locate(state, records, e, complete) : this.eventNavigation(records, e)).map(({ needle, ...e }) => e);
+    return kept.map((e) => e.kind === "inject" ? this.locate(state, records, e, complete) : this.eventNavigation(records, e)).map(({ needles, ...e }) => e);
   }
   // An injected message is first sent with the next agent request; it is found there by tool-call id or by its exact text,
   // the newest occurrence, since reminders repeat. When that request is not readable, or does not contain it, the event keeps no step.
+  // A request only counts as the first after the event when nothing was skipped since the one before: same file and segment.
   locate(state, records, event, complete) {
     const agents = records.filter((x) => x.summary.step != null), first = agents[0]?.key ?? null, memo = state.targets.get(event.id);
     if (memo && memo.first === first) return { ...event, ...memo.target };
     const index = agents.findIndex((x) => x.record.startedAt >= event.timestamp);
     if (index < 0) return { ...event, stepKey: null, elementKey: null, elementRole: null };
     let target = { stepKey: null, elementKey: null, elementRole: null };
-    if (index > 0 || complete) {
-      const record = agents[index], elements = inputElements(record.record);
-      const element = event.toolCallId ? elements.find((x) => x.toolCallId === event.toolCallId) : event.needle ? elements.findLast((x) => x.key.startsWith("message:") && x.readable.includes(event.needle)) : null;
+    const record = agents[index], prior = agents[index - 1];
+    if (prior ? prior.path === record.path && prior.segment === record.segment : complete) {
+      const elements = inputElements(record.record);
+      const element = event.toolCallId ? elements.find((x) => x.toolCallId === event.toolCallId) : event.needles?.length ? elements.findLast((x) => x.key.startsWith("message:") && event.needles.every((n) => x.readable.includes(n))) : null;
       if (element) target = { stepKey: record.key, elementKey: element.key, elementRole: element.role };
     }
     state.targets.set(event.id, { first, target });
@@ -1323,13 +1339,23 @@ var ContextDataService = class {
     result.revision = digest(overview.revision + ":" + historyPage);
     return revision && revision === result.revision ? { sessionId, revision, unchanged: true } : result;
   }
+  // "Previous turn": the last agent step of an earlier turn in the same file and from the same source, over the whole cache.
+  // A turn numbered after 1 whose predecessor is no longer cached has a baseline that left the window, not no previous turn.
+  turnBaseline(all, selected) {
+    const s = selected.summary;
+    if (s.step == null) return {};
+    if (s.turn == null) return { noBaseline: true };
+    const previous = all.slice(0, all.indexOf(selected)).findLast((x) => x.summary.step != null && x.path === selected.path && x.record.querySource === selected.record.querySource && x.summary.turn != null && x.summary.turn < s.turn);
+    return previous ? { baselineKey: previous.key } : { noBaseline: true, noBaselineReason: s.turn > 1 ? "baseline_expired" : "no_previous_turn" };
+  }
   async request(sessionId, args) {
     const state = this.state(sessionId);
     if (!state.overview) await this.refresh(sessionId);
     const all = this.records(state), selected = all.find((x) => x.key === args.key);
     if (!selected) throw new ContextError("request_expired", "Request is outside the loaded trajectory window.");
+    if (args.baselineMode === "turn" && !args.baselineKey && !args.noBaseline) args = { ...args, ...this.turnBaseline(all, selected) };
     const record = selected.record, elements = inputElements(record), page = args.page ?? 0, pageSize = 40;
-    let diff = args.noBaseline ? { available: false, reason: "no_previous_turn" } : this.comparison(all, selected, args.baselineKey);
+    let diff = args.noBaseline ? { available: false, reason: args.noBaselineReason ?? "no_previous_turn" } : this.comparison(all, selected, args.baselineKey);
     const calls = state.toolCalls ?? { available: false, byName: {} };
     const callCount = (x) => !calls.available || typeof x.toolName !== "string" ? null : Object.hasOwn(calls.byName, x.toolName) ? calls.byName[x.toolName].count : calls.truncated ? null : 0;
     const entries = this.entries(all, selected);
@@ -1447,8 +1473,7 @@ var ContextDataService = class {
     if (args.diffBeforeElement && element && diff.available) {
       const previous = all.find((x) => x.key === diff.previousKey);
       const original = inputElements(previous.record).find((x) => x.key === args.diffBeforeElement);
-      const full = diffRecords(previous.record, record);
-      if (!original || !full.changed.some((x) => x.before.key === original.key && x.after.key === element.key)) throw new ContextError("diff_identity_unavailable", "No recorded identity for this replacement.");
+      if (!original || !diff.changedPairs.some((x) => x.before === original.key && x.after === element.key)) throw new ContextError("diff_identity_unavailable", "No recorded identity for this replacement.");
       const unified = textDifference(original.readable, element.readable).map((x) => (x.kind === "added" ? "+ " : x.kind === "removed" ? "- " : "  ") + x.text).join("\n");
       const offset = args.offset ?? 0;
       bodyDiff = {
@@ -1464,7 +1489,7 @@ var ContextDataService = class {
     return {
       sessionId,
       revision: state.overview.revision,
-      summary: selected.summary,
+      summary: this.timelineItem(all, selected),
       composition: selected.summary.composition,
       diff,
       arrivals,
@@ -1486,7 +1511,7 @@ var ContextDataService = class {
 };
 
 // src/data/runner.mjs
-function serialRunner(run, reply) {
+function serialRunner(run, reply, log = (...args) => console.error(...args)) {
   let queue = Promise.resolve();
   const waiting = /* @__PURE__ */ new Set(), cancelled = /* @__PURE__ */ new Set();
   return (input) => {
@@ -1504,7 +1529,9 @@ function serialRunner(run, reply) {
       try {
         reply({ id: input.id, result: await run(input) });
       } catch (error) {
-        reply({ id: input.id, error: { code: error.code ?? "read_failed", message: "Context data could not be read." } });
+        const known = error instanceof ContextError;
+        if (!known) log("[zcode-context]", input.method, error);
+        reply({ id: input.id, error: { code: known ? error.code : "read_failed", message: "Context data could not be read." } });
       }
     });
   };

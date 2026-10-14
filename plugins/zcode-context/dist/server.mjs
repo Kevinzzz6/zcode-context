@@ -31280,7 +31280,7 @@ function readSessionContext(meta3) {
   if (typeof sessionId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/.test(sessionId)) {
     throw new ContextError("binding_unavailable", "Host session metadata is missing or invalid.");
   }
-  return Object.freeze({ sessionId, workspacePath: typeof value.workspace_path === "string" ? value.workspace_path : null });
+  return Object.freeze({ sessionId });
 }
 
 // src/data/paths.mjs
@@ -31389,6 +31389,7 @@ function createContextServer() {
       const result = await reader.run(method, sessionId, args, extra.signal);
       return { content: [], structuredContent: result };
     } catch (error51) {
+      if (!(error51 instanceof ContextError)) console.error("[zcode-context]", method, error51);
       return {
         isError: true,
         content: [{ type: "text", text: "Context data is unavailable." }],
@@ -31410,6 +31411,7 @@ function createContextServer() {
       page: external_exports.number().int().min(0).max(1e5).optional(),
       baselineKey: external_exports.string().regex(/^[a-f0-9]{24}$/).optional(),
       noBaseline: external_exports.boolean().optional(),
+      baselineMode: external_exports.enum(["step", "turn"]).optional(),
       toolPrefix: external_exports.string().max(64).optional(),
       search: external_exports.string().max(200).optional(),
       searchScope: external_exports.enum(["selected", "loaded"]).optional(),
@@ -31435,6 +31437,7 @@ var closing = false;
 var shutdown = async () => {
   if (closing) return;
   closing = true;
+  setTimeout(() => process.exit(0), 2e3).unref();
   await server.close().catch(() => {
   });
   await reader.close().catch(() => {
