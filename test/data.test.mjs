@@ -5,7 +5,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { usageDatabase, modelRecord, conversationStore } from "./fixtures.mjs";
-import { readConversation } from "../src/data/conversation.mjs";
+import { readConversation, readSummarizedMessages } from "../src/data/conversation.mjs";
 import { conversationEvents } from "../src/domain/events.mjs";
 import { readUsage } from "../src/data/sqlite.mjs";
 import { JsonlTail } from "../src/data/jsonl.mjs";
@@ -191,6 +191,17 @@ test("the conversation store is read incrementally, reloads after a deletion and
     fixture.db.close();
   } finally { await rm(root,{recursive:true,force:true}); }
 });
+test("summarized tool calls bring only title fields and a bounded sample of their input into JavaScript",()=>temporary(async root=>{
+  const fixture=usageDatabase(root),store=conversationStore(fixture.db),now=Date.now();
+  store.prompt("sess_A","u1",now-9000,"write it");
+  store.reply("sess_A","a1",now-8000,"Writing.",[["Write",{file_path:"src/big.ts",content:"y".repeat(500000)},"ok"]]);
+  try{
+    const read=readSummarizedMessages(fixture.path,"sess_A",{through:2});
+    const tool=read.messages[1].parts.find(x=>x.type==="tool");
+    assert.equal(tool.input,undefined);assert.ok(tool.inputSample.length<=400);assert.ok(tool.inputChars>500000);
+    assert.deepEqual(tool.inputFields,{file_path:"src/big.ts"});
+  }finally{fixture.db.close();}
+}));
 test("the session cache evicts the least recently used session",()=>{
   const service=new ContextDataService({db:"x",trajectoryDirs:[],logDir:"x"}),first=service.state("sess_0");
   for(let i=1;i<8;i++)service.state("sess_"+i);

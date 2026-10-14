@@ -353,11 +353,13 @@ test("a recorded compaction carries exact figures, replaces its log records and 
       assert.equal(c.tokensSavedEstimate,79000);assert.equal(c.summarizedCount,3);assert.equal(c.durationMs,40);assert.equal(c.navigation.summaryKey,"message:0");
       const {eventDetail:d}=await service.eventDetail("sess_A",c.id);
       assert.equal(d.messageCount,3);assert.deepEqual(d.items.map(x=>x.role+":"+(x.chip??"")+":"+x.title),
-        ["user::fix the cache","assistant::Reading it.","tool:Read:src/cache.ts","inject:todo_reminder:keep a todo list"]);
+        ["user::fix the cache","assistant::Reading it.","tool:Read:src/cache.ts","tool:Write:src/big.ts","inject:todo_reminder:keep a todo list"]);
+      // A Write's whole file is never read into JavaScript; its size is scaled from a bounded sample.
+      const write=d.items.find(x=>x.chip==="Write");assert.ok(Math.abs(write.tokens-500000/4)<200,String(write.tokens));
       await assert.rejects(service.eventDetail("sess_A","c:missing"),{code:"event_missing"});
     },[{...span,event:"compact.auto.started",timestamp:at(-6000)},{...span,event:"compact.auto.completed",timestamp:at(-5950)}],null,store=>{
       store.prompt("sess_A","u1",now-9500,"fix the cache");
-      store.reply("sess_A","a1",now-9200,"Reading it.",[["Read",{file_path:"src/cache.ts"},"x".repeat(400)]]);
+      store.reply("sess_A","a1",now-9200,"Reading it.",[["Read",{file_path:"src/cache.ts"},"x".repeat(400)],["Write",{file_path:"src/big.ts",content:"y".repeat(500000)},"ok"]]);
       store.reminder("sess_A","r1",now-8000,"keep a todo list");
       store.compaction("sess_A","one",now-6000,{summaryId:"sum1",lastSummarizedId:"r1"});
     });

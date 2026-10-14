@@ -130,7 +130,7 @@ function firstLine(text) {
   }
   return "";
 }
-const SUMMARY_KEYS = ["command","file_path","notebook_path","pattern","url","query","skill","path","description","prompt","subject","name","title"];
+export const SUMMARY_KEYS = ["command","file_path","notebook_path","pattern","url","query","skill","path","description","prompt","subject","name","title"];
 export function inputSummary(input) {
   if (input == null) return null;
   if (typeof input !== "object") return oneLine(input) || null;
