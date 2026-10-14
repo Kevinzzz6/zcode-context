@@ -183,7 +183,7 @@ function noticeBar(ctx) {
   if(n.kind==="info")return node("div",{class:"notice info",id:"status",role:"status"},t(n.code));
   const message=n.code==="binding_unavailable"?t("binding"):n.code==="request_expired"?t("expired"):n.code==="connect_failed"?t("connectFailed"):t("readFailed");
   return node("div",{class:"notice error",id:"status",role:"alert"},node("span",{},message),spacer(),
-    n.code==="connect_failed"?null:n.code==="request_expired"?button(t("latest"),a.latest,{class:"btn small"}):button(t("retry"),()=>a.refresh(true),{class:"btn small"}));
+    n.code==="connect_failed"?null:n.code==="request_expired"?button(t("latest"),a.latest,{class:"btn small",dataset:{focus:"notice-latest"}}):button(t("retry"),()=>a.refresh(true),{class:"btn small",dataset:{focus:"notice-retry"}}));
 }
 
 function summaryCard(ctx) {
@@ -215,7 +215,7 @@ function summaryCard(ctx) {
   if(partial)stack.append(node("span",{class:"unrecorded",dataset:{role:"unrecorded"},style:{flexGrow:String(partial.unrecorded)},title:t("unrecorded")+" "+approx(partial.unrecorded),...hoverRole("unrecorded")}));
   const legend=node("div",{class:"legend"});
   for(const b of buckets)legend.append(button([dot(b.role),node("span",{class:"legend-name"},t(b.role)),node("span",{class:"num"},approx(b.estimatedTokens)),node("span",{class:"pct"},pct(b.estimatedTokens/whole))],
-    ()=>a.focusRole(b.role),{class:"legend-item",dataset:{role:b.role},...hoverRole(b.role)}));
+    ()=>a.focusRole(b.role),{class:"legend-item",dataset:{role:b.role,focus:"legend:"+b.role},...hoverRole(b.role)}));
   if(partial)legend.append(node("div",{class:"legend-item",dataset:{role:"unrecorded"},title:t("unrecordedTip"),...hoverRole("unrecorded")},node("i",{class:"dot unrecorded"}),
     node("span",{class:"legend-name"},t("unrecorded")),node("span",{class:"num"},approx(partial.unrecorded)),node("span",{class:"pct"},pct(partial.unrecorded/whole))));
   const hint=partial?node("p",{class:"note partial-hint",id:"partial-hint"},t("partialHint",{n:s.messageCount,total:s.messageTotal??"?"})):null;
@@ -241,8 +241,8 @@ function stepInputs(ctx,s) {
     .filter(x=>x.role!=="assistant"&&!(x.role==="user"&&x.chip!=="reminder")).sort((a,b)=>index(a)-index(b));
   if(!items.length)return muted(t("noInputs"));
   return node("span",{class:"brief-list"},items.slice(0,3).map(item=>button([chip(label(t,item),"tool-chip"),node("span",{class:"brief-text"},item.title||item.preview),node("span",{class:"num"},approx(item.estimatedTokens))],
-    ()=>a.reveal(item),{class:"brief-item clickable",dataset:{element:item.key}})),
-    items.length>3?button(t("moreItems",{n:items.length-3}),()=>a.mode("changes"),{class:"btn ghost small brief-more"}):null);
+    ()=>a.reveal(item),{class:"brief-item clickable",dataset:{element:item.key,focus:"brief:"+item.key}})),
+    items.length>3?button(t("moreItems",{n:items.length-3}),()=>a.mode("changes"),{class:"btn ghost small brief-more",dataset:{focus:"brief-more"}}):null);
 }
 function briefRow(name,content,tip) {
   return node("div",{class:"brief-row"},node("span",{class:"brief-label",title:tip},name),node("span",{class:"brief-body"},content));
@@ -482,7 +482,7 @@ function category(ctx,role,bucket,change,total,open,narrowed,matched) {
     const addedKeys=new Set(d.diff.available?d.diff.addedKeys:d.arrivals?.available?d.arrivals.keys:[]);
     for(const item of rows)body.append(elementRow(ctx,item,{badge:addedKeys.has(item.key)?"added":null}));
     const left=(group?.count??0)-rows.filter(x=>!x.pinned).length;
-    if(left>0)body.append(button(t("showMore",{n:left}),()=>a.more(role),{class:"btn ghost more",dataset:{role}}));
+    if(left>0)body.append(button(t("showMore",{n:left}),()=>a.more(role),{class:"btn ghost more",dataset:{role,focus:"more:"+role}}));
     if(!rows.length)body.append(node("p",{class:"muted pad"},t("noMatches")));
   }
   section.append(body);
@@ -700,7 +700,7 @@ function eventsCard(ctx) {
   const head=node("div",{class:"card-head wrap"},node("h2",{},t("events")),node("span",{class:"muted",id:"events-scope",title:t(whole?"eventsWholeTip":"eventsWindowTip")},t(whole?"eventsWhole":"eventsWindow")),spacer());
   if(kinds.length>1)head.append(node("div",{class:"event-kinds",id:"event-kinds"},...kinds.map(kind=>{
     const on=shown.includes(kind),n=all.filter(e=>e.kind===kind).length;
-    return button([t("kindName."+kind),node("span",{class:"kind-n"},String(n))],()=>a.eventKind(kind,kinds),{class:"toggle"+(on&&picked?.length?" on":""),dataset:{kind},ariaPressed:String(on&&Boolean(picked?.length))});
+    return button([t("kindName."+kind),node("span",{class:"kind-n"},String(n))],()=>a.eventKind(kind,kinds),{class:"toggle"+(on&&picked?.length?" on":""),dataset:{kind,focus:"kind:"+kind},ariaPressed:String(on&&Boolean(picked?.length))});
   })));
   const card=node("section",{class:"card events",id:"events"},head);
   if(!all.length){card.append(node("p",{class:"muted"},t("noEvents")));return card;}
@@ -719,10 +719,10 @@ function eventsCard(ctx) {
     const nav=node("div",{class:"event-nav"},at?node("span",{class:"event-at",title:evidence},at):null,
       event.clearedMessageCount!=null?muted(t("cleared",{n:full(event.clearedMessageCount)})):null,spacer(),
       event.kind==="inject"&&event.text?button(open?t("hideText"):t("showText"),()=>a.eventToggle(event),{class:"btn small ghost event-toggle",dataset:{focus:"event-text:"+eventId(event)},ariaExpanded:String(open)}):null,
-      event.kind==="tools"&&open&&!after?button(t("hideText"),()=>a.eventToggle(event),{class:"btn small ghost event-toggle",ariaExpanded:"true"}):null,
-      compacted?button((open?"▾ ":"▸ ")+t("summarizedList"),()=>a.eventToggle(event),{class:"btn small ghost event-toggle",ariaExpanded:String(open),title:t("summarizedHint")}):null,
+      event.kind==="tools"&&open&&!after?button(t("hideText"),()=>a.eventToggle(event),{class:"btn small ghost event-toggle",dataset:{focus:"event-text:"+eventId(event)},ariaExpanded:"true"}):null,
+      compacted?button((open?"▾ ":"▸ ")+t("summarizedList"),()=>a.eventToggle(event),{class:"btn small ghost event-toggle",dataset:{focus:"event-text:"+eventId(event)},ariaExpanded:String(open),title:t("summarizedHint")}):null,
       BOUNDARY.has(event.kind)&&before?button(t(event.kind==="rewind"?"rewindBefore":"before")+" · "+itemName(t,before),()=>a.select(before.key),
-        {class:"btn small ghost"+(before.key===view.selectedKey?" on":""),title:evidence}):null);
+        {class:"btn small ghost"+(before.key===view.selectedKey?" on":""),dataset:{focus:"event-before:"+eventId(event)},title:evidence}):null);
     const row=node("div",{class:"event "+event.kind+(event.status==="failed"?" failed":"")+(on?" on":"")+(open?" open":""),dataset:{kind:event.kind,evidence:event.evidence??"logged",event:eventId(event)}},main,nav);
     if(open&&event.kind==="inject")row.append(injectBody(t,event,target));
     else if(open&&event.kind==="tools"&&!after)row.append(toolsBody(ctx,event));

@@ -161,6 +161,11 @@ try {
   checks.push("focusing a compaction pins the step after it, scrolls to the browser and explains a non-comparable baseline");
   await compactions.first().locator(".event-nav button").click();await a.locator("#follow-state").filter({hasText:"正在查看历史请求"}).waitFor();
   checks.push("compaction before-step navigation");
+  // Event row buttons keep keyboard focus through the rebuild their own action causes.
+  await compactions.first().locator(".event-nav button").last().focus();await page.keyboard.press("Enter");await a.locator("#follow-state").waitFor();
+  assert.match(await a.locator("body").evaluate(()=>document.activeElement?.dataset?.focus??""),/^event-before:/);
+  await compactions.first().locator(".event-main").focus();await page.keyboard.press("Enter");await a.locator("#focus").waitFor();
+  assert.match(await a.locator("body").evaluate(()=>document.activeElement?.dataset?.focus??""),/^event:/);checks.push("event buttons keep keyboard focus");
   await page.request.get(base+"/inject?session=sess_A");await refresh(a);
   const inject=a.locator('.event.inject[data-evidence="recorded"]').first();await inject.waitFor();
   await inject.locator(".event-main").click();await a.locator(".el.open #content").filter({hasText:"Fixture TodoWrite reminder"}).waitFor();
