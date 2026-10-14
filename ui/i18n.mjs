@@ -39,7 +39,9 @@ const messages={
  enteredBeforeTip:["第 {step} 步时已在上下文中；再往前的记录未加载或不连续（缺口、重置或压缩），无法确定它进入的步骤","Already in context at step {step}; earlier records are not loaded or not continuous (gap, reset or compaction), so the step it entered is unknown"],
  callsUnknown:["调用次数未知：没有可读的工具调用记录","Call counts unknown: no readable tool-call log"],callsUnknownSome:["{n} 个未知","{n} unknown"],
  all:["全部","All"],changesOnly:["仅变化","Changes"],searchLoaded:["搜索全部已加载请求","Search all loaded requests"],
- items:["{n} 项","{n} items"],matchedItems:["{m} / {n} 项","{m} / {n} items"],showMore:["显示更多（还有 {n} 项）","Show more ({n} left)"],
+ items:["{n} 项","{n} items"],"items.one":["{n} 项","{n} item"],changedItems:["{n} 项变化","{n} changes"],"changedItems.one":["{n} 项变化","{n} change"],
+ loadedAllOnly:["跨请求搜索列出全部匹配，不区分变化","Search across requests lists every match, not changes"],
+ connectFailed:["无法连接到 ZCode，请关闭面板后重新打开","Could not connect to ZCode. Close the panel and open it again."],matchedItems:["{m} / {n} 项","{m} / {n} items"],showMore:["显示更多（还有 {n} 项）","Show more ({n} left)"],
  moreNotListed:["还有 {n} 项未列出","{n} more not listed"],addedBadge:["新增","New"],removedBadge:["已移除","Removed"],
  badgeTip:["只看这一类的新增和移除","List this category's additions and removals"],
  badgeNarrowedTip:["共 {all} 项，其中 {n} 项符合当前筛选；点击只看这些","{n} of {all} match the filter; click to list them"],
@@ -95,7 +97,7 @@ const messages={
  eventToolsNoStepTip:["之后没有可读取的请求；点击查看说明","No readable request after it; click for details"],
  eventUnreachable:["这条事件早于能读取到的记录，无法定位到具体步骤","This event predates the readable records and cannot be located"],
  showAllEvents:["显示全部（还有 {n} 条）","Show all ({n} more)"],showFewerEvents:["收起","Show fewer"],
- "kind.model":["模型切换","Model switch"],"kind.rewind":["回退","Rewind"],"kind.edit":["编辑提问","Edited question"],"kind.tools":["MCP 工具注册","MCP tools registered"],
+ "kind.compaction":["压缩","Compaction"],"kind.model":["模型切换","Model switch"],"kind.rewind":["回退","Rewind"],"kind.edit":["编辑提问","Edited question"],"kind.tools":["MCP 工具注册","MCP tools registered"],
  "kindName.compaction":["压缩","Compaction"],"kindName.rewind":["回退","Rewind"],"kindName.model":["模型","Model"],"kindName.tools":["工具","Tools"],
  inProgress:["进行中","in progress"],took:["用时 {s}s","took {s}s"],kept:["保留 {n} 条消息","{n} messages kept"],toolsRegistered:["{n} 个工具","{n} tools"],
  stepGap:["第 {a} → {b} 步","Step {a} → {b}"],fromStep:["第 {n} 步起","From step {n}"],afterStep:["第 {n} 步之后","After step {n}"],rewindBefore:["回退前","Before"],
@@ -143,7 +145,8 @@ const messages={
 export function translator(locale="zh-CN") {
   const i=locale.startsWith("zh")?0:1;
   return (key,vars)=>{
-    let text=messages[key]?.[i]??key;
+    // English singulars use a ".one" variant where one exists.
+    let text=(i===1&&vars?.n===1?messages[key+".one"]?.[i]:null)??messages[key]?.[i]??key;
     if(vars)for(const [name,value] of Object.entries(vars))text=text.replaceAll("{"+name+"}",String(value));
     return text;
   };

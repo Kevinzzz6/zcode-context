@@ -181,9 +181,9 @@ function noticeBar(ctx) {
   const {t,notice:n,actions:a}=ctx;
   if(n.kind==="slow")return node("div",{class:"notice slow",id:"status",role:"status"},t("slow"));
   if(n.kind==="info")return node("div",{class:"notice info",id:"status",role:"status"},t(n.code));
-  const message=n.code==="binding_unavailable"?t("binding"):n.code==="request_expired"?t("expired"):t("readFailed");
+  const message=n.code==="binding_unavailable"?t("binding"):n.code==="request_expired"?t("expired"):n.code==="connect_failed"?t("connectFailed"):t("readFailed");
   return node("div",{class:"notice error",id:"status",role:"alert"},node("span",{},message),spacer(),
-    n.code==="request_expired"?button(t("latest"),a.latest,{class:"btn small"}):button(t("retry"),()=>a.refresh(true),{class:"btn small"}));
+    n.code==="connect_failed"?null:n.code==="request_expired"?button(t("latest"),a.latest,{class:"btn small"}):button(t("retry"),()=>a.refresh(true),{class:"btn small"}));
 }
 
 function summaryCard(ctx) {
@@ -366,7 +366,7 @@ function trendCard(ctx) {
     else if(c.partial&&c.actualDelta!=null){if(c.actualDelta)(c.actualDelta>0?pos:neg).push({role:"actual",v:Math.abs(c.actualDelta)});}
     else missing=true;
     const sum=list=>list.reduce((n,x)=>n+x.v,0);
-    const bar=button([],()=>a.select(s.key),{class:"bar"+(selected?" selected":""),dataset:{key:s.key,pos:sum(pos),neg:sum(neg)},ariaLabel:turns?t("turn",{n:c.turn??"?"}):itemLong(t,s),
+    const bar=button([],()=>a.select(s.key),{class:"bar"+(selected?" selected":""),dataset:{key:s.key,focus:"bar:"+s.key,pos:sum(pos),neg:sum(neg)},ariaLabel:turns?t("turn",{n:c.turn??"?"}):itemLong(t,s),
       onmouseenter:e=>showTip(ctx,e.currentTarget,c,delta),onfocus:e=>showTip(ctx,e.currentTarget,c,delta)});
     bar.setAttribute("aria-pressed",String(selected));
     const up=node("span",{class:"stack up"}),down=node("span",{class:"stack down"});
@@ -413,8 +413,10 @@ function browserCard(ctx) {
   card.append(node("div",{class:"controls"},search,clear,seg([["size",t("bySize")],["order",t("byOrder")]],view.sort,v=>a.sort(v),{id:"sort",small:true})));
   const li=d?.summary?.key===view.selectedKey?d.listing:null;
   const counts=li?.source?` +${li.added}`+(li.removed!=null?` −${li.removed}`:""):"";
-  const mode=seg([["all",t("all")],["changes",t("changesOnly")+counts]],L.mode,v=>a.mode(v),{id:"mode",small:true});
-  if(li?.narrowed&&li.source)mode.title=t("changesNarrowedTip",{n:"+"+li.addedTotal+(li.removedTotal!=null?" −"+li.removedTotal:"")});
+  // Searching all loaded requests lists every match; All / Changes compares one request with its baseline, so it does not apply.
+  const mode=L.searchAll?node("span",{class:"muted small",id:"mode"},t("loadedAllOnly"))
+    :seg([["all",t("all")],["changes",t("changesOnly")+counts]],L.mode,v=>a.mode(v),{id:"mode",small:true});
+  if(li?.narrowed&&li.source&&!L.searchAll)mode.title=t("changesNarrowedTip",{n:"+"+li.addedTotal+(li.removedTotal!=null?" −"+li.removedTotal:"")});
   card.append(node("div",{class:"controls"},mode,spacer(),
     !L.focused&&view.search?button(t("searchLoaded"),()=>a.searchAll(!view.searchAll),{class:"toggle"+(view.searchAll?" on":""),id:"search-scope",ariaPressed:String(view.searchAll)}):null));
   if(!li){card.append(node("p",{class:"muted pad"},t("loading")));return card;}
@@ -458,10 +460,10 @@ function category(ctx,role,bucket,change,total,open,narrowed,matched) {
   const group=d.groups?.[role],size=bucket?.estimatedTokens??0,added=li.addedGroups[role],removed=li.removedGroups[role];
   const dim=changes?!added?.items.length&&!removed?.items.length:narrowed&&!matched;
   const expanded=open&&!dim,toggle=()=>a.toggleRole(role),state={ariaExpanded:String(expanded),disabled:dim},delta=tokensOf(change);
-  const badge=(n,all,cls,sign)=>n?button(sign+n,()=>a.showChanges(role),{class:"badge cat-badge "+cls,title:narrowed&&n!==all?t("badgeNarrowedTip",{n,all}):t("badgeTip")}):null;
+  const badge=(n,all,cls,sign)=>n?button(sign+n,()=>a.showChanges(role),{class:"badge cat-badge "+cls,dataset:{focus:"badge:"+role+sign},title:narrowed&&n!==all?t("badgeNarrowedTip",{n,all}):t("badgeTip")}):null;
   const head=node("div",{class:"cat-head",...hoverRole(role)},
     button([node("span",{class:"chev"},expanded?"▾":"▸"),dot(role),node("span",{class:"cat-name"},t(role)),
-      node("span",{class:"cat-count"},narrowed&&!changes?t("matchedItems",{m:r.matched,n:r.total}):t("items",{n:r.total}))],toggle,{class:"cat-toggle",...state}),
+      node("span",{class:"cat-count"},changes?t("changedItems",{n:r.added+(r.removed??0)}):narrowed?t("matchedItems",{m:r.matched,n:r.total}):t("items",{n:r.total}))],toggle,{class:"cat-toggle",dataset:{focus:"cat:"+role},...state}),
     badge(r.added,r.addedTotal,"up","+"),badge(r.removed,r.removedTotal,"down","−"),
     button([spacer(),delta?node("span",{class:"delta "+(delta>0?"up":"down")},signed(delta)):null,node("span",{class:"num"},approx(size)),node("span",{class:"pct"},pct(size/total))],
       toggle,{class:"cat-toggle cat-facts",tabIndex:-1,...state}));
@@ -535,7 +537,7 @@ function elementRow(ctx,item,{badge=null,snapshotKey=null,prefix=null}={}) {
     item.pinned?node("span",{class:"pin",title:t("pinnedTip")},t("pinnedItem")):null,
     badge?node("span",{class:"badge "+(badge==="added"?"up":"down")},t(badge==="added"?"addedBadge":"removedBadge")):null,
     item.role==="schema"&&item.callCount!=null?node("span",{class:"calls"+(item.callCount?"":" zero"),title:t("callsTip",{n:item.callCount})},"×"+item.callCount):null,
-    entryStamp(t,item),node("span",{class:"num"},approx(item.estimatedTokens))],()=>a.open(item,key),{class:"el-head",ariaExpanded:String(open)});
+    entryStamp(t,item),node("span",{class:"num"},approx(item.estimatedTokens))],()=>a.open(item,key),{class:"el-head",dataset:{focus:"el:"+key+":"+item.key},ariaExpanded:String(open)});
   const row=node("div",{class:"el element-row"+(open?" open":"")+(badge==="removed"?" removed":""),dataset:{element:item.key,snapshot:key,kind:badge??""}},head);
   if(item.subtitle&&!open)row.append(node("div",{class:"el-sub"},item.subtitle));
   if(open)row.append(elementBody(ctx,item,{badge}));
@@ -713,10 +715,10 @@ function eventsCard(ctx) {
     const open=view.eventOpen===eventId(event),compacted=event.kind==="compaction"&&event.evidence==="recorded"&&event.summarizedCount;
     const main=button([node("span",{class:"event-glyph"},GLYPH[event.kind]??"•"),node("span",{class:"kind"},eventLabel(t,event)),
       detail?node("span",{class:"event-detail",title:detail},detail):null,spacer(),saved,muted(clock(event.timestamp))],
-      ()=>a.focusEvent(event),{class:"event-main",disabled:!reachable,title:eventTip(t,event,target),ariaPressed:String(on)});
+      ()=>a.focusEvent(event),{class:"event-main",dataset:{focus:"event:"+eventId(event)},disabled:!reachable,title:eventTip(t,event,target),ariaPressed:String(on)});
     const nav=node("div",{class:"event-nav"},at?node("span",{class:"event-at",title:evidence},at):null,
       event.clearedMessageCount!=null?muted(t("cleared",{n:full(event.clearedMessageCount)})):null,spacer(),
-      event.kind==="inject"&&event.text?button(open?t("hideText"):t("showText"),()=>a.eventToggle(event),{class:"btn small ghost event-toggle",ariaExpanded:String(open)}):null,
+      event.kind==="inject"&&event.text?button(open?t("hideText"):t("showText"),()=>a.eventToggle(event),{class:"btn small ghost event-toggle",dataset:{focus:"event-text:"+eventId(event)},ariaExpanded:String(open)}):null,
       event.kind==="tools"&&open&&!after?button(t("hideText"),()=>a.eventToggle(event),{class:"btn small ghost event-toggle",ariaExpanded:"true"}):null,
       compacted?button((open?"▾ ":"▸ ")+t("summarizedList"),()=>a.eventToggle(event),{class:"btn small ghost event-toggle",ariaExpanded:String(open),title:t("summarizedHint")}):null,
       BOUNDARY.has(event.kind)&&before?button(t(event.kind==="rewind"?"rewindBefore":"before")+" · "+itemName(t,before),()=>a.select(before.key),

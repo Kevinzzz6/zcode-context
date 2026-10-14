@@ -11,6 +11,8 @@ let detail=null,content=null,more={},notice=null,busy=false,activeLoads=0;
 const eventDetails=new Map();
 let generation=0,detailSequence=0,contentSequence=0,moreSequence={},toolCallsDigest=null;
 let pendingRender=false,renderedSelection=null,scrollTarget=null,jumpToMatch=false,keepRightEdge=null,reveal=null;
+// Bumped by every navigation, so an event navigation still waiting for history does not override a later choice.
+let navigation=0;
 let timer,searchTimer,bodyTimer,slowTimer,noticeTimer,scrollTimer,idlePolls=0,stopped=false;
 const persist=()=>saveView(boundSession,view);
 const latestKey=()=>items.filter(isAgent).at(-1)?.key??items.at(-1)?.key??null;
@@ -24,7 +26,8 @@ function interacting() {
 function render(background=false) {
   if(background&&interacting()){pendingRender=true;return;}
   pendingRender=false;highlight(null);
-  const focus=document.activeElement,focusId=focus&&root.contains(focus)?focus.id:null,caret=focus?.selectionStart;
+  // Focus is restored by id, or by the stable data-focus key of a button that has no id.
+  const focus=document.activeElement,inside=focus&&root.contains(focus),focusId=inside?focus.id||null:null,focusKey=inside&&!focusId?focus.dataset?.focus??null:null,caret=focus?.selectionStart;
   const scrolls=new Map([...root.querySelectorAll("[data-scroll]")].map(el=>[el.dataset.scroll,[el.scrollLeft,el.scrollTop,el.scrollWidth]]));
   const y=window.scrollY,agents=items.filter(isAgent),index=agents.findIndex(x=>x.key===view.selectedKey);
   const selected=items.find(x=>x.key===view.selectedKey)??(detail?.summary?.key===view.selectedKey?detail.summary:null);
@@ -36,8 +39,8 @@ function render(background=false) {
   }
   keepRightEdge=null;
   adaptTrend();
-  if(focusId) {
-    const el=document.getElementById(focusId);
+  if(focusId||focusKey) {
+    const el=focusId?document.getElementById(focusId):[...root.querySelectorAll("[data-focus]")].find(x=>x.dataset.focus===focusKey);
     if(el&&el!==document.activeElement){el.focus({preventScroll:true});if(caret!=null&&el.setSelectionRange)try{el.setSelectionRange(caret,caret);}catch{}}
   }
   window.scrollTo(0,y);
@@ -128,7 +131,7 @@ async function loadDetail(background=false,keepMore=false) {
   try {
     const focusKey=view.open?.key===key?view.open.elementKey:view.focus?.stepKey===key?view.focus.summary??undefined:undefined;
     const next=await call("get_context_request",{key,search:L.search,searchScope:L.searchAll?"loaded":"selected",toolPrefix:L.toolPrefix||undefined,
-      sort:view.sort,schemaSort:view.schemaSort,focusKey,...baselineArgs(key)});
+      sort:view.sort,schemaSort:view.schemaSort,focusKey,...baselineArgs()});
     if(sequence!==detailSequence||expected!==generation||key!==view.selectedKey||next.sessionId!==boundSession)return;
     detail=next;if(!keepMore){more={};moreSequence={};}
     if(!items.some(x=>x.key===key))items=mergeSnapshots(items,[next.summary]);
@@ -168,7 +171,7 @@ async function loadContent() {
   startLoad();
   try {
     const args={key:pointer.key,elementKey:pointer.elementKey,offset:pointer.offset??0,format:pointer.format==="raw"?"raw":"readable",bodySearch:pointer.search??""};
-    if(pointer.diff&&pointer.diffBefore){args.diffBeforeElement=pointer.diffBefore;Object.assign(args,baselineArgs(pointer.key));}
+    if(pointer.diff&&pointer.diffBefore){args.diffBeforeElement=pointer.diffBefore;Object.assign(args,baselineArgs());}
     const next=await call("get_context_request",args);
     if(sequence!==contentSequence||expected!==generation||view.open?.elementKey!==pointer.elementKey||view.open?.key!==pointer.key||next.sessionId!==boundSession)return;
     content=next;render();
@@ -181,7 +184,7 @@ async function loadContent() {
 async function loadMore(role) {
   const key=view.selectedKey,sequence=moreSequence[role]={},expected=generation,page=(more[role]?.page??0)+1,L=lens(view);
   try {
-    const next=await call("get_context_request",{key,role,page,search:L.search,toolPrefix:L.toolPrefix||undefined,searchScope:"selected",sort:view.sort,schemaSort:view.schemaSort,...baselineArgs(key)});
+    const next=await call("get_context_request",{key,role,page,search:L.search,toolPrefix:L.toolPrefix||undefined,searchScope:"selected",sort:view.sort,schemaSort:view.schemaSort,...baselineArgs()});
     if(sequence!==moreSequence[role]||expected!==generation||key!==view.selectedKey)return;
     more={...more,[role]:{page,items:[...(more[role]?.items??[]),...next.elements]}};render();
   }catch(error){if(expected===generation)showError(error);}
@@ -196,31 +199,35 @@ async function loadEventDetail(id,background=false) {
   }catch(error){if(expected===generation)eventDetails.set(id,{state:"failed",code:error?.code});}
   render(background);
 }
-async function loadOlder() {
-  if(!hasOlder)return;
-  const expected=generation;
-  try {
-    const next=await call("get_context_summary",{historyPage:historyPage+1});
-    if(expected!==generation||next.sessionId!==boundSession)return;
-    historyPage++;items=mergeSnapshots(items,next.trajectories);hasOlder=historyPage<4&&Boolean(next.history?.hasOlder);
-    const scroller=document.getElementById("trend-scroll");
-    if(scroller)keepRightEdge=scroller.scrollWidth-scroller.scrollLeft;
-    render();
-  }catch(error){if(expected===generation)showError(error);}
+// One page at a time: a second click or an event's history load joins the read in flight, and the cursor follows
+// the page the service answered, so no page is skipped.
+let olderLoad=null;
+function loadOlder() {
+  if(olderLoad?.generation===generation)return olderLoad.promise;
+  if(!hasOlder)return Promise.resolve();
+  const expected=generation,page=historyPage+1;
+  const promise=(async()=>{
+    try {
+      const next=await call("get_context_summary",{historyPage:page});
+      if(expected!==generation||next.sessionId!==boundSession)return;
+      historyPage=Math.max(historyPage,next.history?.page??page);items=mergeSnapshots(items,next.trajectories);hasOlder=historyPage<4&&Boolean(next.history?.hasOlder);
+      const scroller=document.getElementById("trend-scroll");
+      if(scroller)keepRightEdge=scroller.scrollWidth-scroller.scrollLeft;
+      render();
+    }catch(error){if(expected===generation)showError(error);}
+    finally{if(olderLoad?.promise===promise)olderLoad=null;}
+  })();
+  olderLoad={generation:expected,promise};
+  return promise;
 }
 async function copy(text) {
   try{await navigator.clipboard.writeText(text);flash("copied");}catch{flash("copyFailed");}
 }
-// "Previous turn" compares with the last agent step of the preceding turn, from the same source; a first turn compares with nothing.
-function baselineArgs(key) {
+// "Previous turn" is resolved by the service over its whole cache, not only the steps this panel has loaded.
+function baselineArgs() {
   const L=lens(view);
   if(L.baselineKey)return {baselineKey:L.baselineKey};
-  if(L.baselineMode!=="turn")return {};
-  const item=items.find(x=>x.key===key);
-  if(!item||!isAgent(item))return {};
-  if(item.turn==null)return {noBaseline:true};
-  const previous=items.filter(x=>isAgent(x)&&x.querySource===item.querySource&&x.turn!=null&&x.turn<item.turn&&x.startedAt<item.startedAt).at(-1);
-  return previous?{baselineKey:previous.key}:{noBaseline:true};
+  return L.baselineMode==="turn"?{baselineMode:"turn"}:{};
 }
 function jumpMatch(direction) {
   const hits=content?.content?.hits??[];if(!hits.length)return;
@@ -237,7 +244,7 @@ function stepBy(direction) {
 }
 document.addEventListener("keydown",e=>{
   if(e.defaultPrevented||e.altKey||e.ctrlKey||e.metaKey||e.shiftKey||view.page!=="context")return;
-  if(e.target?.closest?.("input,textarea,select,[contenteditable]"))return;
+  if(e.target?.closest?.("input,textarea,select,[contenteditable],#content"))return;
   if(e.key==="ArrowLeft"||e.key==="ArrowRight"){e.preventDefault();stepBy(e.key==="ArrowLeft"?-1:1);}
 });
 const updateOpen=patch=>{view={...view,open:{...view.open,...patch}};persist();};
@@ -247,7 +254,7 @@ const rowSelector=(snapshotKey,elementKey)=>`.el[data-element="${elementKey}"][d
 // item listed even when the current filter or set would hide it.
 function goStep(key,{eventKey=null,element=null,scroll=["#browser","start"]}={}) {
   if(!key)return;
-  ++contentSequence;
+  ++contentSequence;++navigation;
   view={...view,selectedKey:key,follow:false,open:element?openPointer(key,element):null,baselineKey:null,focus:null,eventKey};
   if(element)setExpanded([...new Set([...expandedRoles(view,detail),element.role])]);
   detail=null;content=null;more={};moreSequence={};if(notice?.kind==="error")notice=null;
@@ -258,7 +265,7 @@ function goStep(key,{eventKey=null,element=null,scroll=["#browser","start"]}={})
 // rather than replacing it, ends on leaving its step, and is never saved.
 function enterFocus(key,focus) {
   if(!key)return;
-  ++contentSequence;
+  ++contentSequence;++navigation;
   view={...view,selectedKey:key,follow:false,open:null,eventKey:focus.eventKey,focus:{probe:true,expanded:null,note:null,...focus,stepKey:key}};
   detail=null;content=null;more={};moreSequence={};if(notice?.kind==="error")notice=null;
   scrollTarget=["#browser","start"];reveal={key,target:scrollTarget};persist();render();loadDetail();
@@ -273,7 +280,7 @@ const MCP={kind:"tools",toolPrefix:"mcp__",expanded:["schema"]};
 const actions={
   select(key) {
     if(!key)return;
-    ++contentSequence;
+    ++contentSequence;++navigation;
     view={...view,selectedKey:key,follow:key===latestKey(),open:null,baselineKey:null,focus:null,eventKey:null};
     detail=null;content=null;more={};moreSequence={};if(notice?.kind==="error")notice=null;
     persist();render();loadDetail();
@@ -284,18 +291,21 @@ const actions={
   // of the step after. Events older than the loaded steps first load earlier history, and one that still has no step
   // after it says so instead of borrowing another step.
   async focusEvent(event) {
+    const token=++navigation,expected=generation,stale=()=>token!==navigation||expected!==generation;
     const locate=()=>anchors(items,event,olderUnloaded({hasOlder,items,overview}));
     let target=locate();
-    for(let i=0;target.earlier&&hasOlder&&i<5;i++){await loadOlder();target=locate();}
+    for(let i=0;target.earlier&&hasOlder&&i<5;i++){await loadOlder();if(stale())return;target=locate();}
     const id=eventId(event),{before,after}=target;
     if(target.unlocated||event.kind==="tools"&&!after){actions.eventToggle(event,true);return;}
     if(!after){flash(target.earlier?"eventUnreachable":"eventNoAfter");return;}
     const baseline=before&&before.key!==after.key?before.key:null;
     if(event.kind==="tools"){enterFocus(after.key,{...MCP,eventKey:id,baselineKey:baseline,mode:baseline?"changes":"all",toolCount:event.toolCount??null});return;}
     if(event.stepKey){goStep(after.key,{eventKey:id,element:event.elementKey?{key:event.elementKey,role:event.elementRole??"user"}:null});return;}
-    if(!BOUNDARY.has(event.kind)||!baseline){goStep(after.key,{eventKey:id,scroll:BOUNDARY.has(event.kind)?["#browser","start"]:["#summary","start"]});return;}
+    if(!BOUNDARY.has(event.kind)){goStep(after.key,{eventKey:id,scroll:["#summary","start"]});return;}
     const summary=event.kind==="compaction"&&event.navigation?.summaryStepKey===after.key?event.navigation.summaryKey:null;
-    enterFocus(after.key,{eventKey:id,kind:event.kind,baselineKey:baseline,mode:"changes",summary});
+    if(!baseline&&!summary){goStep(after.key,{eventKey:id,scroll:["#browser","start"]});return;}
+    // Without a step before it a compaction cannot be compared; the focus says so and opens the summary it continues from.
+    enterFocus(after.key,{eventKey:id,kind:event.kind,baselineKey:baseline,mode:baseline?"changes":"all",summary,note:baseline?null:{reason:"no_previous_snapshot"}});
   },
   // The explicit fallback for an MCP registration without a step after it: the latest step, labelled as such.
   toolsAtLatest(event){enterFocus(latestKey(),{...MCP,eventKey:eventId(event),baselineKey:null,mode:"all",note:{latest:true},probe:false,toolCount:event.toolCount??null});},
@@ -358,13 +368,13 @@ const actions={
   // Opens one item where it is; the reload sends it as focusKey, so it is listed even if filtered out or beyond the first page.
   reveal(item) {
     const key=view.selectedKey;if(!key)return;
-    ++contentSequence;content=null;
+    ++contentSequence;++navigation;content=null;
     setExpanded([...new Set([...expandedRoles(view,detail),item.role])]);
     view={...view,open:openPointer(key,item)};
     scrollTarget=[rowSelector(key,item.key),"center"];reveal={key,target:scrollTarget};persist();render();loadDetail();loadContent();
   },
   open(item,snapshotKey=view.selectedKey,scroll=false) {
-    ++contentSequence;content=null;
+    ++contentSequence;++navigation;content=null;
     if(view.open?.elementKey===item.key&&view.open?.key===snapshotKey) {
       view={...view,open:null};persist();
       if(view.follow&&view.selectedKey!==latestKey()){actions.select(latestKey());return;}
@@ -415,6 +425,7 @@ if(!demo) {
   };
   app.onhostcontextchanged=applyHostContext;
   app.onteardown=async()=>{stopped=true;persist();clearTimeout(timer);clearTimeout(searchTimer);clearTimeout(bodyTimer);};
-  try{await app.connect();applyHostContext();await refresh();}catch(error){showError(error);}
+  // Without a connection no read can succeed and retrying cannot reconnect, so polling stops and the panel says to reopen it.
+  try{await app.connect();applyHostContext();await refresh();}catch{stopped=true;showError({code:"connect_failed"});}
 }else await refresh();
 schedule();
