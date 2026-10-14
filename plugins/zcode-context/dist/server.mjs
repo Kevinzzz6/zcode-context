@@ -31373,7 +31373,7 @@ function createReader(spawn, { timeoutMs = 15e3, limit = 8 } = {}) {
 var HTML_URI = "ui://zcode-context/panel.html";
 var reader = createReader(() => new Worker(new URL("./worker.mjs", import.meta.url), { workerData: { paths: resolveDataPaths() }, resourceLimits: { maxOldGenerationSizeMb: 256 } }));
 function createContextServer() {
-  const server2 = new McpServer({ name: "zcode-context", version: "0.3.7" });
+  const server2 = new McpServer({ name: "zcode-context", version: "0.3.8" });
   server2.registerResource(
     "context_panel",
     HTML_URI,
