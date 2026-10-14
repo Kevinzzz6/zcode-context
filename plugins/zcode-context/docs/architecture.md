@@ -20,9 +20,16 @@ Resource reads currently lack this metadata; the HTML is generic and first binds
   Main-turn inputs are charted separately from compact/title/child requests. Totals include each
   model_usage row once. Unknown usage stays unknown. Cache normalization follows the upstream legacy helper.
 - Trajectory: fixed session filename plus exact raw sessionId validation. Bounded asynchronous JSONL reader
-  handles append, UTF-8 boundaries, reset, cold-tail gaps and partial lines. Expansion occurs before
+  handles append, UTF-8 boundaries, reset, cold-tail gaps and partial lines. Only a missing file restarts the window;
+  other system errors keep the position. A delta after a tail continues the tail's recorded range and stays partial. Expansion occurs before
   query-source filtering. Context snapshots compare content, not sampling or provider tokenization.
-- Event logs: explicit compact events only. A negative size delta alone has no causal classification.
+- Conversation store: the session's `message` / `part` rows (and `session.revert`) in the same SQLite file, read-only and
+  incrementally by `time_updated`, with cached ids checked for existence because a deletion moves no cursor. Only the
+  JSON fields events need are extracted; ordinary text never reaches JavaScript. It is the source of injections,
+  compactions (status, tokens, summarized messages on the active branch) and model switches for the whole session.
+  Transient open errors keep the last events; a missing database or unsupported schema falls back to the logs.
+- Event logs: three days, for rewinds, edited questions, MCP registrations and compactions the store has no row for.
+  A negative size delta alone has no causal classification.
 
 Requests are not forcibly joined across SQLite and traj: logical_request_id and adapter requestId
 are not proven to be the same identifier. This avoids multiplying usage by network retries.
@@ -30,7 +37,8 @@ are not proven to be the same identifier. This avoids multiplying usage by netwo
 ## Isolation and limits
 
 A worker serializes reads and limits memory. Server identity is per call; worker caches use session/file keys.
-A read that times out (15 s) or is cancelled is skipped by the worker if it has not started (`src/data/runner.mjs`); the
+Unexpected errors (anything but a ContextError) are logged to stderr, never to the stdio protocol channel, and reach the panel
+only as `read_failed`. A read that times out (15 s) or is cancelled is skipped by the worker if it has not started (`src/data/runner.mjs`); the
 busy limit of 8 counts reads the worker still holds, so abandoned work cannot pile up behind a slow read (`src/data/reader.mjs`).
 The panel polls every 3 s, slows to 6 s and then 10 s while summaries stay unchanged, and returns to 3 s when it becomes
 visible, gains focus or the pointer enters it. A measured unchanged refresh of a 32 MiB real session costs about 7 ms
@@ -51,6 +59,7 @@ remains missing. No fake context-window percentage or per-plugin provenance is d
 | model_usage schema and normalized token fields | repositories/usage.ts | Usage unavailable |
 | Model I/O filename and full/delta/tail shape | runner-debug.ts | Coverage warning |
 | Compact event shape and daily log naming | runtime/methods/{compact,microcompact}.ts | Event list incomplete |
+| message/part semantics, compaction and timeline parts, session.revert | runtime/methods/{message,compact}-persistence.ts | Logs only |
 | Default CLI directory layout | bootstrap/src/app/paths.ts | User config override needed |
 
 Do not import upstream source packages at runtime. Do not instantiate SqliteSessionStore.

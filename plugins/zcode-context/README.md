@@ -293,7 +293,7 @@ npm run verify       # 以上全部，结果写入 output/verification
 | `npm run fixture:ui` | 合成的多轮会话（工具调用、标题请求、自动压缩），打开 <http://127.0.0.1:4175>；`FIXTURE_TAIL=12` 模拟默认的只记录最近消息；`/append?session=sess_A` 模拟新请求到达 |
 | `npm run preview:session -- <sessionId>` | 用构建产物只读地预览一个真实会话，打开 <http://127.0.0.1:4177>，无需安装插件 |
 | `npm run preview` | 演示数据页面，打开 <http://127.0.0.1:4173/?demo=1> |
-| `npm run fixture:browser` + `npm run test:browser -- <playwright/index.mjs 的绝对路径>` | 浏览器交互回归（25 组），使用已有的 Playwright 和本机 Chrome，不下载浏览器 |
+| `npm run fixture:browser` + `npm run test:browser -- <playwright/index.mjs 的绝对路径>` | 浏览器交互回归（35 组），使用已有的 Playwright 和本机 Chrome，不下载浏览器 |
 
 浏览器测试验证官方 App/AppBridge 握手、真实 stdio/SQLite 和双会话隔离，但不代替在 ZCode 桌面侧栏中的验收。
 
@@ -315,7 +315,8 @@ README 里的图全部由 [`docs/images/src/render.sh`](docs/images/src/render.s
 | [交接与接续步骤](docs/handoff.md) | 当前版本的修复记录与后续步骤 |
 | [桌面验收](docs/desktop-acceptance.md) | 桌面侧栏的验收清单，只在隔离的 ZCode 副本中进行 |
 | [验证记录](docs/verification.md) | 已执行的检查与结果 |
-| [与 dsh-context 的对比](docs/dsh-comparison.md) | 界面与功能差距评估 |
+| [与 dsh-context 的对比](docs/dsh-comparison.md) | 界面与功能差距评估（0.1.1 历史快照） |
+| [侧栏设计提案](docs/sidebar-design.md) | 0.2 的侧栏设计（历史快照） |
 
 <br>
 
