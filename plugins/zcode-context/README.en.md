@@ -293,7 +293,7 @@ npm run verify       # all of the above, results in output/verification
 | `npm run fixture:ui` | Synthetic multi-turn session (tool calls, a title request, an automatic compaction) at <http://127.0.0.1:4175>; `FIXTURE_TAIL=12` mimics default tail recording; `/append?session=sess_A` simulates a new request |
 | `npm run preview:session -- <sessionId>` | Read-only preview of a real session through the built service at <http://127.0.0.1:4177>, without installing the plugin |
 | `npm run preview` | Demo data at <http://127.0.0.1:4173/?demo=1> |
-| `npm run fixture:browser` + `npm run test:browser -- <absolute path to playwright/index.mjs>` | Browser interaction regression (35 groups) with existing Playwright and local Chrome; nothing is downloaded |
+| `npm run fixture:browser` + `npm run test:browser -- <absolute path to playwright/index.mjs>` | Browser interaction regression (36 groups) with existing Playwright and local Chrome; nothing is downloaded |
 
 The browser test covers the official App/AppBridge handshake, real stdio/SQLite and two-session isolation, but does not replace acceptance in the ZCode desktop side pane.
 

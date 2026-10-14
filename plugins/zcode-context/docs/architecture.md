@@ -24,8 +24,10 @@ Resource reads currently lack this metadata; the HTML is generic and first binds
   other system errors keep the position. A delta after a tail continues the tail's recorded range and stays partial. Expansion occurs before
   query-source filtering. Context snapshots compare content, not sampling or provider tokenization.
 - Conversation store: the session's `message` / `part` rows (and `session.revert`) in the same SQLite file, read-only and
-  incrementally by `time_updated`, with cached ids checked for existence because a deletion moves no cursor. Only the
-  JSON fields events need are extracted; ordinary text never reaches JavaScript. It is the source of injections,
+  incrementally by `time_updated`. Every message and part id is known: deletions are dropped, and rows below the cursor or a
+  cursor that went backwards reload everything. Only the
+  JSON fields events need are extracted; ordinary text and whole tool inputs never reach JavaScript. Injected text past
+  4000 characters is matched by length and SHA-256. It is the source of injections,
   compactions (status, tokens, summarized messages on the active branch) and model switches for the whole session.
   Transient open errors keep the last events; a missing database or unsupported schema falls back to the logs.
 - Event logs: three days, for rewinds, edited questions, MCP registrations and compactions the store has no row for.

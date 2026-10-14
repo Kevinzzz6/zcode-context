@@ -7,7 +7,7 @@
 - 起因：点「MCP 工具注册」把 `mcp__` 写进了全局搜索框，筛选会跟着切步骤、重开面板一直留着；类别上的 `+3` 取自未筛选的对比，点开却只有筛选后的一条。按第一性原理整理成五条规则，写在 [decisions.md](decisions.md)「上下文浏览器的交互规则」。
 - 服务端 `get_context_request` 新增 `listing`（每类 total / matched / added / removed 及未筛选总数，新增/移除列表已按筛选过滤）、`toolPrefix`（只按工具名匹配 schema）、`noBaseline`（上一轮不存在时不退回上一步）；`focusKey` 指向的项即使不符合筛选也会列出并标 `pinned`。去掉了 `searchAddedGroups` / `searchRemovedGroups` / `arrivals.searchGroups`。
 - 界面新增事件焦点 `view.focus`（`ui/state.mjs` 的 `lens()` 决定实际生效的基线、集合和条件），不保存；`eventKey` 也不再保存。
-- 已通过 `npm run verify`（83 个单元测试）和 SDK 浏览器冒烟 34 组（新增 4 组；当前 35 组）；尚未在真实 Electron 客户端中验收。
+- 已通过 `npm run verify`（83 个单元测试）和 SDK 浏览器冒烟 34 组（新增 4 组；当前 36 组）；尚未在真实 Electron 客户端中验收。
 
 ## 0.3.6 桌面验收（2026-10-14）
 
