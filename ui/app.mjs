@@ -1,7 +1,7 @@
 import { App } from "@modelcontextprotocol/ext-apps";
-import { initialView, restoreView, saveView, mergeSnapshots } from "./state.mjs";
-import { translator } from "./i18n.mjs";
-import { renderApp, isAgent, CHUNK, layoutTrend, highlight, anchors, olderUnloaded, BOUNDARY, eventId, matchedRoles } from "./components.mjs";
+import { initialView, restoreView, saveView, mergeSnapshots, lens } from "./state.mjs";
+import { translator, ORDER } from "./i18n.mjs";
+import { renderApp, isAgent, CHUNK, layoutTrend, highlight, anchors, olderUnloaded, BOUNDARY, eventId, expandedRoles } from "./components.mjs";
 import { demoCall } from "./demo.mjs";
 const root=document.getElementById("root");
 const INFO={name:"zcode-context",version:"0.3.6"};
@@ -29,7 +29,7 @@ function render(background=false) {
   const y=window.scrollY,agents=items.filter(isAgent),index=agents.findIndex(x=>x.key===view.selectedKey);
   const selected=items.find(x=>x.key===view.selectedKey)??(detail?.summary?.key===view.selectedKey?detail.summary:null);
   const newerCount=index>=0?agents.length-1-index:selected?agents.filter(x=>x.startedAt>selected.startedAt).length:0;
-  root.replaceChildren(renderApp({t,view,version:INFO.version,overview,items,selected,detail,content,more,eventDetails,hasOlder,notice,busy,demo,latestKey:latestKey(),newerCount,session:boundSession,actions}));
+  root.replaceChildren(renderApp({t,view,lens:lens(view),version:INFO.version,overview,items,selected,detail,content,more,eventDetails,hasOlder,notice,busy,demo,latestKey:latestKey(),newerCount,session:boundSession,actions}));
   for(const el of root.querySelectorAll("[data-scroll]")) {
     const saved=scrolls.get(el.dataset.scroll);if(!saved)continue;
     el.scrollTop=saved[1];el.scrollLeft=keepRightEdge&&el.dataset.scroll==="trend"?el.scrollWidth-keepRightEdge:saved[0];
@@ -106,9 +106,9 @@ async function refresh(force=false) {
     const expired=Boolean(previous&&loaded&&!loaded.includes(previous));
     // Following moves to the newest agent request, except while an element is open for reading.
     if(!previous||expired||(view.follow&&!view.open))view.selectedKey=latestKey();
-    if(!previous||expired){view.follow=true;view.open=null;}
+    if(!previous||expired){view.follow=true;view.open=null;view.focus=null;view.eventKey=null;}
     const changed=previous!==view.selectedKey;
-    if(changed){detail=null;content=null;more={};moreSequence={};view.baselineKey=null;}
+    if(changed){detail=null;content=null;more={};moreSequence={};view.baselineKey=null;view.focus=null;}
     if(notice?.kind==="error")notice=null;
     if(expired&&!fresh)flash("expiredMoved",!force);
     persist();render(!fresh&&!force);
@@ -123,30 +123,16 @@ async function refresh(force=false) {
 }
 async function loadDetail(background=false,keepMore=false) {
   const key=view.selectedKey;if(!key)return;
-  const sequence=++detailSequence,expected=generation;
+  const sequence=++detailSequence,expected=generation,L=lens(view);
   startLoad();
   try {
-    const searchAll=view.searchAll&&Boolean(view.search);
-    const focusKey=view.open?.key===key?view.open.elementKey:view.eventFocus?.key===key?view.eventFocus.summary??undefined:undefined;
-    const next=await call("get_context_request",{key,search:view.search,searchScope:searchAll?"loaded":"selected",sort:view.sort,schemaSort:view.schemaSort,focusKey,...baselineArgs(key)});
+    const focusKey=view.open?.key===key?view.open.elementKey:view.focus?.stepKey===key?view.focus.summary??undefined:undefined;
+    const next=await call("get_context_request",{key,search:L.search,searchScope:L.searchAll?"loaded":"selected",toolPrefix:L.toolPrefix||undefined,
+      sort:view.sort,schemaSort:view.schemaSort,focusKey,...baselineArgs(key)});
     if(sequence!==detailSequence||expected!==generation||key!==view.selectedKey||next.sessionId!==boundSession)return;
     detail=next;if(!keepMore){more={};moreSequence={};}
-    if(view.baselineMode==="turn"&&!view.baselineKey&&!baselineArgs(key).baselineKey&&isAgent(items.find(x=>x.key===key)))detail={...next,diff:{available:false,reason:"no_previous_turn"}};
     if(!items.some(x=>x.key===key))items=mergeSnapshots(items,[next.summary]);
-    // An event focus opens the changes against the request before the event. When they cannot be compared it says why
-    // and, after a compaction, opens the summary the request starts from.
-    let openSummary=false;
-    if(view.eventFocus?.key===key) {
-      const summary=view.eventFocus.summary;view.eventFocus=null;
-      if(next.diff.available)view.expanded=next.diff.categories.filter(c=>c.addedCount||c.removedCount).map(c=>c.role);
-      else {
-        view.mode="all";view.eventNote={key,reason:next.diff.reason};
-        if(summary&&next.groups?.user?.items.some(x=>x.key===summary)) {
-          view.open=openPointer(key,{key:summary,role:"user"});view.expanded=[...new Set([...(view.expanded??[]),"user"])];
-          reveal={key,target:[rowSelector(key,summary),"center"]};openSummary=true;
-        }
-      }
-    }
+    const openSummary=settleFocus(key,next);
     // The page is short while a step loads, so the target is revealed again once its content is in.
     if(reveal?.key===key){scrollTarget=reveal.target;reveal=null;}
     if(view.expanded===null) {
@@ -158,6 +144,23 @@ async function loadDetail(background=false,keepMore=false) {
     if(openSummary){content=null;loadContent();}
   }catch(error){if(sequence===detailSequence&&expected===generation)showError(error);}
   finally{endLoad();}
+}
+// A focus settles its set once its step has loaded: Changes when there are changes under its narrowing, otherwise All
+// with the reason. After a compaction that cannot be compared it opens the summary the request starts from.
+function settleFocus(key,next) {
+  const f=view.focus;
+  if(!f?.probe||f.stepKey!==key)return false;
+  const li=next.listing,changed=li.added+(li.removed??0)>0;
+  let focus={...f,probe:false},openSummary=false;
+  if(f.baselineKey&&!next.diff.available)focus={...focus,mode:"all",note:{reason:next.diff.reason}};
+  else if(f.baselineKey&&!changed)focus={...focus,mode:"all",note:{same:true}};
+  else if(f.baselineKey)focus={...focus,mode:"changes",expanded:f.expanded??ORDER.filter(r=>li.roles[r]?.added||li.roles[r]?.removed)};
+  if(focus.mode==="all"&&f.summary&&next.groups?.user?.items.some(x=>x.key===f.summary)) {
+    view.open=openPointer(key,{key:f.summary,role:"user"});focus.expanded=[...new Set([...(focus.expanded??[]),"user"])];
+    reveal={key,target:[rowSelector(key,f.summary),"center"]};openSummary=true;
+  }
+  view={...view,focus};
+  return openSummary;
 }
 async function loadContent() {
   const pointer=view.open;if(!pointer)return;
@@ -176,9 +179,9 @@ async function loadContent() {
   }finally{endLoad();}
 }
 async function loadMore(role) {
-  const key=view.selectedKey,sequence=moreSequence[role]={},expected=generation,page=(more[role]?.page??0)+1;
+  const key=view.selectedKey,sequence=moreSequence[role]={},expected=generation,page=(more[role]?.page??0)+1,L=lens(view);
   try {
-    const next=await call("get_context_request",{key,role,page,search:view.search,searchScope:"selected",sort:view.sort,schemaSort:view.schemaSort,...baselineArgs(key)});
+    const next=await call("get_context_request",{key,role,page,search:L.search,toolPrefix:L.toolPrefix||undefined,searchScope:"selected",sort:view.sort,schemaSort:view.schemaSort,...baselineArgs(key)});
     if(sequence!==moreSequence[role]||expected!==generation||key!==view.selectedKey)return;
     more={...more,[role]:{page,items:[...(more[role]?.items??[]),...next.elements]}};render();
   }catch(error){if(expected===generation)showError(error);}
@@ -208,14 +211,16 @@ async function loadOlder() {
 async function copy(text) {
   try{await navigator.clipboard.writeText(text);flash("copied");}catch{flash("copyFailed");}
 }
-// "Previous turn" compares with the last agent step of the preceding turn, from the same source.
+// "Previous turn" compares with the last agent step of the preceding turn, from the same source; a first turn compares with nothing.
 function baselineArgs(key) {
-  if(view.baselineKey)return {baselineKey:view.baselineKey};
-  if(view.baselineMode!=="turn")return {};
+  const L=lens(view);
+  if(L.baselineKey)return {baselineKey:L.baselineKey};
+  if(L.baselineMode!=="turn")return {};
   const item=items.find(x=>x.key===key);
-  if(!item||!isAgent(item)||item.turn==null)return {};
+  if(!item||!isAgent(item))return {};
+  if(item.turn==null)return {noBaseline:true};
   const previous=items.filter(x=>isAgent(x)&&x.querySource===item.querySource&&x.turn!=null&&x.turn<item.turn&&x.startedAt<item.startedAt).at(-1);
-  return previous?{baselineKey:previous.key}:{};
+  return previous?{baselineKey:previous.key}:{noBaseline:true};
 }
 function jumpMatch(direction) {
   const hits=content?.content?.hits??[];if(!hits.length)return;
@@ -238,42 +243,66 @@ document.addEventListener("keydown",e=>{
 const updateOpen=patch=>{view={...view,open:{...view.open,...patch}};persist();};
 const openPointer=(snapshotKey,item)=>({key:snapshotKey,elementKey:item.key,role:item.role,format:"readable",offset:0,search:"",matchIndex:-1,diff:false,diffBefore:null});
 const rowSelector=(snapshotKey,elementKey)=>`.el[data-element="${elementKey}"][data-snapshot="${snapshotKey}"]`;
-// Pins one step for an event and reveals its target once the step has loaded: an element row, or a card.
-function focusStep(key,{eventKey,element=null,baseline=null,mode,search="",searchExpanded=null,eventFocus=null,scroll=["#browser","start"]}) {
+// Plain navigation to an event's step changes only the step, optionally opening one item; the server keeps an opened
+// item listed even when the current filter or set would hide it.
+function goStep(key,{eventKey=null,element=null,scroll=["#browser","start"]}={}) {
   if(!key)return;
   ++contentSequence;
-  const open=element?openPointer(key,element):null;
-  view={...view,selectedKey:key,follow:false,open,baselineKey:baseline,search,searchExpanded,eventNote:null,eventKey,eventFocus,
-    mode:element||search?"all":mode??view.mode,expanded:element?[...new Set([...(view.expanded??[]),element.role])]:view.expanded};
+  view={...view,selectedKey:key,follow:false,open:element?openPointer(key,element):null,baselineKey:null,focus:null,eventKey};
+  if(element)setExpanded([...new Set([...expandedRoles(view,detail),element.role])]);
   detail=null;content=null;more={};moreSequence={};if(notice?.kind==="error")notice=null;
   const target=element?[rowSelector(key,element.key),"center"]:scroll;
-  scrollTarget=target;reveal={key,target};persist();render();loadDetail();if(open)loadContent();
+  scrollTarget=target;reveal={key,target};persist();render();loadDetail();if(element)loadContent();
 }
+// An event focus shows what one event is about with its own baseline and narrowing. It pauses the user's filter
+// rather than replacing it, ends on leaving its step, and is never saved.
+function enterFocus(key,focus) {
+  if(!key)return;
+  ++contentSequence;
+  view={...view,selectedKey:key,follow:false,open:null,eventKey:focus.eventKey,focus:{probe:true,expanded:null,note:null,...focus,stepKey:key}};
+  detail=null;content=null;more={};moreSequence={};if(notice?.kind==="error")notice=null;
+  scrollTarget=["#browser","start"];reveal={key,target:scrollTarget};persist();render();loadDetail();
+}
+// Expanded categories belong to whatever the browser is showing: the focus, a filtered list, or the plain list.
+function setExpanded(roles) {
+  view=view.focus?{...view,focus:{...view.focus,expanded:roles}}:{...view,[view.search?"searchExpanded":"expanded"]:roles};
+}
+// Changing the baseline or the filter is the user's own choice, so it ends any focus first.
+const leaveFocus=()=>view.focus?{focus:null,eventKey:null}:{};
+const MCP={kind:"tools",toolPrefix:"mcp__",expanded:["schema"]};
 const actions={
   select(key) {
     if(!key)return;
     ++contentSequence;
-    view={...view,selectedKey:key,follow:key===latestKey(),open:null,baselineKey:null,eventFocus:null,eventNote:null,eventKey:null};
+    view={...view,selectedKey:key,follow:key===latestKey(),open:null,baselineKey:null,focus:null,eventKey:null};
     detail=null;content=null;more={};moreSequence={};if(notice?.kind==="error")notice=null;
     persist();render();loadDetail();
   },
   latest(){actions.select(latestKey());},
-  // An event opens what it is about. Observed additions open their item; MCP registrations filter the tool definitions;
-  // model switches show the request summary; compactions and rewinds compare the step after with the step before.
-  // Events older than the loaded steps first load earlier history.
+  // An event opens what it is about. Observed additions open their item; model switches show the request summary;
+  // compactions and rewinds compare the step after with the step before; MCP registrations show the MCP tool schemas
+  // of the step after. Events older than the loaded steps first load earlier history, and one that still has no step
+  // after it says so instead of borrowing another step.
   async focusEvent(event) {
     const locate=()=>anchors(items,event,olderUnloaded({hasOlder,items,overview}));
     let target=locate();
     for(let i=0;target.earlier&&hasOlder&&i<5;i++){await loadOlder();target=locate();}
-    const id=eventId(event),after=target.after;
-    if(event.kind==="tools"){focusStep(after?.key??latestKey(),{eventKey:id,search:"mcp__",searchExpanded:["schema"]});return;}
-    if(target.unlocated){actions.eventToggle(event,true);return;}
+    const id=eventId(event),{before,after}=target;
+    if(target.unlocated||event.kind==="tools"&&!after){actions.eventToggle(event,true);return;}
     if(!after){flash(target.earlier?"eventUnreachable":"eventNoAfter");return;}
-    if(event.stepKey){focusStep(after.key,{eventKey:id,element:event.elementKey?{key:event.elementKey,role:event.elementRole??"user"}:null});return;}
-    if(!BOUNDARY.has(event.kind)){focusStep(after.key,{eventKey:id,scroll:["#summary","start"]});return;}
-    const baseline=target.before&&target.before.key!==after.key?target.before.key:null;
+    const baseline=before&&before.key!==after.key?before.key:null;
+    if(event.kind==="tools"){enterFocus(after.key,{...MCP,eventKey:id,baselineKey:baseline,mode:baseline?"changes":"all",toolCount:event.toolCount??null});return;}
+    if(event.stepKey){goStep(after.key,{eventKey:id,element:event.elementKey?{key:event.elementKey,role:event.elementRole??"user"}:null});return;}
+    if(!BOUNDARY.has(event.kind)||!baseline){goStep(after.key,{eventKey:id,scroll:BOUNDARY.has(event.kind)?["#browser","start"]:["#summary","start"]});return;}
     const summary=event.kind==="compaction"&&event.navigation?.summaryStepKey===after.key?event.navigation.summaryKey:null;
-    focusStep(after.key,{eventKey:id,baseline,mode:baseline?"changes":view.mode,eventFocus:baseline?{key:after.key,summary}:null});
+    enterFocus(after.key,{eventKey:id,kind:event.kind,baselineKey:baseline,mode:"changes",summary});
+  },
+  // The explicit fallback for an MCP registration without a step after it: the latest step, labelled as such.
+  toolsAtLatest(event){enterFocus(latestKey(),{...MCP,eventKey:eventId(event),baselineKey:null,mode:"all",note:{latest:true},probe:false,toolCount:event.toolCount??null});},
+  exitFocus() {
+    if(!view.focus)return;
+    view={...view,...leaveFocus()};detail=null;more={};moreSequence={};
+    persist();render();loadDetail();
   },
   // Opens an event's own body in the list: an injection's text, or the messages a compaction summarized.
   eventToggle(event,open) {
@@ -290,36 +319,48 @@ const actions={
   page(page){view={...view,page};persist();render();window.scrollTo(0,0);},
   set(patch){view={...view,...patch};persist();render();},
   remember(patch){view={...view,...patch};persist();},
+  // All / Changes only regroups what is already loaded; inside a focus it switches the focus's own set.
+  mode(mode){view=view.focus?{...view,focus:{...view.focus,mode}}:{...view,mode};persist();render();},
   sort(sort){view={...view,sort};persist();render();loadDetail();},
   schemaSort(schemaSort){view={...view,schemaSort};persist();render();loadDetail();},
   baselineMode(mode) {
-    view={...view,baselineMode:mode,baselineKey:null,open:view.open?.diff?{...view.open,diff:false,diffBefore:null,offset:0}:view.open};
+    view={...view,...leaveFocus(),baselineMode:mode,baselineKey:null,open:view.open?.diff?{...view.open,diff:false,diffBefore:null,offset:0}:view.open};
     persist();render();loadDetail();if(view.open)loadContent();
   },
   baseline(key) {
-    view={...view,baselineKey:key,open:view.open?.diff?{...view.open,diff:false,diffBefore:null,offset:0}:view.open};
+    view={...view,...leaveFocus(),baselineKey:key,open:view.open?.diff?{...view.open,diff:false,diffBefore:null,offset:0}:view.open};
     persist();render();loadDetail();if(view.open)loadContent();
   },
-  search(value) {
-    view={...view,search:value,searchExpanded:null};persist();
-    clearTimeout(searchTimer);searchTimer=setTimeout(()=>loadDetail(),200);
+  search(value,now=false) {
+    const left=Boolean(view.focus);
+    view={...view,...leaveFocus(),search:value,searchExpanded:null};persist();
+    if(left)detail=null;
+    if(left||now)render();
+    clearTimeout(searchTimer);
+    if(now)loadDetail();else searchTimer=setTimeout(()=>loadDetail(),200);
   },
   searchAll(on){view={...view,searchAll:on};persist();render();loadDetail();},
   toggleRole(role) {
-    const key=view.search?"searchExpanded":"expanded",current=view[key]??(view.search?matchedRoles(view,detail):[]);
-    view={...view,[key]:current.includes(role)?current.filter(x=>x!==role):[...current,role]};persist();render();
+    const current=expandedRoles(view,detail);
+    setExpanded(current.includes(role)?current.filter(x=>x!==role):[...current,role]);persist();render();
   },
+  // A category's +N / −N lists exactly those items: its changes under the current narrowing.
+  showChanges(role) {
+    setExpanded([...new Set([...expandedRoles(view,detail),role])]);
+    view=view.focus?{...view,focus:{...view.focus,mode:"changes"}}:{...view,mode:"changes"};
+    scrollTarget=`.category[data-role="${role}"]`;persist();render();
+  },
+  // A legend entry goes to its category; the set and the filter stay as they are.
   focusRole(role) {
-    const searched=Boolean(view.search);
-    view={...view,mode:"all",search:"",searchExpanded:null,expanded:[...new Set([...(view.expanded??[]),role])]};persist();
-    scrollTarget=`.category[data-role="${role}"]`;if(searched)reveal={key:view.selectedKey,target:scrollTarget};
-    render();if(searched)loadDetail();
+    setExpanded([...new Set([...expandedRoles(view,detail),role])]);
+    scrollTarget=`.category[data-role="${role}"]`;persist();render();
   },
-  // The target may be filtered out or beyond its category's loaded pages; open it first so the reload sends it as focusKey.
+  // Opens one item where it is; the reload sends it as focusKey, so it is listed even if filtered out or beyond the first page.
   reveal(item) {
     const key=view.selectedKey;if(!key)return;
     ++contentSequence;content=null;
-    view={...view,mode:"all",search:"",searchExpanded:null,expanded:[...new Set([...(view.expanded??[]),item.role])],open:openPointer(key,item)};
+    setExpanded([...new Set([...expandedRoles(view,detail),item.role])]);
+    view={...view,open:openPointer(key,item)};
     scrollTarget=[rowSelector(key,item.key),"center"];reveal={key,target:scrollTarget};persist();render();loadDetail();loadContent();
   },
   open(item,snapshotKey=view.selectedKey,scroll=false) {

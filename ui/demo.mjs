@@ -42,17 +42,26 @@ export function demoCall(name,args) {
         text:"The TodoWrite tool hasn't been used recently. (Demo reminder.)",truncated:false},
       {kind:"inject",evidence:"recorded",id:"m:demo-2",form:"background_notification",source:"background_task",timestamp:steps[2].startedAt-1000,tokens:104,stepKey:null,elementKey:null,
         text:"Background task finished: demo build (exit 0).\nThis request is no longer readable, so the text comes from the conversation store.",truncated:false}].sort((a,b)=>a.timestamp-b.timestamp)};
-  const index=Math.max(0,steps.findIndex(s=>s.key===args.key)),s=steps[index],previous=steps[index-1];
-  const query=(args.search??"").toLowerCase(),filtered=s.list.filter(x=>(!args.role||x.role===args.role)&&(!query||x.title.toLowerCase().includes(query))).sort((a,b)=>b.chars-a.chars);
+  const index=Math.max(0,steps.findIndex(s=>s.key===args.key)),s=steps[index],previous=args.noBaseline?null:steps[index-1];
+  const query=(args.search??"").toLowerCase(),prefix=args.toolPrefix??"";
+  const hit=x=>(!prefix||x.role==="schema"&&String(x.toolName??"").startsWith(prefix))&&(!query||x.title.toLowerCase().includes(query));
+  const filtered=s.list.filter(x=>(!args.role||x.role===args.role)&&hit(x)).sort((a,b)=>b.chars-a.chars);
   const keys=new Set(previous?.list.map(x=>x.key+x.estimatedTokens)??[]),added=previous?s.list.filter(x=>!keys.has(x.key+x.estimatedTokens)):[];
   const now2=new Set(s.list.map(x=>x.key+x.estimatedTokens)),removed=previous?previous.list.filter(x=>!now2.has(x.key+x.estimatedTokens)):[];
+  const shownAdded=added.filter(hit),shownRemoved=removed.filter(hit),roles={};
+  const tally=role=>roles[role]??={total:0,matched:0,added:0,addedTotal:0,removed:previous?0:null,removedTotal:previous?0:null};
+  for(const x of s.list){const r=tally(x.role);r.total++;if(hit(x))r.matched++;}
+  for(const x of added)tally(x.role).addedTotal++;for(const x of removed)tally(x.role).removedTotal++;
+  for(const x of shownAdded)tally(x.role).added++;for(const x of shownRemoved)tally(x.role).removed++;
+  const listing={narrowed:Boolean(query||prefix),source:previous?"diff":null,roles,added:shownAdded.length,addedTotal:added.length,
+    removed:previous?shownRemoved.length:null,removedTotal:previous?removed.length:null,addedGroups:group(shownAdded),removedGroups:group(shownRemoved)};
   const diff=previous?{available:true,previousKey:previous.key,addedCount:added.length,removedCount:removed.length,changedCount:0,addedKeys:added.map(x=>x.key),changedPairs:[],
     addedGroups:group(added),removedGroups:group(removed),categories:s.delta.categories.map(c=>({...c,addedCount:added.filter(x=>x.role===c.role).length,removedCount:removed.filter(x=>x.role===c.role).length})),schemasComparable:true}
     :{available:false,reason:"no_previous_snapshot"};
   const element=args.elementKey?(steps.find(x=>x.key===args.key)??s).list.find(x=>x.key===args.elementKey):null;
   const text=element?(element.role==="schema"?JSON.stringify({name:element.title,description:"Demo schema for **"+element.title+"**.",parameters:{type:"object",properties:{file_path:{type:"string",description:"Path to the file."}},required:["file_path"]}},null,2):"Synthetic preview content for "+element.title+".\nNo real data is read."):"";
   const unused=s.list.filter(x=>x.callCount===0);
-  return {sessionId:"sess_demo",summary:view(s),composition:s.composition,diff,groups:group(filtered),
+  return {sessionId:"sess_demo",summary:view(s),composition:s.composition,diff,listing,groups:group(filtered),
     schemaCalls:{available:true,scope:"session",schemaCount:8,unusedCount:unused.length,unusedEstimatedTokens:unused.reduce((n,x)=>n+x.estimatedTokens,0),unknownCount:0},elements:filtered.slice((args.page??0)*40,(args.page??0)*40+40),elementCount:s.list.length,filteredCount:filtered.length,
     searchScope:"all_elements_in_selected_loaded_snapshot",loadedSnapshotCount:count,baselineOptions:steps.slice(0,index).map(x=>({key:x.key,startedAt:x.startedAt,complete:true})),
     content:element?{...element,offset:0,totalChars:text.length,lineCount:text.split("\n").length,text,hasMore:false,format:"readable",hits:[],matchCount:0,

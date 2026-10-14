@@ -1,4 +1,5 @@
 import { palette, ORDER } from "./i18n.mjs";
+import { lens } from "./state.mjs";
 export const CHUNK=12000;
 const nf=new Intl.NumberFormat();
 export const full=n=>n==null||!Number.isFinite(n)?"—":nf.format(Math.round(n));
@@ -231,8 +232,8 @@ function summaryCard(ctx) {
 }
 // What entered the context after the previous step's reply: tool results, reminders and other non-reply items, in message order.
 function stepInputs(ctx,s) {
-  const {t,view,detail:d,actions:a}=ctx;
-  if(d?.summary?.key!==s.key||view.baselineKey||view.baselineMode==="turn")return null;
+  const {t,lens:L,detail:d,actions:a}=ctx;
+  if(d?.summary?.key!==s.key||L.baselineKey||L.baselineMode==="turn")return null;
   const source=d.diff.available?d.diff.addedGroups:d.arrivals?.available?d.arrivals.groups:null;
   if(!source)return muted(t("notComparable"));
   const index=item=>Number(item.key.split(":")[1])+(item.key.startsWith("tool:")?1e9:0);
@@ -241,7 +242,7 @@ function stepInputs(ctx,s) {
   if(!items.length)return muted(t("noInputs"));
   return node("span",{class:"brief-list"},items.slice(0,3).map(item=>button([chip(label(t,item),"tool-chip"),node("span",{class:"brief-text"},item.title||item.preview),node("span",{class:"num"},approx(item.estimatedTokens))],
     ()=>a.reveal(item),{class:"brief-item clickable",dataset:{element:item.key}})),
-    items.length>3?button(t("moreItems",{n:items.length-3}),()=>a.set({mode:"changes"}),{class:"btn ghost small brief-more"}):null);
+    items.length>3?button(t("moreItems",{n:items.length-3}),()=>a.mode("changes"),{class:"btn ghost small brief-more"}):null);
 }
 function briefRow(name,content,tip) {
   return node("div",{class:"brief-row"},node("span",{class:"brief-label",title:tip},name),node("span",{class:"brief-body"},content));
@@ -397,92 +398,124 @@ function trendCard(ctx) {
 }
 
 function browserCard(ctx) {
-  const {t,view,detail:d,items,actions:a}=ctx,card=node("section",{class:"card browser",id:"browser"});
-  const baseline=node("select",{id:"baseline",class:"mini-select"+(view.baselineKey?" on":""),ariaLabel:t("earlierBaseline"),onchange:e=>a.baseline(e.target.value||null)},node("option",{value:""},t("earlierBaseline")));
+  const {t,view,lens:L,detail:d,items,actions:a}=ctx,card=node("section",{class:"card browser",id:"browser"});
+  const baseline=node("select",{id:"baseline",class:"mini-select"+(L.baselineKey?" on":""),ariaLabel:t("earlierBaseline"),onchange:e=>a.baseline(e.target.value||null)},node("option",{value:""},t("earlierBaseline")));
   for(const option of [...(d?.baselineOptions??[])].reverse()) {
     const item=items.find(x=>x.key===option.key);
-    baseline.append(node("option",{value:option.key,selected:option.key===view.baselineKey},[item?itemName(t,item):null,clock(option.startedAt),option.complete?null:t("partial")].filter(Boolean).join(" · ")));
+    baseline.append(node("option",{value:option.key,selected:option.key===L.baselineKey},[item?itemName(t,item):null,clock(option.startedAt),option.complete?null:t("partial")].filter(Boolean).join(" · ")));
   }
   card.append(node("div",{class:"card-head wrap"},node("h2",{},t("browser")),node("div",{class:"compare",title:t("baselineTip")},muted(t("compareWith")),
-    seg([["step",t("baseStep")],["turn",t("baseTurn")]],view.baselineKey?null:view.baselineMode,v=>a.baselineMode(v),{id:"base",small:true}),baseline)));
-  const search=node("input",{id:"element-search",type:"search",placeholder:t("filter"),value:view.search,maxLength:200,autocomplete:"off",spellcheck:false,oninput:e=>a.search(e.target.value)});
-  card.append(node("div",{class:"controls"},search,seg([["size",t("bySize")],["order",t("byOrder")]],view.sort,v=>a.sort(v),{id:"sort",small:true})));
-  const arrivals=d?.diff?.available===false&&d.arrivals?.available?d.arrivals:null;
-  const counts=d?.diff?.available?` +${d.diff.addedCount} −${d.diff.removedCount}`:arrivals?` +${arrivals.count}`:"";
-  card.append(node("div",{class:"controls"},seg([["all",t("all")],["changes",t("changesOnly")+counts]],view.mode,v=>a.set({mode:v}),{id:"mode",small:true}),spacer(),
-    view.search?button(t("searchLoaded"),()=>a.searchAll(!view.searchAll),{class:"toggle"+(view.searchAll?" on":""),id:"search-scope",ariaPressed:String(view.searchAll)}):null));
-  if(!d||d.summary?.key!==view.selectedKey){card.append(node("p",{class:"muted pad"},t("loading")));return card;}
+    seg([["step",t("baseStep")],["turn",t("baseTurn")]],L.baselineKey?null:L.baselineMode,v=>a.baselineMode(v),{id:"base",small:true}),baseline)));
+  if(L.focused)card.append(focusBar(ctx));
+  const paused=L.focused&&Boolean(view.search);
+  const search=node("input",{id:"element-search",type:"search",class:paused?"paused":null,title:paused?t("focusPausedTip"):null,placeholder:t("filter"),value:view.search,maxLength:200,autocomplete:"off",spellcheck:false,oninput:e=>a.search(e.target.value)});
+  const clear=!L.focused&&view.search?button("×",()=>a.search("",true),{class:"icon-btn",id:"search-clear",title:t("clearFilter"),ariaLabel:t("clearFilter")}):null;
+  card.append(node("div",{class:"controls"},search,clear,seg([["size",t("bySize")],["order",t("byOrder")]],view.sort,v=>a.sort(v),{id:"sort",small:true})));
+  const li=d?.summary?.key===view.selectedKey?d.listing:null;
+  const counts=li?.source?` +${li.added}`+(li.removed!=null?` −${li.removed}`:""):"";
+  const mode=seg([["all",t("all")],["changes",t("changesOnly")+counts]],L.mode,v=>a.mode(v),{id:"mode",small:true});
+  if(li?.narrowed&&li.source)mode.title=t("changesNarrowedTip",{n:"+"+li.addedTotal+(li.removedTotal!=null?" −"+li.removedTotal:"")});
+  card.append(node("div",{class:"controls"},mode,spacer(),
+    !L.focused&&view.search?button(t("searchLoaded"),()=>a.searchAll(!view.searchAll),{class:"toggle"+(view.searchAll?" on":""),id:"search-scope",ariaPressed:String(view.searchAll)}):null));
+  if(!li){card.append(node("p",{class:"muted pad"},t("loading")));return card;}
   if(d.searchScope==="all_loaded_snapshots"){card.append(loadedResults(ctx));return card;}
-  const notes=[];
-  if(view.eventNote?.key===view.selectedKey&&view.mode==="all")notes.push(t("eventNotComparable",{reason:t(view.eventNote.reason)}));
-  if(view.mode==="changes"&&!d.diff.available&&arrivals) {
-    notes.push(t("arrivalsOnly",{since:t("step",{n:arrivals.sinceStep})}));
-    if(arrivals.unknownCount)notes.push(t("arrivalsUnknown",{n:arrivals.unknownCount}));
-  } else if(view.mode==="changes"&&!d.diff.available)notes.push(t("notComparable")+" · "+t(d.diff.reason));
-  if(d.diff.available&&view.mode==="changes"){if(d.diff.modelChanged)notes.push(t("modelChanged"));if(d.diff.reordered)notes.push(t("reordered"));}
+  const notes=[],changes=L.mode==="changes";
+  if(changes&&li.source==="arrivals") {
+    notes.push(t("arrivalsOnly",{since:t("step",{n:d.arrivals.sinceStep})}));
+    if(d.arrivals.unknownCount)notes.push(t("arrivalsUnknown",{n:d.arrivals.unknownCount}));
+  } else if(changes&&!li.source)notes.push(t("notComparable")+" · "+t(d.diff.reason));
+  if(d.diff.available&&changes){if(d.diff.modelChanged)notes.push(t("modelChanged"));if(d.diff.reordered)notes.push(t("reordered"));}
   if(!d.composition.schemasRecorded)notes.push(t("schemasUnknown"));
   if(!d.composition.complete) {
     const reason=d.summary.incompleteReason,text=reason?t("incomplete."+reason):"";
     notes.push(t("partial")+(text?" · "+(text==="incomplete."+reason?reason:text):""));
   }
   for(const text of notes)card.append(node("p",{class:"note",id:text.startsWith(t("notComparable"))?"diff-status":undefined},text));
-  if(view.mode==="changes"&&!d.diff.available&&!arrivals)return card;
+  if(changes&&!li.source)return card;
   const buckets=new Map(d.composition.buckets.map(b=>[b.role,b])),categories=new Map((d.diff.available?d.diff.categories:[]).map(c=>[c.role,c]));
-  const total=[...buckets.values()].reduce((n,b)=>n+b.estimatedTokens,0)||1,searching=Boolean(view.search),matched=new Set(matchedRoles(view,d));
-  const expanded=searching?(view.searchExpanded??[...matched]):(view.expanded??[]);
+  const total=[...buckets.values()].reduce((n,b)=>n+b.estimatedTokens,0)||1,matched=new Set(matchedRoles(L,d)),expanded=expandedRoles(view,d);
   const list=node("div",{class:"categories"});
-  for(const role of ORDER.filter(r=>buckets.has(r)||(view.mode==="changes"&&categories.get(r)?.removedCount)))
-    list.append(category(ctx,role,buckets.get(role),categories.get(role),total,expanded.includes(role),searching,matched.has(role)));
+  for(const role of ORDER.filter(r=>buckets.has(r)||(changes&&li.roles[r]?.removed)))
+    list.append(category(ctx,role,buckets.get(role),categories.get(role),total,expanded.includes(role),li.narrowed,matched.has(role)));
   card.append(list);
-  if(searching&&!matched.size)card.append(node("p",{class:"muted pad"},t("noMatches")));
+  if(li.narrowed&&!matched.size)card.append(node("p",{class:"muted pad"},t("noMatches")));
   return card;
 }
-// While searching, changes come from the server's full-text-filtered groups (same match as All); missing ones mean none yet.
-const addedOf=(d,role,search)=>d.diff.available?d.diff[search?"searchAddedGroups":"addedGroups"]?.[role]:d.arrivals?.available?d.arrivals[search?"searchGroups":"groups"]?.[role]:null;
-const removedOf=(d,role,search)=>d.diff.available?d.diff[search?"searchRemovedGroups":"removedGroups"]?.[role]:null;
-// Categories a search matched, which are the ones expanded by default while searching.
-export const matchedRoles=(view,d)=>!d?[]:view.mode==="changes"?ORDER.filter(r=>addedOf(d,r,true)?.count||removedOf(d,r,true)?.count):Object.keys(d.groups??{});
-function category(ctx,role,bucket,change,total,open,searching,matched) {
-  const {t,view,detail:d,actions:a,more}=ctx,changes=view.mode==="changes";
-  const group=d.groups?.[role],count=bucket?.count??0,size=bucket?.estimatedTokens??0;
-  const added=addedOf(d,role,searching),removed=removedOf(d,role,searching);
-  const plus=d.diff.available?change?.addedCount:added?.count;
-  const dim=changes?!added?.count&&!removed?.count:searching&&!matched;
-  const expanded=open&&!dim;
-  const head=button([node("span",{class:"chev"},expanded?"▾":"▸"),dot(role),node("span",{class:"cat-name"},t(role)),
-    node("span",{class:"cat-count"},searching&&!changes?t("matchedItems",{m:group?.count??0,n:count}):t("items",{n:count})),
-    plus?node("span",{class:"badge up"},"+"+plus):null,change?.removedCount?node("span",{class:"badge down"},"−"+change.removedCount):null,spacer(),
-    tokensOf(change)?node("span",{class:"delta "+(tokensOf(change)>0?"up":"down")},signed(tokensOf(change))):null,
-    node("span",{class:"num"},approx(size)),node("span",{class:"pct"},pct(size/total))],()=>a.toggleRole(role),{class:"cat-head",ariaExpanded:String(expanded),disabled:dim,...hoverRole(role)});
+// Categories with something to list under the current set and narrowing, including an item kept listed because it is open.
+export const matchedRoles=(L,d)=>!d?.listing?[]:L.mode==="changes"?ORDER.filter(r=>d.listing.addedGroups[r]?.items.length||d.listing.removedGroups[r]?.items.length):Object.keys(d.groups??{});
+// Expanded categories: the focus's own, the matching ones while narrowed (until changed by hand), or the plain list's.
+export function expandedRoles(view,d) {
+  const L=lens(view);
+  if(L.focused&&view.focus.expanded)return view.focus.expanded;
+  if(L.focused?d?.listing?.narrowed:view.search)return (L.focused?null:view.searchExpanded)??matchedRoles(L,d);
+  return view.expanded??[];
+}
+// The left half of a header counts what opening it lists, under the current narrowing; its +N / −N open exactly those changes.
+// The right half states the request itself — size, share and change against the baseline — and never follows a filter.
+function category(ctx,role,bucket,change,total,open,narrowed,matched) {
+  const {t,lens:L,detail:d,actions:a,more}=ctx,changes=L.mode==="changes",li=d.listing;
+  const r=li.roles[role]??{total:0,matched:0,added:0,addedTotal:0,removed:null,removedTotal:null};
+  const group=d.groups?.[role],size=bucket?.estimatedTokens??0,added=li.addedGroups[role],removed=li.removedGroups[role];
+  const dim=changes?!added?.items.length&&!removed?.items.length:narrowed&&!matched;
+  const expanded=open&&!dim,toggle=()=>a.toggleRole(role),state={ariaExpanded:String(expanded),disabled:dim},delta=tokensOf(change);
+  const badge=(n,all,cls,sign)=>n?button(sign+n,()=>a.showChanges(role),{class:"badge cat-badge "+cls,title:narrowed&&n!==all?t("badgeNarrowedTip",{n,all}):t("badgeTip")}):null;
+  const head=node("div",{class:"cat-head",...hoverRole(role)},
+    button([node("span",{class:"chev"},expanded?"▾":"▸"),dot(role),node("span",{class:"cat-name"},t(role)),
+      node("span",{class:"cat-count"},narrowed&&!changes?t("matchedItems",{m:r.matched,n:r.total}):t("items",{n:r.total}))],toggle,{class:"cat-toggle",...state}),
+    badge(r.added,r.addedTotal,"up","+"),badge(r.removed,r.removedTotal,"down","−"),
+    button([spacer(),delta?node("span",{class:"delta "+(delta>0?"up":"down")},signed(delta)):null,node("span",{class:"num"},approx(size)),node("span",{class:"pct"},pct(size/total))],
+      toggle,{class:"cat-toggle cat-facts",tabIndex:-1,...state}));
   const section=node("section",{class:"category"+(expanded?" open":"")+(dim?" dim":""),dataset:{role}},head);
   if(!expanded)return section;
-  const body=node("div",{class:"cat-body"});
-  if(role==="schema")body.append(schemaTools(ctx,changes));
+  const body=node("div",{class:"cat-body"}),unlisted=g=>g?g.count-g.items.filter(x=>!x.pinned).length:0;
+  if(role==="schema")body.append(schemaTools(ctx,changes,narrowed));
   if(changes) {
-    for(const item of added?.items??[])body.append(elementRow(ctx,item,{badge:"added"}));
-    if(added&&added.count>added.items.length)body.append(node("p",{class:"muted pad"},t("moreNotListed",{n:added.count-added.items.length})));
+    for(const item of added?.items??[])body.append(elementRow(ctx,item,{badge:item.pinned?null:"added"}));
+    if(unlisted(added)>0)body.append(node("p",{class:"muted pad"},t("moreNotListed",{n:unlisted(added)})));
     for(const item of removed?.items??[])body.append(elementRow(ctx,item,{badge:"removed",snapshotKey:d.diff.previousKey}));
-    if(removed&&removed.count>removed.items.length)body.append(node("p",{class:"muted pad"},t("moreNotListed",{n:removed.count-removed.items.length})));
-    if(body.children.length===(role==="schema"?1:0))body.append(node("p",{class:"muted pad"},t(searching?"noMatches":"noChanges")));
+    if(unlisted(removed)>0)body.append(node("p",{class:"muted pad"},t("moreNotListed",{n:unlisted(removed)})));
+    if(body.children.length===(role==="schema"?1:0))body.append(node("p",{class:"muted pad"},t(narrowed?"noMatches":"noChanges")));
   } else {
     const seen=new Set(),rows=[...(group?.items??[]),...(more[role]?.items??[])].filter(x=>!seen.has(x.key)&&seen.add(x.key));
     const addedKeys=new Set(d.diff.available?d.diff.addedKeys:d.arrivals?.available?d.arrivals.keys:[]);
     for(const item of rows)body.append(elementRow(ctx,item,{badge:addedKeys.has(item.key)?"added":null}));
-    const left=(group?.count??0)-rows.length;
+    const left=(group?.count??0)-rows.filter(x=>!x.pinned).length;
     if(left>0)body.append(button(t("showMore",{n:left}),()=>a.more(role),{class:"btn ghost more",dataset:{role}}));
     if(!rows.length)body.append(node("p",{class:"muted pad"},t("noMatches")));
   }
   section.append(body);
   return section;
 }
-// Session-wide call counts: a schema never called still costs its size on every request.
-function schemaTools(ctx,changes) {
+// Session-wide call counts: a schema never called still costs its size on every request. The line describes every
+// schema of the request, so a narrowed list says so.
+function schemaTools(ctx,changes,narrowed) {
   const {t,view,detail:d,actions:a}=ctx,s=d.schemaCalls;
   const sort=seg([["size",t(view.sort==="order"?"byOrder":"bySize")],["calls",t("byCalls")],["name",t("byName")]],view.schemaSort,v=>a.schemaSort(v),{id:"schema-sort",small:true});
+  const unused=!s?.unusedCount?t("allSchemasCalled"):narrowed?t("unusedSchemasAll",{n:s.unusedCount,total:s.schemaCount,tokens:approx(s.unusedEstimatedTokens)})
+    :t("unusedSchemas",{n:s.unusedCount,tokens:approx(s.unusedEstimatedTokens)});
   const line=changes?null:!s?.available?node("span",{class:"schema-unused muted",id:"schema-unused"},t("callsUnknown"))
-    :node("span",{class:"schema-unused",id:"schema-unused",title:t("unusedTip")},s.unusedCount?t("unusedSchemas",{n:s.unusedCount,tokens:approx(s.unusedEstimatedTokens)}):t("allSchemasCalled"),
-      s.unknownCount?muted(" · "+t("callsUnknownSome",{n:s.unknownCount})):null);
+    :node("span",{class:"schema-unused",id:"schema-unused",title:t("unusedTip")},unused,s.unknownCount?muted(" · "+t("callsUnknownSome",{n:s.unknownCount})):null);
   return node("div",{class:"schema-tools"},line,spacer(),sort);
+}
+// What an event focus shows and what it pauses; × ends it and the user's own baseline, set and filter come back.
+function focusBar(ctx) {
+  const {t,view,overview:o,detail:d,items,selected,actions:a}=ctx,f=view.focus;
+  const event=(o.events??[]).find(e=>eventId(e)===f.eventKey),li=d?.summary?.key===view.selectedKey?d.listing:null;
+  let text="";
+  if(f.kind==="tools") {
+    const k=li?li.roles.schema?.matched??0:null;
+    text=[t("focusTools"),k!=null?t("focusToolsCount",{n:k}):null,k!=null&&f.toolCount!=null&&f.toolCount!==k?t("focusToolsRegistered",{n:f.toolCount}):null].filter(Boolean).join(" · ");
+  } else {
+    const before=items.find(x=>x.key===f.baselineKey);
+    if(before&&selected)text=t("focusCompare",{a:itemName(t,before),b:itemName(t,selected)});
+  }
+  const notes=[f.note?.reason?t("eventNotComparable",{reason:t(f.note.reason)}):null,f.note?.same?t(f.kind==="tools"?"focusToolsSame":"noChanges"):null,
+    f.note?.latest?t("focusToolsLatest"):null,view.search?t("focusPaused",{q:view.search}):null].filter(Boolean);
+  return node("div",{class:"focus",id:"focus",dataset:{kind:f.kind}},
+    node("div",{class:"focus-bar"},node("div",{class:"focus-head"},node("span",{class:"event-glyph"},GLYPH[f.kind]??"•"),
+      node("b",{class:"focus-kind"},event?eventLabel(t,event):t("kind."+f.kind)),spacer(),button("×",a.exitFocus,{class:"icon-btn",id:"focus-exit",title:t("focusExit"),ariaLabel:t("focusExit")})),
+      text?node("div",{class:"focus-text"},text):null),
+    notes.map(text=>node("p",{class:"note"},text)));
 }
 function loadedResults(ctx) {
   const {t,detail:d,items}=ctx,wrap=node("div",{class:"loaded-results"},node("p",{class:"muted pad"},t("loadedResults",{n:d.loadedSnapshotCount,m:d.filteredCount})));
@@ -499,6 +532,7 @@ function elementRow(ctx,item,{badge=null,snapshotKey=null,prefix=null}={}) {
   const head=button([node("span",{class:"chev"},open?"▾":"▸"),prefix?chip(prefix,"step-chip"):null,
     item.status==="error"?node("i",{class:"err-dot",title:t("error")}):null,chip(label(t,item),item.role==="tool"||item.role==="assistant"?"tool-chip":""),
     node("span",{class:"el-title"},item.title||item.preview||item.key),
+    item.pinned?node("span",{class:"pin",title:t("pinnedTip")},t("pinnedItem")):null,
     badge?node("span",{class:"badge "+(badge==="added"?"up":"down")},t(badge==="added"?"addedBadge":"removedBadge")):null,
     item.role==="schema"&&item.callCount!=null?node("span",{class:"calls"+(item.callCount?"":" zero"),title:t("callsTip",{n:item.callCount})},"×"+item.callCount):null,
     entryStamp(t,item),node("span",{class:"num"},approx(item.estimatedTokens))],()=>a.open(item,key),{class:"el-head",ariaExpanded:String(open)});
@@ -649,7 +683,7 @@ export function markdown(text) {
 export const eventId=event=>event.id??event.kind+":"+event.timestamp;
 // Where a click on the event leads, for its tooltip.
 function eventTip(t,event,target) {
-  if(event.kind==="tools")return t("eventToolsTip");
+  if(event.kind==="tools")return t(target.after?"eventToolsTip":"eventToolsNoStepTip");
   if(target.unlocated)return t("eventTextTip");
   if(target.earlier)return t("eventEarlierTip");
   if(!target.after)return t("eventNoAfter");
@@ -683,15 +717,24 @@ function eventsCard(ctx) {
     const nav=node("div",{class:"event-nav"},at?node("span",{class:"event-at",title:evidence},at):null,
       event.clearedMessageCount!=null?muted(t("cleared",{n:full(event.clearedMessageCount)})):null,spacer(),
       event.kind==="inject"&&event.text?button(open?t("hideText"):t("showText"),()=>a.eventToggle(event),{class:"btn small ghost event-toggle",ariaExpanded:String(open)}):null,
+      event.kind==="tools"&&open&&!after?button(t("hideText"),()=>a.eventToggle(event),{class:"btn small ghost event-toggle",ariaExpanded:"true"}):null,
       compacted?button((open?"▾ ":"▸ ")+t("summarizedList"),()=>a.eventToggle(event),{class:"btn small ghost event-toggle",ariaExpanded:String(open),title:t("summarizedHint")}):null,
       BOUNDARY.has(event.kind)&&before?button(t(event.kind==="rewind"?"rewindBefore":"before")+" · "+itemName(t,before),()=>a.select(before.key),
         {class:"btn small ghost"+(before.key===view.selectedKey?" on":""),title:evidence}):null);
     const row=node("div",{class:"event "+event.kind+(event.status==="failed"?" failed":"")+(on?" on":"")+(open?" open":""),dataset:{kind:event.kind,evidence:event.evidence??"logged",event:eventId(event)}},main,nav);
-    if(open)row.append(event.kind==="inject"?injectBody(t,event,target):summarizedBody(ctx,event));
+    if(open&&event.kind==="inject")row.append(injectBody(t,event,target));
+    else if(open&&event.kind==="tools"&&!after)row.append(toolsBody(ctx,event));
+    else if(open&&event.kind==="compaction")row.append(summarizedBody(ctx,event));
     card.append(row);
   }
   if(rows.length>EVENT_ROWS)card.append(button(view.eventsAll?t("showFewerEvents"):t("showAllEvents",{n:rows.length-EVENT_ROWS}),()=>a.set({eventsAll:!view.eventsAll}),{class:"btn ghost small more",id:"events-all"}));
   return card;
+}
+// An MCP registration with no readable request after it has no step of its own; the latest step is offered, by name.
+function toolsBody(ctx,event) {
+  const {t,items,actions:a}=ctx;
+  return node("div",{class:"event-body"},node("p",{class:"note"},t("toolsNoStep")),
+    items.some(isAgent)?button(t("toolsAtLatest"),()=>a.toolsAtLatest(event),{class:"btn small",id:"tools-latest"}):null);
 }
 // The injected text as ZCode's conversation store keeps it, for when the request that carried it is not readable.
 function injectBody(t,event,target) {

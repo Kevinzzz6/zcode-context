@@ -30,7 +30,7 @@ export function createContextServer() {
     inputSchema:{revision:z.string().max(64).optional(),historyPage:z.number().int().min(0).max(4).optional(),eventDetail:z.string().max(300).regex(/^c:[\w-]+$/).optional()},annotations,_meta:{ui:{visibility:["app"]}}},wrap("overview"));
   server.registerTool("get_context_request",{description:"App-only read-only recorded input and differences.",
     inputSchema:{key:z.string().regex(/^[a-f0-9]{24}$/),page:z.number().int().min(0).max(100000).optional(),
-      baselineKey:z.string().regex(/^[a-f0-9]{24}$/).optional(),
+      baselineKey:z.string().regex(/^[a-f0-9]{24}$/).optional(),noBaseline:z.boolean().optional(),toolPrefix:z.string().max(64).optional(),
       search:z.string().max(200).optional(),searchScope:z.enum(["selected","loaded"]).optional(),role:z.string().max(32).optional(),sort:z.enum(["size","order"]).optional(),schemaSort:z.enum(["size","calls","name"]).optional(),
       format:z.enum(["readable","raw"]).optional(),bodySearch:z.string().max(200).optional(),
       changePage:z.number().int().min(0).max(100000).optional(),diffBeforeElement:z.string().regex(/^(message|tool):[0-9]+$/).optional(),
