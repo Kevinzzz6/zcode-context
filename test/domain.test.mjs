@@ -171,3 +171,9 @@ test("the SQL usage aggregate equals the per-request normalization summed",async
     fixture.db.close();
   } finally { await rm(root,{recursive:true,force:true}); }
 });
+test("a long injected part without a digest is not located by its prefix",()=>{
+  const cache={messages:new Map([["m",{id:"m",role:"user",created:1,kind:"restored_context",origin:"agent_runtime"}]]),
+    parts:new Map([["p",{id:"p",messageId:"m",created:1,type:"text",synthetic:1,text:"x".repeat(4000),textChars:3000000,truncated:true,verify:null}]])};
+  const [event]=conversationEvents(cache);
+  assert.equal(event.needles,null);assert.equal(event.truncated,true);
+});

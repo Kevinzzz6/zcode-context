@@ -88,9 +88,10 @@ export function conversationEvents(cache) {
     if (!injected(m)) continue;
     const text = (texts.get(m.id) ?? []).map(x => x.text ?? "").join("\n").trim();
     if (!text) continue;
-    // Each part's text as read (whole unless longer than the read bound). Reminders share long fixed openings,
-    // so a prefix alone cannot tell two of them apart.
-    const needles = (texts.get(m.id) ?? []).map(x => (x.text ?? "").trim()).filter(Boolean);
+    // Each part's whole text, or for one longer than the read bound its prefix, length and digest. Reminders share long
+    // fixed openings, so a prefix alone cannot tell two of them apart; a long part without a digest leaves it unlocated.
+    const pieces = (texts.get(m.id) ?? []).filter(x => x.text).map(x => x.truncated ? x.verify ?? null : { text: x.text.trim() });
+    const needles = pieces.every(Boolean) ? pieces.filter(x => x.text !== "") : null;
     const chars = (texts.get(m.id) ?? []).reduce((n, x) => n + (x.textChars ?? 0), 0);
     events.push({ kind: "inject", evidence: "recorded", id: "m:" + m.id, form: m.kind ?? "context", source: m.source ?? m.metaSource ?? null,
       timestamp: m.created, tokens: sampled(text, chars),

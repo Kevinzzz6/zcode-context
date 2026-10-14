@@ -195,6 +195,23 @@ test("the conversation store is read incrementally, reloads after a deletion and
     fixture.db.close();
   } finally { await rm(root,{recursive:true,force:true}); }
 });
+test("a rotated second source does not keep an injection on a step it no longer has",()=>temporary(async root=>{
+  const fixture=usageDatabase(root),store=conversationStore(fixture.db),now=Date.now(),at=ms=>new Date(now+ms).toISOString(),text="Background task finished.";
+  store.reminder("sess_A","n1",now-5000,text,"background_notification","background_task");
+  for(const dir of ["rollout","debug","log"])await mkdir(join(root,dir));
+  const line=(id,ms,messages)=>JSON.stringify(modelRecord("sess_A",id,messages,{startedAt:at(ms)}))+"\n";
+  await writeFile(join(root,"rollout","model-io-sess_A.jsonl"),line("main",-10000,[{role:"user",content:"main"}]));
+  const debug=join(root,"debug","model-io-sess_A.jsonl");
+  await writeFile(debug,line("d0",-9000,[{role:"user",content:"start"}])+line("d1",-2000,[{role:"user",content:"start"},{role:"user",content:text}]));
+  const service=new ContextDataService({db:fixture.path,trajectoryDirs:[join(root,"rollout"),join(root,"debug")],logDir:join(root,"log")});
+  try{
+    const before=await service.overview("sess_A"),step=before.events.find(e=>e.id==="m:n1").stepKey;
+    assert.ok(step);
+    await writeFile(debug,line("rotated",-1000,[{role:"user",content:"rotated file"}]));
+    const after=await service.overview("sess_A"),keys=after.history.loadedKeys;
+    assert.ok(!keys.includes(step));assert.equal(after.events.find(e=>e.id==="m:n1").stepKey,null);
+  }finally{fixture.db.close();}
+}));
 test("summarized tool calls bring only title fields and a bounded sample of their input into JavaScript",()=>temporary(async root=>{
   const fixture=usageDatabase(root),store=conversationStore(fixture.db),now=Date.now();
   store.prompt("sess_A","u1",now-9000,"write it");

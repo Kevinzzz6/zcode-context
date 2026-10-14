@@ -7,6 +7,14 @@ import { sanitizeSessionSegment, ContextError, isAgentSource } from "../domain/s
 import { foldRecord, inputElements, composition, diffRecords, trajectorySummary, canonical, contentKey, elementSummary, toolEvidence, textDifference, isContinuation } from "../domain/trajectory.mjs";
 import { contextEvent, mergeEvents, conversationEvents, combineEvents, summarizedItems } from "../domain/events.mjs";
 const digest = value => createHash("sha256").update(value).digest("hex").slice(0,24);
+const sha = value => createHash("sha256").update(value).digest("hex");
+// A needle is a whole recorded text, or a long text's prefix, length and digest, checked wherever the prefix occurs.
+function contains(readable, needle) {
+  if (needle.text !== undefined) return readable.includes(needle.text);
+  for (let at = readable.indexOf(needle.prefix); at !== -1; at = readable.indexOf(needle.prefix, at + 1))
+    if (sha(readable.slice(at, at + needle.chars)) === needle.hash) return true;
+  return false;
+}
 const MAX_CACHE_CHARS = 32 * 1024 * 1024;
 const TRUNCATED = ["history_window", "display_window", "history_reset", "source_rotated"];
 // Each category returns its own bounded first page, so a grouped view never depends on a global page.
@@ -54,7 +62,7 @@ export class ContextDataService {
     for (const directory of this.paths.trajectoryDirs) {
       const path = join(directory, "model-io-" + sanitizeSessionSegment(sessionId) + ".jsonl");
       let ledger = state.ledgers.get(path);
-      if (!ledger) { ledger = { tail: new JsonlTail(), previous: null, records: new Map(), chars: 0, segment: 0, steps: 0, turns: new Map() }; state.ledgers.set(path, ledger); }
+      if (!ledger) { ledger = { tail: new JsonlTail(), previous: null, records: new Map(), chars: 0, segment: 0, baseSegment: null, steps: 0, turns: new Map() }; state.ledgers.set(path, ledger); }
       const status = await ledger.tail.scan(path, (raw, offset) => {
         if (raw.type !== "model_io" || raw.sessionId !== sessionId) { ledger.previous = null; ledger.segment++; return; }
         if (raw.modelIOReset) { ledger.previous = null; ledger.segment++; ledger.tail.markCoverage("history_reset"); }
@@ -67,13 +75,14 @@ export class ContextDataService {
         const agent = isAgentSource(record.querySource);
         if (agent && record.turnId && !ledger.turns.has(record.turnId)) ledger.turns.set(record.turnId, ledger.turns.size + 1);
         summary.step = agent ? ++ledger.steps : null; summary.turn = record.turnId ? ledger.turns.get(record.turnId) ?? null : null;
-        ledger.records.set(key, { key, record, chars, path, offset, segment:ledger.segment, summary }); ledger.chars += chars; ledger.previous = record;
+        // fromStart: nothing was skipped between the start of this file generation and the record.
+        ledger.records.set(key, { key, record, chars, path, offset, segment:ledger.segment, fromStart:ledger.segment===ledger.baseSegment, summary }); ledger.chars += chars; ledger.previous = record;
         while (ledger.records.size > 120 || ledger.chars > MAX_CACHE_CHARS) {
           const first = ledger.records.keys().next().value;
           ledger.chars -= ledger.records.get(first).chars; ledger.records.delete(first); ledger.tail.markCoverage("display_window");
         }
         this.trimCaches();
-      }, () => { ledger.previous = null; ledger.records.clear(); ledger.chars = 0; ledger.segment++; ledger.steps = 0; ledger.turns.clear(); }, () => { ledger.previous = null; ledger.segment++; });
+      }, () => { ledger.previous = null; ledger.records.clear(); ledger.chars = 0; ledger.segment++; ledger.baseSegment = ledger.segment; ledger.steps = 0; ledger.turns.clear(); }, () => { ledger.previous = null; ledger.segment++; });
       coverage.push(status);
     }
     // Event logs are a short diagnostic window; usage history comes from SQLite. Oldest day first, so the
@@ -188,17 +197,21 @@ export class ContextDataService {
   // An injected message is first sent with the next agent request; it is found there by tool-call id or by its exact text,
   // the newest occurrence, since reminders repeat. When that request is not readable, or does not contain it, the event keeps no step.
   // A request only counts as the first after the event when nothing was skipped since the one before: same file and segment.
+  // The earliest readable request counts only when its file was read from the start without a gap or eviction.
+  // A result is reused while each file's earliest agent request is the same and the step it names is still cached.
   locate(state,records,event,complete) {
-    const agents=records.filter(x=>x.summary.step!=null),first=agents[0]?.key??null,memo=state.targets.get(event.id);
-    if(memo&&memo.first===first)return {...event,...memo.target};
+    const agents=records.filter(x=>x.summary.step!=null),firsts=new Map();
+    for(const x of agents)if(!firsts.has(x.path))firsts.set(x.path,x.key);
+    const first=[...firsts.values()].join(","),memo=state.targets.get(event.id);
+    if(memo&&memo.first===first&&(!memo.target.stepKey||agents.some(x=>x.key===memo.target.stepKey)))return {...event,...memo.target};
     const index=agents.findIndex(x=>x.record.startedAt>=event.timestamp);
     if(index<0)return {...event,stepKey:null,elementKey:null,elementRole:null};
     let target={stepKey:null,elementKey:null,elementRole:null};
     const record=agents[index],prior=agents[index-1];
-    if(prior?prior.path===record.path&&prior.segment===record.segment:complete) {
+    if(prior?prior.path===record.path&&prior.segment===record.segment:complete&&record.fromStart) {
       const elements=inputElements(record.record);
       const element=event.toolCallId?elements.find(x=>x.toolCallId===event.toolCallId)
-        :event.needles?.length?elements.findLast(x=>x.key.startsWith("message:")&&event.needles.every(n=>x.readable.includes(n))):null;
+        :event.needles?.length?elements.findLast(x=>x.key.startsWith("message:")&&event.needles.every(n=>contains(x.readable,n))):null;
       if(element)target={stepKey:record.key,elementKey:element.key,elementRole:element.role};
     }
     state.targets.set(event.id,{first,target});

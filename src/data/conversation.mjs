@@ -1,5 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
 import { statSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { ContextError } from "../domain/session.mjs";
 import { classifyDbError } from "./sqlite.mjs";
 import { SUMMARY_KEYS } from "../domain/trajectory.mjs";
@@ -7,6 +8,7 @@ const TEXT_CHARS = 4000;
 // Token estimates of large outputs scale the script mix of a short sample to the full length.
 const SAMPLE_CHARS = 400;
 const DETAIL_ROWS = 400;
+const VERIFY_CHARS = 2 * 1024 * 1024;
 const REQUIRED = ["id", "session_id", "time_created", "time_updated", "data"];
 function open(dbPath) {
   if (!statSync(dbPath).isFile()) throw new ContextError("database_missing", "Session database is not a regular file.");
@@ -42,6 +44,9 @@ const select = fields => fields.map(x => { const [name, path] = x.split(":"); re
 // never seen, or a cursor that went backwards, reload everything.
 // A rewind deletes nothing: the abandoned branch stays in the store and session.revert records the active one.
 const fresh = () => ({ messageCursor: -1, partCursor: -1, messageCount: 0, partCount: 0, messages: new Map(), parts: new Map(), partIds: new Set() });
+// Injected text longer than the read bound is identified by its length and digest; the full text is read one part at a
+// time and only up to VERIFY_CHARS, beyond which it cannot be located and shows as recorded.
+const fingerprint = text => { const value = text.trim(); return { prefix: value.slice(0, 1000), chars: value.length, hash: createHash("sha256").update(value).digest("hex") }; };
 export function readConversation(dbPath, sessionId, cache = null) {
   let handle;
   try {
@@ -64,6 +69,7 @@ export function readConversation(dbPath, sessionId, cache = null) {
       ",CASE WHEN ok AND json_extract(data,'$.tool')='Skill' THEN substr(json_extract(data,'$.state.output'),1," + SAMPLE_CHARS + ") END AS outputSample" +
       ",CASE WHEN ok AND json_extract(data,'$.type') IN ('compaction','timeline') THEN data END AS raw" +
       " FROM (SELECT *,json_valid(data) AS ok FROM part WHERE session_id=? AND time_updated>=?)");
+    const fullText = db.prepare("SELECT json_extract(data,'$.text') AS text FROM part WHERE session_id=? AND id=?");
     const ingest = c => {
       for (const row of messages.all(sessionId, c.messageCursor)) c.messages.set(row.id, row);
       // Only the parts events are built from are kept; every other part is reread only when it changes.
@@ -71,6 +77,10 @@ export function readConversation(dbPath, sessionId, cache = null) {
         c.partIds.add(row.id);
         const keep = row.type === "compaction" || row.type === "timeline" || (row.type === "tool" && row.tool === "Skill") || (row.type === "text" && row.synthetic === 1);
         if (!keep) { c.parts.delete(row.id); continue; }
+        // SQLite counts code points, so truncation is decided here rather than by comparing JavaScript lengths.
+        row.truncated = row.type === "text" && row.textChars > TEXT_CHARS;
+        if (row.truncated)
+          row.verify = row.textChars <= VERIFY_CHARS ? fingerprint(String(fullText.get(sessionId, row.id)?.text ?? "")) : null;
         c.parts.set(row.id, row);
       }
     };
