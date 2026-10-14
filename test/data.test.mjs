@@ -186,6 +186,10 @@ test("the conversation store is read incrementally, reloads after a deletion and
     const fourth=readConversation(fixture.path,"sess_A",third.cache);
     assert.deepEqual(conversationEvents(fourth.cache).map(e=>e.id),["m:r3"]);
     assert.ok([...fourth.cache.parts.values()].every(part=>part.type!=="text"||part.synthetic===1));
+    // A row below the cursor (a restored or backfilled database) is never returned by the incremental query.
+    store.reminder("sess_A","old",now-9000,"restored reminder");
+    const fifth=readConversation(fixture.path,"sess_A",fourth.cache);
+    assert.deepEqual(conversationEvents(fifth.cache).map(e=>e.id),["m:old","m:r3"]);
     fixture.db.exec("DROP TABLE part");
     assert.equal(readConversation(fixture.path,"sess_A").code,"schema_unsupported");
     fixture.db.close();
