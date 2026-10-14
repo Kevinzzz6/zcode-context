@@ -49,7 +49,7 @@ export function mergeEvents(events) {
   return [...merged.values()].sort((a, b) => a.timestamp - b.timestamp);
 }
 
-const TEXT_CHARS = 1500, NEEDLE_CHARS = 300;
+const TEXT_CHARS = 1500;
 const parse = text => { try { const value = JSON.parse(text); return value && typeof value === "object" ? value : {}; } catch { return {}; } };
 const number = value => typeof value === "number" && Number.isFinite(value) ? value : null;
 const modelLabel = selection => !selection ? null : selection.label ?? ([selection.providerId ?? selection.providerID, selection.modelId ?? selection.modelID].filter(Boolean).join("/") || null);
@@ -88,10 +88,13 @@ export function conversationEvents(cache) {
     if (!injected(m)) continue;
     const text = (texts.get(m.id) ?? []).map(x => x.text ?? "").join("\n").trim();
     if (!text) continue;
+    // Each part's text as read (whole unless longer than the read bound). Reminders share long fixed openings,
+    // so a prefix alone cannot tell two of them apart.
+    const needles = (texts.get(m.id) ?? []).map(x => (x.text ?? "").trim()).filter(Boolean);
     const chars = (texts.get(m.id) ?? []).reduce((n, x) => n + (x.textChars ?? 0), 0);
     events.push({ kind: "inject", evidence: "recorded", id: "m:" + m.id, form: m.kind ?? "context", source: m.source ?? m.metaSource ?? null,
       timestamp: m.created, tokens: sampled(text, chars),
-      text: text.slice(0, TEXT_CHARS), truncated: chars > TEXT_CHARS, needle: text.slice(0, NEEDLE_CHARS) });
+      text: text.slice(0, TEXT_CHARS), truncated: chars > TEXT_CHARS, needles });
   }
   for (const g of groups.values()) {
     const start = number(g.start) ?? g.created, end = number(g.end), status = statusOf(g.status, g.lastSummarizedId != null || g.summarizedCount != null);
