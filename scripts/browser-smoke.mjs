@@ -85,6 +85,11 @@ try {
   await a.locator("#mode-all").click();await a.locator("#element-search").fill("Tool output");
   await a.locator('.el[data-element="message:3"] .el-head').click();await a.locator(".tool-card").filter({hasText:"src/cache.ts"}).waitFor();
   await a.locator('.el[data-element="message:3"] .el-head').click();checks.push("tool card pairs the recorded call arguments");
+  // Buttons without an id keep keyboard focus across the rebuild their own action triggers.
+  await a.locator('.el[data-element="message:3"] .el-head').focus();await page.keyboard.press("Enter");await a.locator(".tool-card").waitFor();
+  assert.match(await a.locator("body").evaluate(()=>document.activeElement?.dataset?.focus??""),/^el:.+:message:3$/);
+  await page.keyboard.press("Enter");await a.locator(".tool-card").waitFor({state:"detached"});
+  assert.match(await a.locator("body").evaluate(()=>document.activeElement?.dataset?.focus??""),/^el:.+:message:3$/);checks.push("keyboard focus survives rebuilds on buttons without an id");
 
   await page.request.get(base+"/append?session=sess_A&large=1");await refresh(a);
   await a.locator("#element-search").fill("END_OF_LONG_INPUT");await a.locator('.el[data-element="message:1"] .el-head').click();
@@ -133,6 +138,8 @@ try {
   checks.push("entry stamps name the step a message entered, or say earlier with the step it was traced to");
 
   await a.locator("#element-search").fill("fixture_1");await a.locator("#search-scope").click();
+  // All / Changes does not apply across requests; the control says so instead of looking switched on.
+  await a.locator("#mode").filter({hasText:"跨请求搜索列出全部匹配"}).waitFor();assert.equal(await a.locator("#mode-changes").count(),0);
   const hit=a.locator(".loaded-results .el").filter({hasText:"Recorded input"}).first();
   await hit.locator(".el-head").click();await a.locator("#content").filter({hasText:"fixture_1"}).waitFor();
   await a.locator(".el-body .note .btn").click();await a.locator("#follow-state").waitFor();
