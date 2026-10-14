@@ -146,8 +146,9 @@ test("event token estimates use the script-weighted measure, scaled from a sampl
   const [skill]=conversationEvents({messages:new Map(),parts:new Map([["s",{id:"s",messageId:"m",created:1,type:"tool",tool:"Skill",skill:"demo",outputChars:output.length,outputSample:sample}]])});
   const near=(actual,expected)=>assert.ok(Math.abs(actual-expected)<=3,actual+" ≈ "+expected);
   near(skill.tokens,estimateTokens(output));
-  const [tool]=summarizedItems([{role:"assistant",parts:[{type:"tool",tool:"Read",input:JSON.stringify({file_path:"a.ts"}),outputChars:output.length,outputSample:sample}]}]);
-  near(tool.tokens,estimateTokens(JSON.stringify({file_path:"a.ts"}))+estimateTokens(output));
+  const input=JSON.stringify({file_path:"a.ts"});
+  const [tool]=summarizedItems([{role:"assistant",parts:[{type:"tool",tool:"Read",inputFields:{file_path:"a.ts"},inputChars:input.length,inputSample:input,outputChars:output.length,outputSample:sample}]}]);
+  near(tool.tokens,estimateTokens(input)+estimateTokens(output));assert.equal(tool.title,"a.ts");
   assert.ok(skill.tokens>output.length/1.5-1,"Chinese output is not counted at a quarter token per character");
 });
 

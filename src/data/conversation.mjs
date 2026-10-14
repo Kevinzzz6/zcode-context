@@ -2,6 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 import { statSync } from "node:fs";
 import { ContextError } from "../domain/session.mjs";
 import { classifyDbError } from "./sqlite.mjs";
+import { SUMMARY_KEYS } from "../domain/trajectory.mjs";
 const TEXT_CHARS = 4000;
 // Token estimates of large outputs scale the script mix of a short sample to the full length.
 const SAMPLE_CHARS = 400;
@@ -116,10 +117,19 @@ export function readSummarizedMessages(dbPath, sessionId, { after = [], through,
     const message = db.prepare("SELECT id,sequence," + select(MESSAGE_FIELDS) + " FROM (SELECT *,json_valid(data) AS ok FROM message WHERE session_id=? AND id=?)");
     const parts = db.prepare("SELECT id,message_id AS messageId,time_created AS created," + select(PART_FIELDS) +
       ",CASE WHEN ok THEN substr(json_extract(data,'$.text'),1,400) END AS text,CASE WHEN ok THEN length(json_extract(data,'$.text')) END AS textChars" +
-      ",CASE WHEN ok THEN json_extract(data,'$.state.input') END AS input,CASE WHEN ok THEN length(json_extract(data,'$.state.output')) END AS outputChars" +
+      ",CASE WHEN ok THEN length(json_extract(data,'$.state.input')) END AS inputChars,CASE WHEN ok THEN substr(json_extract(data,'$.state.input'),1," + SAMPLE_CHARS + ") END AS inputSample" +
+      "," + SUMMARY_KEYS.map(key => "CASE WHEN ok AND json_type(data,'$.state.input." + key + "')='text' THEN substr(json_extract(data,'$.state.input." + key + "'),1,160) END AS in_" + key).join(",") +
+      ",CASE WHEN ok THEN length(json_extract(data,'$.state.output')) END AS outputChars" +
+      ",CASE WHEN ok THEN substr(json_extract(data,'$.state.output'),1," + SAMPLE_CHARS + ") END AS outputSample" +
       ",CASE WHEN ok THEN substr(json_extract(data,'$.state.output'),1," + SAMPLE_CHARS + ") END AS outputSample" +
       " FROM (SELECT *,json_valid(data) AS ok FROM part WHERE session_id=? AND message_id=?) ORDER BY created,id");
-    const rows = ids.slice(0, DETAIL_ROWS).map(row => ({ ...message.get(sessionId, row.id), parts: parts.all(sessionId, row.id) }));
+    // Tool inputs (a Write's whole file, say) cross into JavaScript only as the fields a title uses and a bounded sample.
+    const bounded = part => {
+      const inputFields = {};
+      for (const key of SUMMARY_KEYS) { if (part["in_" + key] != null) inputFields[key] = part["in_" + key]; delete part["in_" + key]; }
+      return { ...part, inputFields };
+    };
+    const rows = ids.slice(0, DETAIL_ROWS).map(row => ({ ...message.get(sessionId, row.id), parts: parts.all(sessionId, row.id).map(bounded) }));
     db.exec("COMMIT");
     return { available: true, messages: rows, total: ids.length };
   } catch (error) {

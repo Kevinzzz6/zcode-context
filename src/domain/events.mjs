@@ -122,8 +122,8 @@ export function summarizedItems(messages) {
         chip: p.synthetic === 1 || injected(m) ? m.source ?? m.kind ?? p.textSource ?? null : null, title: firstLine(p.text), tokens: sampled(p.text, p.textChars) });
       else if (p.type === "reasoning" && p.text) items.push({ role: "reasoning", chip: null, title: firstLine(p.text), tokens: sampled(p.text, p.textChars) });
       else if (p.type === "tool") {
-        let input = null; try { input = p.input == null ? null : JSON.parse(p.input); } catch {}
-        items.push({ role: "tool", chip: p.tool ?? null, title: inputSummary(input) ?? "", tokens: estimateTokens(p.input ?? "") + sampled(p.outputSample, p.outputChars) });
+        const title = inputSummary(p.inputFields ?? {}) ?? inputSummary(p.inputSample) ?? "";
+        items.push({ role: "tool", chip: p.tool ?? null, title, tokens: sampled(p.inputSample, p.inputChars) + sampled(p.outputSample, p.outputChars) });
       }
     }
   }
