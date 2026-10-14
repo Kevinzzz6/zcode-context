@@ -21,6 +21,7 @@ export function createContextServer() {
       const result = await reader.run(method,sessionId,args,extra.signal);
       return {content:[],structuredContent:result};
     } catch (error) {
+      if (!(error instanceof ContextError)) console.error("[zcode-context]", method, error);
       return {isError:true,content:[{type:"text",text:"Context data is unavailable."}],
         structuredContent:{error:{code:error instanceof ContextError ? error.code : "read_failed"}}};
     }
@@ -43,6 +44,7 @@ await server.connect(new StdioServerTransport());
 let closing = false;
 const shutdown = async () => {
   if (closing) return; closing = true;
+  setTimeout(() => process.exit(0), 2000).unref();
   await server.close().catch(()=>{}); await reader.close().catch(()=>{}); process.exit(0);
 };
 process.on("SIGINT",shutdown); process.on("SIGTERM",shutdown);

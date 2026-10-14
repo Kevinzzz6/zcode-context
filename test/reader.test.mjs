@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { serialRunner } from "../src/data/runner.mjs";
 import { createReader } from "../src/data/reader.mjs";
+import { ContextError } from "../src/domain/session.mjs";
 const deferred=()=>{let resolve;const promise=new Promise(r=>{resolve=r;});return {promise,resolve};};
 const tick=()=>new Promise(r=>setImmediate(r));
 // Wires a reader to an in-process runner, standing in for the worker thread.
@@ -31,10 +32,13 @@ test("cancelling a read that already started or finished leaves no stale state b
   assert.deepEqual(replies.map(x=>x.result),[1,99]);
 });
 test("runner failures reply with a code but never the original message",async()=>{
-  const replies=[];
-  const handle=serialRunner(async()=>{throw Object.assign(new Error("secret path"),{code:"database_busy"});},message=>replies.push(message));
-  handle({id:1});await tick();
-  assert.deepEqual(replies,[{id:1,error:{code:"database_busy",message:"Context data could not be read."}}]);
+  const replies=[],logged=[];
+  const handle=serialRunner(async input=>{throw input.id===1?new ContextError("database_busy","secret path"):Object.assign(new Error("secret path"),{code:"ENOENT"});},
+    message=>replies.push(message),(...args)=>logged.push(args));
+  handle({id:1,method:"overview"});handle({id:2,method:"request"});await tick();await tick();
+  assert.deepEqual(replies,[{id:1,error:{code:"database_busy",message:"Context data could not be read."}},
+    {id:2,error:{code:"read_failed",message:"Context data could not be read."}}]);
+  assert.equal(logged.length,1);assert.equal(logged[0][1],"request");assert.equal(logged[0][2].code,"ENOENT");
 });
 test("a timed-out read asks the worker to skip it, and the next read is not stuck behind it",async()=>{
   const gate=deferred(),ran=[];
