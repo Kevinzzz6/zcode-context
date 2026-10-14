@@ -1,13 +1,21 @@
 # ZCode Context 交接文档
 
-更新时间：2026-10-14，Asia/Shanghai。当前版本：0.3.7。
+更新时间：2026-10-14，Asia/Shanghai。当前版本：0.3.8。
+
+## 0.3.8 代码审查修复（2026-10-14）
+
+- 起因：两份 0.3.7 代码审查（output/review/）。逐条核对后采用的项见 CHANGELOG 0.3.8；不采用的（如“加载更早第 4 次必定无效”实际到不了、暗色 `mark.current` 对比度不低）未改。
+- 最重要的一项：默认记录下 ZCode 在 tail 之后按自己未裁剪的上一条写 delta，插件以前只保留 delta 本身；现在接在 tail 已记录的消息后面，仍标为不完整（`expandCollection`）。
+- 会话记录读取记住所有 message/part id：删除直接去掉，游标倒退或出现没见过的行时整体重读；超过 4000 字的注入正文按长度和 SHA-256 核对；压缩详情只读标题字段和 400 字样本。
+- 服务端新增 `baselineMode:"turn"`（上一轮由服务端在整个缓存里找），详情的 `summary` 带趋势 Delta。
+- 已通过 `npm run verify`（93 个单元测试）和 SDK 浏览器冒烟 36 组；在 14 个本机真实会话上只读对照注入定位无回归（这些会话里没有 tail 记录）。尚未在真实 Electron 客户端中验收。
 
 ## 0.3.7 浏览器交互规则（2026-10-14）
 
 - 起因：点「MCP 工具注册」把 `mcp__` 写进了全局搜索框，筛选会跟着切步骤、重开面板一直留着；类别上的 `+3` 取自未筛选的对比，点开却只有筛选后的一条。按第一性原理整理成五条规则，写在 [decisions.md](decisions.md)「上下文浏览器的交互规则」。
 - 服务端 `get_context_request` 新增 `listing`（每类 total / matched / added / removed 及未筛选总数，新增/移除列表已按筛选过滤）、`toolPrefix`（只按工具名匹配 schema）、`noBaseline`（上一轮不存在时不退回上一步）；`focusKey` 指向的项即使不符合筛选也会列出并标 `pinned`。去掉了 `searchAddedGroups` / `searchRemovedGroups` / `arrivals.searchGroups`。
 - 界面新增事件焦点 `view.focus`（`ui/state.mjs` 的 `lens()` 决定实际生效的基线、集合和条件），不保存；`eventKey` 也不再保存。
-- 已通过 `npm run verify`（83 个单元测试）和 SDK 浏览器冒烟 34 组（新增 4 组；当前 36 组）；尚未在真实 Electron 客户端中验收。
+- 已通过 `npm run verify`（83 个单元测试）和 SDK 浏览器冒烟 34 组（新增 4 组）；尚未在真实 Electron 客户端中验收。
 
 ## 0.3.6 桌面验收（2026-10-14）
 

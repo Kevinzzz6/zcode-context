@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.8 — 2026-10-14
 
 - Under default recording, a request recorded as a delta after a tail now keeps the tail's messages. ZCode writes the delta against its own untrimmed previous request, so after resuming a long session (or a size reset) every later request used to show only its newly added messages in the browser and the composition. The record stays partial: removals and Diff are still unavailable.
 - A trajectory file that cannot be opened for a moment (a scanner or backup holding it) keeps its read position instead of being treated as rotated, which used to reread the 24 MiB window, renumber steps and expire open requests. Only a missing file restarts it. A database that is briefly unopenable keeps the last context events, like a busy one.
