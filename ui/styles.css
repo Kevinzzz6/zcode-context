@@ -106,6 +106,13 @@ html[lang^=zh] .brief-label{width:28px}
 
 .controls{display:flex;align-items:center;gap:6px;margin-bottom:8px;flex-wrap:wrap}
 .controls input[type=search],.find input{flex:1 1 150px;height:28px;border:1px solid var(--border);border-radius:7px;background:var(--bg);padding:0 9px;font-size:12px}
+.controls input.paused{color:var(--muted);text-decoration:line-through;background:var(--bg2)}
+#element-search::-webkit-search-cancel-button{display:none}
+.focus{margin:0 0 8px}.focus .note{margin:6px 0 0}
+.focus-bar{padding:2px 2px 6px 10px;border-radius:9px;background:var(--accent-bg);font-size:12px}
+.focus-head{display:flex;align-items:center;gap:6px}
+.focus-head .event-glyph,.focus-kind{color:var(--accent);white-space:nowrap}.focus-text{padding:0 8px 0 20px;overflow-wrap:anywhere}
+.pin{flex:none;font-size:11px;color:var(--accent);white-space:nowrap}
 .seg{display:inline-flex;padding:2px;border-radius:8px;background:var(--bg2);gap:2px;flex:none}
 .seg button{border:0;background:transparent;border-radius:6px;padding:0 10px;height:24px;font-size:12px;color:var(--muted);white-space:nowrap}
 .seg.small button{height:22px;padding:0 8px;font-size:11.5px}
@@ -124,8 +131,11 @@ html[lang^=zh] .brief-label{width:28px}
 .categories{display:flex;flex-direction:column;gap:6px}
 .category{border:1px solid var(--border);border-radius:9px;overflow:hidden}
 .category.dim{opacity:.5}
-.cat-head{width:100%;display:flex;align-items:center;gap:7px;border:0;background:transparent;padding:8px 10px;text-align:left;font-size:12.5px}
-.cat-head:hover:not(:disabled){background:var(--bg2)}
+.cat-head{display:flex;align-items:center;font-size:12.5px}
+.cat-head:has(.cat-toggle:hover:not(:disabled)),.cat-head:has(.cat-badge:hover){background:var(--bg2)}
+.cat-toggle{display:flex;align-items:center;gap:7px;min-width:0;flex:0 1 auto;border:0;background:transparent;padding:8px 0 8px 10px;text-align:left}
+.cat-toggle.cat-facts{flex:1 0 auto;padding:8px 10px 8px 7px}
+.cat-badge{margin-left:7px;border:0}.cat-badge:hover{box-shadow:inset 0 0 0 1px currentColor}
 .category.open>.cat-head{background:var(--bg2);border-bottom:1px solid var(--soft)}
 .chev{width:10px;color:var(--muted);font-size:10px;flex:none}
 .cat-name{font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}

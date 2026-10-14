@@ -21,7 +21,7 @@ try {
   assert.equal(await a.locator("#summary").getAttribute("data-probe"),"idle");checks.push("polling without new data does not rebuild the page");
 
   const schemas=a.locator('.category[data-role="schema"]'),schemaTitles=()=>schemas.locator(".el .el-title").allTextContents();
-  await schemas.locator(".cat-head").click();
+  await schemas.locator(".cat-toggle").first().click();
   assert.equal(await schemas.locator('.el:has-text("Read") .calls').textContent(),"×2");
   assert.equal(await schemas.locator('.el:has-text("Glob") .calls.zero').textContent(),"×0");
   await a.locator("#schema-unused").filter({hasText:"1 个工具定义本会话从未调用"}).waitFor();
@@ -29,7 +29,7 @@ try {
   await schemas.locator(".el").first().filter({hasText:"Glob"}).waitFor();assert.deepEqual(await schemaTitles(),["Glob","Read"]);
   await a.locator("#schema-sort-calls").click();await schemas.locator(".el").first().filter({hasText:"Read"}).waitFor();
   await a.locator("#schema-sort-size").click();await a.locator("#schema-sort-size[aria-pressed=true]").waitFor();
-  await schemas.locator(".cat-head").click();checks.push("schema rows show session call counts (×N, muted ×0), unused total and Size/Calls/Name sort");
+  await schemas.locator(".cat-toggle").first().click();checks.push("schema rows show session call counts (×N, muted ×0), unused total and Size/Calls/Name sort");
 
   await a.locator("#show-usage").click();assert.equal(await a.locator("#calls").textContent(),"2");assert.match(await a.locator("#daily").textContent(),/200 \/ 20/);
   await a.locator("#usage-back").click();checks.push("secondary SQLite usage with daily totals");
@@ -63,13 +63,13 @@ try {
   await a.locator("#element-search").fill("");await a.locator("#mode-changes").click();
   await a.locator("#mode-changes").filter({hasText:/\+\d+ −\d+/}).waitFor();
   const current=await a.locator("#snapshot").inputValue();
-  await a.locator('.category[data-role="user"] .cat-head').click();
+  await a.locator('.category[data-role="user"] .cat-toggle').first().click();
   const removed=a.locator('.el[data-kind="removed"]').filter({hasText:"Recorded input"});
   await removed.locator(".el-head").click();await a.locator("#content").filter({hasText:"fixture_2"}).waitFor();
   assert.equal(await a.locator("#snapshot").inputValue(),current);await removed.locator(".el-head").click();
   const added=a.locator('.el[data-kind="added"]').filter({hasText:"Recorded input"});
   await added.locator(".el-head").click();await a.locator("#content").filter({hasText:"fixture_5"}).waitFor();await added.locator(".el-head").click();
-  await a.locator('.category[data-role="schema"] .cat-head').click();
+  await a.locator('.category[data-role="schema"] .cat-toggle').first().click();
   const schema=a.locator('.category[data-role="schema"] .el[data-kind="added"]');
   await schema.locator(".el-head").click();await a.locator(".param-list").waitFor();
   await a.locator("#toggle-diff").click();await a.locator("#content .added").waitFor();await a.locator("#content .removed").waitFor();
@@ -126,10 +126,10 @@ try {
   const appended=a.locator('.category[data-role="tool"] .el[data-element="message:10"] .stamp');
   assert.equal(await appended.textContent(),"T"+turn+" S"+step);assert.equal(await appended.getAttribute("title"),"首次随第 "+turn+" 轮第 "+step+" 步进入上下文");
   // Every fixture request rewrites its messages, so only the unchanged system message traces back to the oldest loaded step.
-  await a.locator('.category[data-role="system"] .cat-head').click();
+  await a.locator('.category[data-role="system"] .cat-toggle').first().click();
   const earlier=a.locator('.category[data-role="system"] .el .stamp.before');
   assert.equal(await earlier.textContent(),"更早");assert.match(await earlier.getAttribute("title"),/第 1 步时已在上下文中/);
-  await a.locator('.category[data-role="system"] .cat-head').click();
+  await a.locator('.category[data-role="system"] .cat-toggle').first().click();
   checks.push("entry stamps name the step a message entered, or say earlier with the step it was traced to");
 
   await a.locator("#element-search").fill("fixture_1");await a.locator("#search-scope").click();
@@ -161,6 +161,51 @@ try {
   checks.push("a recorded injection opens the message that carried it in the context browser");
   await inject.locator(".event-toggle").click();await inject.locator(".event-text").filter({hasText:"Fixture TodoWrite reminder"}).waitFor();
   checks.push("an injection's own text opens inline");
+
+  // An MCP registration focuses the step after it on MCP tool schemas with its own baseline, pausing the user's own filter.
+  await a.locator("#mode-all").click();await a.locator("#element-search").fill("Recorded input");
+  await a.locator('.category[data-role="user"] .cat-count').filter({hasText:"/"}).waitFor();
+  await page.request.get(base+"/tools?session=sess_A");await refresh(a);
+  const tools=a.locator(".event.tools").first(),focus=a.locator("#focus");
+  await tools.locator(".event-main").click();await focus.filter({hasText:"请求里有 1 个"}).filter({hasText:"注册了 3 个"}).waitFor();
+  await focus.locator(".note").filter({hasText:"你的筛选「Recorded input」已暂停"}).waitFor();
+  assert.equal(await a.locator("#element-search").getAttribute("class"),"paused");
+  assert.equal(await a.locator("#mode-changes").getAttribute("aria-pressed"),"true");assert.match(await a.locator("#mode-changes").textContent(),/\+1 −0$/);
+  assert.deepEqual(await a.locator('.category[data-role="schema"] .el .el-title').allTextContents(),["mcp__fixture__open"]);
+  assert.equal(await a.locator('.category[data-role="schema"] .cat-badge').textContent(),"+1");
+  assert.equal(await a.locator('.category[data-role="user"] .cat-badge').count(),0,"user messages changed but none is an MCP schema");
+  assert.equal(await tools.locator(".event-main").getAttribute("aria-pressed"),"true");
+  checks.push("an MCP registration focuses its step on MCP schemas, pauses the user's filter, and every count matches what it lists");
+  await page.reload();await a.locator('.category[data-role="user"] .cat-count').filter({hasText:"/"}).waitFor();
+  assert.equal(await focus.count(),0);assert.equal(await a.locator("#element-search").inputValue(),"Recorded input");
+  await tools.locator(".event-main").click();await focus.waitFor();
+  await a.locator("#snapshot-previous").click();await focus.waitFor({state:"detached"});
+  assert.equal(await a.locator("#element-search").getAttribute("class"),null);assert.equal(await a.locator("#element-search").inputValue(),"Recorded input");
+  assert.equal(await tools.locator(".event-main").getAttribute("aria-pressed"),"false");
+  await a.locator("#snapshot-next").click();await tools.locator(".event-main").click();await focus.waitFor();
+  await a.locator("#focus-exit").click();await focus.waitFor({state:"detached"});
+  await a.locator('.category[data-role="user"] .cat-count').filter({hasText:"/"}).waitFor();
+  checks.push("an event focus is not saved, and leaving its step or pressing × brings the user's filter back");
+
+  // A +N badge lists exactly N changes, counted under the filter; the user category's unmatched addition shows no badge.
+  await a.locator("#element-search").fill("Tool output");
+  await a.locator('.category[data-role="tool"] .cat-badge.up').filter({hasText:"+1"}).waitFor();
+  assert.equal(await a.locator('.category[data-role="user"] .cat-badge').count(),0);
+  await a.locator('.category[data-role="tool"] .cat-badge.up').click();
+  assert.equal(await a.locator("#mode-changes").getAttribute("aria-pressed"),"true");assert.match(await a.locator("#mode-changes").textContent(),/\+1 −1$/);
+  assert.equal(await a.locator('.category[data-role="tool"] .el[data-kind="added"]').count(),1);
+  await a.locator("#search-clear").click();assert.equal(await a.locator("#element-search").inputValue(),"");await a.locator("#mode-all").click();
+  checks.push("a category's +N lists exactly N changes under the filter, and the filter has a clear button");
+
+  // A registration with no request after it has no step: it says so, and the latest step is only an explicit, labelled choice.
+  const pinnedStep=await a.locator("#snapshot").inputValue();
+  await page.request.get(base+"/tools?session=sess_A&request=0");await refresh(a);
+  const pending=a.locator(".event.tools").first();
+  await pending.locator(".event-main").click();await pending.locator(".event-body .note").filter({hasText:"无法定位到对应的一步"}).waitFor();
+  assert.equal(await a.locator("#snapshot").inputValue(),pinnedStep);assert.equal(await focus.count(),0);
+  await pending.locator("#tools-latest").click();await focus.locator(".note").filter({hasText:"这里显示的是最新一步"}).waitFor();
+  await a.locator("#focus-exit").click();await focus.waitFor({state:"detached"});
+  checks.push("an MCP registration without a step after it says so instead of borrowing one");
 
   await a.locator("#trend-delta").click();await a.locator("#trend-scroll .bar").first().click();
   assert.equal(await a.locator("#trend-scroll .bar").first().getAttribute("aria-pressed"),"true");checks.push("trend Delta mode and bar selection");

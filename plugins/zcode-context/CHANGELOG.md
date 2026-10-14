@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- The context browser follows one set of rules. What it shows is fixed by the step, the baseline, the set (All or Changes) and the filter, and each control changes only its own: picking a step, a category, the legend or an In item no longer resets the filter or the set. The rules are written down in docs/decisions.md.
+- Every number a category header can open is the number it lists. `m / n items` and the `+N −N` badges count the current filter; the size, share and token change on the right always describe the whole request. A `+3` on user messages could open a single, older message while a filter was active; it now reads `+0` (no badge), and the Changes toggle counts the same way, with the unfiltered total in its tooltip. The counts come from one server structure (`listing`) instead of six fields picked in the panel; `searchAddedGroups`, `searchRemovedGroups` and `arrivals.searchGroups` are gone.
+- `+N` and `−N` are buttons: they switch to Changes and open that category.
+- Clicking an event no longer writes into your filter. Compactions, rewinds and MCP registrations open an **event focus** with its own baseline and narrowing, shown in a bar at the top of the browser; your filter is paused (struck through) until the focus ends with ×, by picking another step, by typing in the filter or by changing the baseline. A focus is never saved, so it does not come back after a reload. Injections and model switches only select their step.
+- An MCP registration focuses on MCP tool schemas by name (`mcp__` prefix) instead of a full-text search for `mcp__`, which also matched every message that mentioned an MCP tool. It compares with the step before the registration and says when the schemas did not change, and it explains that the registered count includes tools never sent to the model (this plugin's own two panel-only tools, for example). A registration with no readable request after it says so instead of jumping to the latest step; the latest step is offered as an explicit, labelled choice.
+- An item opened from the In row, an injection or a compaction summary stays listed, marked **Located**, even when the filter or set would hide it, instead of the filter being cleared to show it. (0.3.6 cleared the search for this.)
+- The filter has a clear button. "Previous turn" on a turn's first step is decided by the server (`noBaseline`), so Changes no longer lists the previous step's arrivals under a "no previous turn" note.
+
 ## 0.3.6 — 2026-10-13
 
 - A compaction shows as one row instead of two. ZCode logs `compact.started` and `compact.completed` under one span, and each used to get its own row with identical before/after steps; they are now merged by `spanId` into one row with its status (completed, failed or in progress) and duration. An edited question and the rewind it triggers merge the same way.

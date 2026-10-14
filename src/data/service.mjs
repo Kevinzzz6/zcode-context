@@ -29,10 +29,14 @@ function arrange(list, sort, schemaSort) {
   slots.forEach((slot, i) => { result[slot] = schemas[i]; });
   return result;
 }
-// The element being opened stays listed even when it falls outside its category's first page.
-function focused(groups,ordered,key) {
-  const item=key?ordered.find(x=>x.key===key):null,group=item&&groups[item.role];
-  if(group&&!group.items.some(x=>x.key===key))group.items.push(item);
+// The element being opened stays listed even when it falls outside its category's first page, or outside the narrowing
+// altogether; it is then marked pinned and not counted.
+function pin(groups,key,listed,any) {
+  if(!key)return groups;
+  const item=listed.find(x=>x.key===key)??(any?{...any,pinned:true}:null);
+  if(!item)return groups;
+  const group=groups[item.role]??={count:0,items:[]};
+  if(!group.items.some(x=>x.key===key))group.items.push(item);
   return groups;
 }
 export class ContextDataService {
@@ -235,7 +239,8 @@ export class ContextDataService {
     const all=this.records(state),selected=all.find(x=>x.key===args.key);
     if(!selected)throw new ContextError("request_expired","Request is outside the loaded trajectory window.");
     const record=selected.record,elements=inputElements(record),page=args.page??0,pageSize=40;
-    let diff=this.comparison(all,selected,args.baselineKey);
+    // A turn's first step has no previous turn: nothing is compared, rather than falling back to the previous step.
+    let diff=args.noBaseline?{available:false,reason:"no_previous_turn"}:this.comparison(all,selected,args.baselineKey);
     // Session-wide counts from tool_usage; null when the table is unavailable or a name fell outside the bounded read.
     const calls=state.toolCalls??{available:false,byName:{}};
     const callCount=x=>!calls.available||typeof x.toolName!=="string"?null:Object.hasOwn(calls.byName,x.toolName)?calls.byName[x.toolName].count:calls.truncated?null:0;
@@ -244,29 +249,44 @@ export class ContextDataService {
     const stampOf=key=>{const e=key.startsWith("message:")?entries?.[Number(key.slice(8))]:null;return !e?{}:e.entered?{entered:e.entered}:{enteredBefore:true,tracedTo:e.before};};
     const decorate=(x,own=true)=>x.role==="schema"?{...x,callCount:callCount(x)}:own?{...x,...stampOf(x.key)}:x;
     const order=(list,own)=>arrange(list.map(x=>decorate(x,own)),args.sort,args.schemaSort);
-    const search=(args.search??"").toLowerCase(),role=args.role;
-    const loadedSearch=args.searchScope==="loaded"&&Boolean(search),selectedSearch=Boolean(search)&&!loadedSearch;
-    const hit=item=>!search||[item.readable,item.toolName,item.toolCallId,item.key].some(v=>String(v??"").toLowerCase().includes(search));
+    const search=(args.search??"").toLowerCase(),prefix=args.toolPrefix??"",role=args.role;
+    const loadedSearch=args.searchScope==="loaded"&&Boolean(search);
+    // The narrowing: free text over bodies, tool names and call IDs, and a tool-name prefix that only schemas can match.
+    const hit=item=>(!prefix||item.role==="schema"&&String(item.toolName??"").startsWith(prefix))
+      &&(!search||[item.readable,item.toolName,item.toolCallId,item.key].some(v=>String(v??"").toLowerCase().includes(search)));
     // Partial (tail) records cannot be diffed, but entry stamps still tell what entered after the baseline step.
     // Messages whose trace stops after the baseline are counted as unknown rather than guessed.
-    let arrivals=null;
-    if(!diff.available&&entries&&selected.summary.step!=null) {
+    let arrivals=null,arrived=null;
+    if(!diff.available&&!args.noBaseline&&entries&&selected.summary.step!=null) {
       const base=args.baselineKey?all.find(x=>x.key===args.baselineKey):this.previous(all,selected);
       const since=base&&base.path===selected.path&&base.segment===selected.segment&&base.summary.step!=null&&all.indexOf(base)<all.indexOf(selected)?base.summary.step:null;
       if(since!=null) {
         const stamped=elements.filter(x=>x.key.startsWith("message:")).map(x=>({item:x,entry:entries[Number(x.key.slice(8))]})).filter(x=>x.entry);
-        const list=stamped.filter(x=>x.entry.entered&&x.entry.entered.step>since).map(x=>elementSummary(x.item));
-        arrivals={available:true,sinceStep:since,count:list.length,keys:list.map(x=>x.key),groups:groupByRole(order(list,true)),
+        arrived=stamped.filter(x=>x.entry.entered&&x.entry.entered.step>since).map(x=>x.item);
+        arrivals={available:true,sinceStep:since,count:arrived.length,keys:arrived.map(x=>x.key),groups:groupByRole(order(arrived.map(elementSummary),true)),
           unknownCount:stamped.filter(x=>!x.entry.entered&&x.entry.before&&x.entry.before.step>since).length};
-        if(selectedSearch)arrivals.searchGroups=groupByRole(order(stamped.filter(x=>x.entry.entered&&x.entry.entered.step>since&&hit(x.item)).map(x=>elementSummary(x.item)),true));
       }
     }
-    // Searching in Changes matches full bodies like the element list; the unfiltered groups still feed the In row.
-    if(diff.available&&selectedSearch) {
-      const own=new Map(elements.map(x=>[x.key,x])),before=new Map(inputElements(all.find(x=>x.key===diff.previousKey).record).map(x=>[x.key,x]));
-      const matching=(list,map)=>list.filter(x=>map.has(x.key)&&hit(map.get(x.key)));
-      diff={...diff,searchAddedGroups:groupByRole(order(matching(diff.added,own),true)),searchRemovedGroups:groupByRole(order(matching(diff.removed,before),false))};
-    }
+    // Every count the browser shows comes from here, under the same narrowing as the list it opens: per category the items,
+    // those matching, and the changes — the diff, or a partial record's arrivals, whose removals are unknown.
+    const own=new Map(elements.map(x=>[x.key,x]));
+    let changes=null;
+    if(diff.available) {
+      const before=new Map(inputElements(all.find(x=>x.key===diff.previousKey).record).map(x=>[x.key,x]));
+      changes={source:"diff",added:diff.added.map(x=>[x,own.get(x.key)]),removed:diff.removed.map(x=>[x,before.get(x.key)])};
+    } else if(arrived)changes={source:"arrivals",added:arrived.map(x=>[elementSummary(x),x]),removed:null};
+    const shown=list=>list?list.filter(([,x])=>x&&hit(x)).map(([summary])=>summary):null;
+    const added=shown(changes?.added),removed=shown(changes?.removed),roles={};
+    const tally=role=>roles[role]??={total:0,matched:0,added:0,addedTotal:0,removed:removed?0:null,removedTotal:removed?0:null};
+    for(const x of elements){const r=tally(x.role);r.total++;if(hit(x))r.matched++;}
+    for(const [x] of changes?.added??[])tally(x.role).addedTotal++;
+    for(const [x] of changes?.removed??[])tally(x.role).removedTotal++;
+    for(const x of added??[])tally(x.role).added++;
+    for(const x of removed??[])tally(x.role).removed++;
+    const focusItem=args.focusKey&&own.has(args.focusKey)?decorate(elementSummary(own.get(args.focusKey))):null,addedOrdered=order(added??[],true);
+    const listing={narrowed:Boolean(search||prefix),source:changes?.source??null,roles,added:added?.length??0,addedTotal:changes?.added.length??0,
+      removed:removed?.length??null,removedTotal:changes?.removed?.length??null,
+      addedGroups:changes?pin(groupByRole(addedOrdered),args.focusKey,addedOrdered,focusItem):{},removedGroups:removed?groupByRole(order(removed,false)):{}};
     if(diff.available)diff={...diff,addedCount:diff.added.length,removedCount:diff.removed.length,changedCount:diff.changed.length,
       addedKeys:diff.added.slice(0,2000).map(x=>x.key),changedPairs:diff.changed.map(x=>({before:x.before.key,after:x.after.key})),
       addedGroups:groupByRole(order(diff.added,true)),removedGroups:groupByRole(order(diff.removed,false)),
@@ -308,11 +328,11 @@ export class ContextDataService {
       bodyDiff={text:unified.slice(offset,offset+12000),offset,totalChars:unified.length,hasMore:offset+12000<unified.length,
         beforeKey:previous.key,afterKey:selected.key,method:"common_prefix_suffix_block"};
     }
-    return {sessionId,revision:state.overview.revision,summary:selected.summary,composition:selected.summary.composition,diff,arrivals,
+    return {sessionId,revision:state.overview.revision,summary:selected.summary,composition:selected.summary.composition,diff,arrivals,listing,
       baselineOptions:all.filter(x=>x.path===selected.path&&x.record.querySource===record.querySource&&all.indexOf(x)<all.indexOf(selected)).slice(-60).map(x=>({key:x.key,startedAt:x.record.startedAt,turnId:x.record.turnId,complete:x.record.messages.complete})),
       elementCount:elements.length,filteredCount:filtered.length,page,searchScope:args.searchScope==="loaded"&&search?"all_loaded_snapshots":"all_elements_in_selected_loaded_snapshot",loadedSnapshotCount:all.length,
       largest:filtered.length?filtered.reduce((largest,x)=>x.chars>largest.chars?x:largest):null,
-      groups:loadedSearch?null:focused(groupByRole(ordered),ordered,args.focusKey),schemaCalls,
+      groups:loadedSearch?null:pin(groupByRole(ordered),args.focusKey,ordered,focusItem),schemaCalls,
       elements:ordered.slice(page*pageSize,(page+1)*pageSize),content,bodyDiff};
   }
 }

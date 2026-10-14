@@ -31409,6 +31409,8 @@ function createContextServer() {
       key: external_exports.string().regex(/^[a-f0-9]{24}$/),
       page: external_exports.number().int().min(0).max(1e5).optional(),
       baselineKey: external_exports.string().regex(/^[a-f0-9]{24}$/).optional(),
+      noBaseline: external_exports.boolean().optional(),
+      toolPrefix: external_exports.string().max(64).optional(),
       search: external_exports.string().max(200).optional(),
       searchScope: external_exports.enum(["selected", "loaded"]).optional(),
       role: external_exports.string().max(32).optional(),

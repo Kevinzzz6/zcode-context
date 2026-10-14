@@ -345,13 +345,67 @@ test("a compaction's summarized messages follow the active branch after a rewind
     store.compaction("sess_A","one",now-5000,{summaryId:"sum1",lastSummarizedId:"a3",count:4});
   });
 });
-test("searching changes matches full bodies like the element list, while the In row keeps every addition",()=>{
-  const base=[{role:"user",content:"question"}],added=[...base,{role:"tool",content:"small result"},{role:"tool",content:"x".repeat(400)+" DEEP_NEEDLE"}];
+test("every count follows the narrowing of the list it opens, while the In row keeps every addition",()=>{
+  const base=[{role:"user",content:"question"}],added=[...base,{role:"tool",content:"small result"},{role:"tool",content:"x".repeat(400)+" DEEP_NEEDLE"},{role:"user",content:"follow-up"}];
   return fixture([modelRecord("sess_A","a",base),modelRecord("sess_A","b",added)],async(service,o)=>{
     const key=o.trajectories.at(-1).key,plain=await service.request("sess_A",{key});
-    assert.equal(plain.diff.available,true);assert.equal(plain.diff.searchAddedGroups,undefined);
+    assert.equal(plain.listing.narrowed,false);assert.equal(plain.listing.source,"diff");assert.equal(plain.listing.added,3);assert.equal(plain.listing.removed,0);
+    assert.deepEqual(plain.listing.roles.tool,{total:2,matched:2,added:2,addedTotal:2,removed:0,removedTotal:0});
     const d=await service.request("sess_A",{key,search:"deep_needle"});
-    assert.equal(d.diff.addedGroups.tool.count,2);assert.equal(d.diff.searchAddedGroups.tool.count,1);
-    assert.equal(d.diff.searchAddedGroups.tool.items[0].key,d.elements[0].key);assert.deepEqual(d.diff.searchRemovedGroups,{});
+    assert.equal(d.listing.narrowed,true);assert.equal(d.listing.added,1);assert.equal(d.listing.addedTotal,3);
+    assert.deepEqual(d.listing.roles.tool,{total:2,matched:1,added:1,addedTotal:2,removed:0,removedTotal:0});
+    // The user category gained a message too, but none matches: its +N is 0, not the unfiltered 1.
+    assert.deepEqual(d.listing.roles.user,{total:2,matched:0,added:0,addedTotal:1,removed:0,removedTotal:0});
+    assert.equal(d.listing.addedGroups.tool.items[0].key,d.elements[0].key);assert.equal(d.listing.addedGroups.user,undefined);assert.deepEqual(d.listing.removedGroups,{});
+    assert.equal(d.diff.addedGroups.tool.count,2);assert.equal(d.diff.addedGroups.user.count,1);
   });
+});
+test("a tool-name prefix matches schemas by name only, never messages that mention it",()=>{
+  const messages=[{role:"user",content:"try mcp__node_repl__js"},{role:"tool",content:"called mcp__node_repl__js"}];
+  return fixture([modelRecord("sess_A","a",messages.slice(0,1),{request:{messages:messages.slice(0,1),body:{tools:[tool("Read",10)]}}}),
+    modelRecord("sess_A","b",messages,{request:{messages,body:{tools:[tool("Read",10),tool("mcp__node_repl__js",10)]}}})],async(service,o)=>{
+    const key=o.trajectories.at(-1).key,text=await service.request("sess_A",{key,search:"mcp__"});
+    assert.deepEqual(Object.keys(text.groups).sort(),["schema","tool","user"]);
+    const d=await service.request("sess_A",{key,toolPrefix:"mcp__"});
+    assert.deepEqual(Object.keys(d.groups),["schema"]);assert.deepEqual(d.groups.schema.items.map(x=>x.toolName),["mcp__node_repl__js"]);
+    assert.equal(d.listing.roles.schema.matched,1);assert.equal(d.listing.roles.schema.total,2);assert.equal(d.listing.roles.user.matched,0);
+    assert.equal(d.listing.added,1);assert.equal(d.listing.addedGroups.schema.items[0].toolName,"mcp__node_repl__js");assert.equal(d.listing.roles.tool.added,0);
+  });
+});
+test("an opened item stays listed when the narrowing would hide it, marked pinned and not counted",()=>fixture([
+  modelRecord("sess_A","a",[{role:"user",content:"one"}]),modelRecord("sess_A","b",[{role:"user",content:"one"},{role:"user",content:"two"}])],async(service,o)=>{
+    const key=o.trajectories.at(-1).key,d=await service.request("sess_A",{key,search:"absent",focusKey:"message:1"});
+    assert.deepEqual(d.groups.user.items.map(x=>[x.key,x.pinned]),[["message:1",true]]);assert.equal(d.groups.user.count,0);
+    assert.deepEqual(d.listing.addedGroups.user.items.map(x=>[x.key,x.pinned]),[["message:1",true]]);
+    assert.equal(d.listing.roles.user.matched,0);assert.equal(d.listing.added,0);
+    const plain=await service.request("sess_A",{key,focusKey:"message:1"});assert.equal(plain.groups.user.items.find(x=>x.key==="message:1").pinned,undefined);
+  }));
+test("a first turn compared by turn compares with nothing instead of the previous step",()=>fixture([
+  tail("r1",chat(5),3,{turnId:"t1"}),tail("r2",chat(7),3,{turnId:"t1"})],async(service,o)=>{
+    const key=o.trajectories.at(-1).key,step=await service.request("sess_A",{key});assert.equal(step.listing.source,"arrivals");
+    const d=await service.request("sess_A",{key,noBaseline:true});
+    assert.equal(d.diff.available,false);assert.equal(d.diff.reason,"no_previous_turn");assert.equal(d.arrivals,null);
+    assert.equal(d.listing.source,null);assert.equal(d.listing.added,0);assert.equal(d.listing.removed,null);
+  }));
+test("a partial record's arrivals are counted under the narrowing and its removals stay unknown",()=>fixture([
+  tail("r1",chat(5),3,{turnId:"t1"}),tail("r2",chat(7),3,{turnId:"t1"}),tail("r3",chat(8),3,{turnId:"t2"})],async(service,o)=>{
+    const key=o.trajectories.at(-1).key,hit=await service.request("sess_A",{key,search:"m7"}),miss=await service.request("sess_A",{key,search:"absent"});
+    assert.equal(hit.listing.source,"arrivals");assert.equal(hit.listing.added,1);assert.equal(hit.listing.removed,null);
+    assert.equal(hit.listing.roles.assistant.added,1);assert.equal(hit.listing.roles.assistant.removed,null);
+    assert.equal(miss.listing.added,0);assert.equal(miss.listing.addedTotal,1);assert.deepEqual(miss.listing.addedGroups,{});
+  }));
+test("an event focus pauses the user's filter and baseline, and is never saved",async()=>{
+  const store=new Map();globalThis.localStorage={getItem:k=>store.get(k)??null,setItem:(k,v)=>store.set(k,v)};
+  try {
+    const {initialView,saveView,restoreView,lens}=await import("../ui/state.mjs");
+    const view={...initialView(),search:"my filter",mode:"changes",baselineMode:"turn",eventKey:"tools:1",
+      focus:{kind:"tools",stepKey:"k",mode:"all",toolPrefix:"mcp__",baselineKey:"b",expanded:["schema"]}};
+    assert.deepEqual(lens(view),{focused:true,mode:"all",search:"",toolPrefix:"mcp__",baselineKey:"b",baselineMode:"turn",searchAll:false});
+    assert.deepEqual(lens({...view,focus:null}),{focused:false,mode:"changes",search:"my filter",toolPrefix:"",baselineKey:null,baselineMode:"turn",searchAll:false});
+    saveView("sess_A",view);const saved=JSON.parse(store.get("zcode-context:view:v3:sess_A"));
+    assert.equal("focus" in saved,false);assert.equal("eventKey" in saved,false);assert.equal(saved.search,"my filter");
+    store.set("zcode-context:view:v3:sess_B",JSON.stringify({...view,eventFocus:{key:"x"},eventNote:{key:"x"}}));
+    const restored=restoreView("sess_B");assert.equal(restored.focus,null);assert.equal(restored.eventKey,null);
+    assert.equal("eventFocus" in restored,false);assert.equal(restored.search,"my filter");assert.equal(restored.mode,"changes");
+  }finally{delete globalThis.localStorage;}
 });

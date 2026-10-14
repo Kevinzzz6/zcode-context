@@ -9,7 +9,7 @@ import { usageDatabase, modelRecord, conversationStore } from "../test/fixtures.
 const root=await mkdtemp(join(tmpdir(),"context-browser-fixture-"));const fixture=usageDatabase(root);const store=conversationStore(fixture.db);
 await mkdir(join(root,"rollout"));await mkdir(join(root,"log"));
 let counter=0;
-async function append(sessionId, large = false, bulk = false, gap = false, reminder = null) {
+async function append(sessionId, large = false, bulk = false, gap = false, reminder = null, mcp = false) {
   const id="fixture_"+(++counter);fixture.add(sessionId,id,sessionId==="sess_A"?100:900,10);fixture.tool(sessionId,id,"Read");
   const messages=[{role:"system",content:"Fixture rules. No real user data."},{role:"user",content:"Recorded input for "+sessionId+" "+id+(large?" "+"long fixture text ".repeat(1600)+" END_OF_LONG_INPUT":"")}];
   messages.push({role:"assistant",tool_calls:[{id:"call_"+id,function:{name:"Read",arguments:'{"path":"src/cache.ts"}'}}]},
@@ -17,7 +17,8 @@ async function append(sessionId, large = false, bulk = false, gap = false, remin
   if(reminder)messages.push({role:"system",content:reminder});
   if(bulk)for(let i=0;i<85;i++)messages.push({role:"tool",content:i===84?"SEARCH_BEYOND_FIRST_PAGE "+"big ".repeat(1000):"tiny tool "+i});
   const record=modelRecord(sessionId,id,messages,{turnId:"turn_"+id,request:{messages,messagesKind:"full",messageCount:messages.length,
-    body:{tools:[{name:"Read",description:"Schema "+id,parameters:{type:"object",properties:{path:{type:"string"}}}},{name:"Glob",description:"Never called",parameters:{type:"object"}}]}}});
+    body:{tools:[{name:"Read",description:"Schema "+id,parameters:{type:"object",properties:{path:{type:"string"}}}},{name:"Glob",description:"Never called",parameters:{type:"object"}},
+      ...(mcp?[{name:"mcp__fixture__open",description:"Fixture MCP schema",parameters:{type:"object"}}]:[])]}}});
   await appendFile(join(root,"rollout","model-io-"+sessionId+".jsonl"),(gap?"INVALID ROW\n":"")+JSON.stringify(record)+"\n");
 }
 await append("sess_A");await append("sess_A");await append("sess_B");
@@ -46,6 +47,14 @@ const http=createServer(async(req,res)=>{
     if(url.pathname==="/inject"){
       const text="Fixture TodoWrite reminder "+Date.now();store.reminder(sessionId,"reminder_"+Date.now(),Date.now()-20,text);
       await append(sessionId,false,false,false,text);res.writeHead(204);res.end();return;
+    }
+    // An MCP registration in the log, then (unless request=0) the request that carries the new MCP schema.
+    if(url.pathname==="/tools"){
+      const date=new Date(),stamp=date.getFullYear()+"-"+String(date.getMonth()+1).padStart(2,"0")+"-"+String(date.getDate()).padStart(2,"0");
+      await appendFile(join(root,"log","zcode-"+stamp+".jsonl"),JSON.stringify({sessionId,event:"mcp.tools.registered",timestamp:new Date(date-20).toISOString(),
+        turnId:"turn_tools_"+counter,spanId:"span_tools_"+Date.now(),context:{registeredToolCount:3,serverCount:2}})+"\n");
+      if(url.searchParams.get("request")!=="0")await append(sessionId,false,false,false,null,true);
+      res.writeHead(204);res.end();return;
     }
     if(url.pathname==="/event"){
       const date=new Date(),stamp=date.getFullYear()+"-"+String(date.getMonth()+1).padStart(2,"0")+"-"+String(date.getDate()).padStart(2,"0");
