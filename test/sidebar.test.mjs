@@ -420,7 +420,21 @@ test("a first turn compared by turn compares with nothing instead of the previou
     const d=await service.request("sess_A",{key,noBaseline:true});
     assert.equal(d.diff.available,false);assert.equal(d.diff.reason,"no_previous_turn");assert.equal(d.arrivals,null);
     assert.equal(d.listing.source,null);assert.equal(d.listing.added,0);assert.equal(d.listing.removed,null);
+    const turn=await service.request("sess_A",{key,baselineMode:"turn"});assert.equal(turn.diff.reason,"no_previous_turn");assert.equal(turn.arrivals,null);
   }));
+// The panel shows 60 steps at a time; the previous turn is found in the whole cache, beyond the steps it has loaded.
+test("the previous-turn baseline is resolved by the service over its whole cache",()=>{
+  const records=Array.from({length:70},(_,i)=>modelRecord("sess_A","r"+i,chat(i+1),{turnId:i<5?"t1":"t2"}));
+  return fixture(records,async(service,o)=>{
+    assert.equal(o.trajectories.length,60);
+    const all=service.records(service.state("sess_A")),first=o.trajectories[0];
+    assert.equal(first.turn,2);
+    const d=await service.request("sess_A",{key:first.key,baselineMode:"turn"});
+    assert.equal(d.diff.available,true);assert.equal(d.diff.previousKey,all[4].key);
+    // The detail's summary carries the same Delta as the trend item, so a restored selection is comparable.
+    assert.equal(d.summary.delta.tokens,first.delta.tokens);
+  });
+});
 test("a partial record's arrivals are counted under the narrowing and its removals stay unknown",()=>fixture([
   tail("r1",chat(5),3,{turnId:"t1"}),tail("r2",chat(7),3,{turnId:"t1"}),tail("r3",chat(8),3,{turnId:"t2"})],async(service,o)=>{
     const key=o.trajectories.at(-1).key,hit=await service.request("sess_A",{key,search:"m7"}),miss=await service.request("sess_A",{key,search:"absent"});

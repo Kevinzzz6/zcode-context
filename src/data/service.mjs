@@ -238,13 +238,23 @@ export class ContextDataService {
     result.revision=digest(overview.revision+":"+historyPage);
     return revision&&revision===result.revision?{sessionId,revision,unchanged:true}:result;
   }
+  // "Previous turn": the last agent step of an earlier turn in the same file and from the same source, over the whole cache.
+  // A turn numbered after 1 whose predecessor is no longer cached has a baseline that left the window, not no previous turn.
+  turnBaseline(all,selected) {
+    const s=selected.summary;
+    if(s.step==null)return {};
+    if(s.turn==null)return {noBaseline:true};
+    const previous=all.slice(0,all.indexOf(selected)).findLast(x=>x.summary.step!=null&&x.path===selected.path&&x.record.querySource===selected.record.querySource&&x.summary.turn!=null&&x.summary.turn<s.turn);
+    return previous?{baselineKey:previous.key}:{noBaseline:true,noBaselineReason:s.turn>1?"baseline_expired":"no_previous_turn"};
+  }
   async request(sessionId,args) {
     const state=this.state(sessionId);if(!state.overview)await this.refresh(sessionId);
     const all=this.records(state),selected=all.find(x=>x.key===args.key);
     if(!selected)throw new ContextError("request_expired","Request is outside the loaded trajectory window.");
+    if(args.baselineMode==="turn"&&!args.baselineKey&&!args.noBaseline)args={...args,...this.turnBaseline(all,selected)};
     const record=selected.record,elements=inputElements(record),page=args.page??0,pageSize=40;
     // A turn's first step has no previous turn: nothing is compared, rather than falling back to the previous step.
-    let diff=args.noBaseline?{available:false,reason:"no_previous_turn"}:this.comparison(all,selected,args.baselineKey);
+    let diff=args.noBaseline?{available:false,reason:args.noBaselineReason??"no_previous_turn"}:this.comparison(all,selected,args.baselineKey);
     // Session-wide counts from tool_usage; null when the table is unavailable or a name fell outside the bounded read.
     const calls=state.toolCalls??{available:false,byName:{}};
     const callCount=x=>!calls.available||typeof x.toolName!=="string"?null:Object.hasOwn(calls.byName,x.toolName)?calls.byName[x.toolName].count:calls.truncated?null:0;
@@ -332,7 +342,7 @@ export class ContextDataService {
       bodyDiff={text:unified.slice(offset,offset+12000),offset,totalChars:unified.length,hasMore:offset+12000<unified.length,
         beforeKey:previous.key,afterKey:selected.key,method:"common_prefix_suffix_block"};
     }
-    return {sessionId,revision:state.overview.revision,summary:selected.summary,composition:selected.summary.composition,diff,arrivals,listing,
+    return {sessionId,revision:state.overview.revision,summary:this.timelineItem(all,selected),composition:selected.summary.composition,diff,arrivals,listing,
       baselineOptions:all.filter(x=>x.path===selected.path&&x.record.querySource===record.querySource&&all.indexOf(x)<all.indexOf(selected)).slice(-60).map(x=>({key:x.key,startedAt:x.record.startedAt,turnId:x.record.turnId,complete:x.record.messages.complete})),
       elementCount:elements.length,filteredCount:filtered.length,page,searchScope:args.searchScope==="loaded"&&search?"all_loaded_snapshots":"all_elements_in_selected_loaded_snapshot",loadedSnapshotCount:all.length,
       largest:filtered.length?filtered.reduce((largest,x)=>x.chars>largest.chars?x:largest):null,
