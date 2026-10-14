@@ -36,9 +36,12 @@ const INJECTED_TEXT = "ok AND json_extract(data,'$.type')='text' AND json_extrac
 const select = fields => fields.map(x => { const [name, path] = x.split(":"); return field(path) + " AS " + name; }).join(",");
 
 // The session's conversation store: message semantics, compaction and timeline parts, Skill loads and injected text.
-// Rows are read incrementally by time_updated. A deletion moves no cursor and can be offset by new rows in the same poll
-// (ZCode removes the messages of a compaction whose persistence failed), so cached ids are checked for existence.
+// Rows are read incrementally by time_updated. Every message and part id is known, so after each change the counts tell
+// whether rows were deleted (ZCode removes the messages of a compaction whose persistence failed, possibly offset by new
+// rows in the same poll) or arrived below the cursor (a restored or backfilled database). Deletions are dropped; rows
+// never seen, or a cursor that went backwards, reload everything.
 // A rewind deletes nothing: the abandoned branch stays in the store and session.revert records the active one.
+const fresh = () => ({ messageCursor: -1, partCursor: -1, messageCount: 0, partCount: 0, messages: new Map(), parts: new Map(), partIds: new Set() });
 export function readConversation(dbPath, sessionId, cache = null) {
   let handle;
   try {
@@ -46,33 +49,39 @@ export function readConversation(dbPath, sessionId, cache = null) {
     const { db, sequence } = handle;
     const stat = table => db.prepare("SELECT count(*) AS n, max(time_updated) AS u FROM " + table + " WHERE session_id=?").get(sessionId);
     const messageStat = stat("message"), partStat = stat("part");
-    const c = cache ?? { messageCursor: -1, partCursor: -1, messageCount: 0, partCount: 0, messages: new Map(), parts: new Map() };
+    let c = cache?.partIds && (messageStat.u ?? -1) >= cache.messageCursor && (partStat.u ?? -1) >= cache.partCursor ? cache : fresh();
     if (c.messageCursor === (messageStat.u ?? -1) && c.partCursor === (partStat.u ?? -1) && c.messageCount === messageStat.n && c.partCount === partStat.n) {
       db.exec("COMMIT");
       return { available: true, changed: false, cache: c };
     }
     const messages = db.prepare("SELECT id," + sequence + " AS sequence,time_created AS created,time_updated AS updated," + select(MESSAGE_FIELDS) +
       ",CASE WHEN ok THEN substr(json_extract(data,'$.summary.body'),1," + TEXT_CHARS + ") END AS summary" +
-      " FROM (SELECT *,json_valid(data) AS ok FROM message WHERE session_id=? AND time_updated>=?)").all(sessionId, c.messageCursor);
-    for (const row of messages) c.messages.set(row.id, row);
+      " FROM (SELECT *,json_valid(data) AS ok FROM message WHERE session_id=? AND time_updated>=?)");
     const parts = db.prepare("SELECT id,message_id AS messageId,time_created AS created,time_updated AS updated," + select(PART_FIELDS) +
       ",CASE WHEN " + INJECTED_TEXT + " THEN substr(json_extract(data,'$.text'),1," + TEXT_CHARS + ") END AS text" +
       ",CASE WHEN " + INJECTED_TEXT + " THEN length(json_extract(data,'$.text')) END AS textChars" +
       ",CASE WHEN ok AND json_extract(data,'$.tool')='Skill' THEN length(json_extract(data,'$.state.output')) END AS outputChars" +
       ",CASE WHEN ok AND json_extract(data,'$.tool')='Skill' THEN substr(json_extract(data,'$.state.output'),1," + SAMPLE_CHARS + ") END AS outputSample" +
       ",CASE WHEN ok AND json_extract(data,'$.type') IN ('compaction','timeline') THEN data END AS raw" +
-      " FROM (SELECT *,json_valid(data) AS ok FROM part WHERE session_id=? AND time_updated>=?)").all(sessionId, c.partCursor);
-    // Only the parts events are built from are kept; every other part is reread only when it changes.
-    for (const row of parts) {
-      const keep = row.type === "compaction" || row.type === "timeline" || (row.type === "tool" && row.tool === "Skill") || (row.type === "text" && row.synthetic === 1);
-      if (keep) c.parts.set(row.id, row); else c.parts.delete(row.id);
-    }
-    if (cache) {
-      const live = (table, ids) => new Set(db.prepare("SELECT t.id FROM " + table + " t JOIN json_each(?) j ON t.id=j.value WHERE t.session_id=?")
-        .all(JSON.stringify(ids), sessionId).map(row => row.id));
-      for (const [table, map] of [["message", c.messages], ["part", c.parts]]) {
-        const found = live(table, [...map.keys()]);
-        for (const id of [...map.keys()]) if (!found.has(id)) map.delete(id);
+      " FROM (SELECT *,json_valid(data) AS ok FROM part WHERE session_id=? AND time_updated>=?)");
+    const ingest = c => {
+      for (const row of messages.all(sessionId, c.messageCursor)) c.messages.set(row.id, row);
+      // Only the parts events are built from are kept; every other part is reread only when it changes.
+      for (const row of parts.all(sessionId, c.partCursor)) {
+        c.partIds.add(row.id);
+        const keep = row.type === "compaction" || row.type === "timeline" || (row.type === "tool" && row.tool === "Skill") || (row.type === "text" && row.synthetic === 1);
+        if (!keep) { c.parts.delete(row.id); continue; }
+        c.parts.set(row.id, row);
+      }
+    };
+    ingest(c);
+    if (c.messages.size !== messageStat.n || c.partIds.size !== partStat.n) {
+      const ids = table => new Set(db.prepare("SELECT id FROM " + table + " WHERE session_id=?").all(sessionId).map(row => row.id));
+      const liveMessages = ids("message"), liveParts = ids("part");
+      if ([...liveMessages].some(id => !c.messages.has(id)) || [...liveParts].some(id => !c.partIds.has(id))) { c = fresh(); ingest(c); }
+      else {
+        for (const id of [...c.messages.keys()]) if (!liveMessages.has(id)) c.messages.delete(id);
+        for (const id of [...c.partIds]) if (!liveParts.has(id)) { c.partIds.delete(id); c.parts.delete(id); }
       }
     }
     db.exec("COMMIT");
@@ -120,7 +129,6 @@ export function readSummarizedMessages(dbPath, sessionId, { after = [], through,
       ",CASE WHEN ok THEN length(json_extract(data,'$.state.input')) END AS inputChars,CASE WHEN ok THEN substr(json_extract(data,'$.state.input'),1," + SAMPLE_CHARS + ") END AS inputSample" +
       "," + SUMMARY_KEYS.map(key => "CASE WHEN ok AND json_type(data,'$.state.input." + key + "')='text' THEN substr(json_extract(data,'$.state.input." + key + "'),1,160) END AS in_" + key).join(",") +
       ",CASE WHEN ok THEN length(json_extract(data,'$.state.output')) END AS outputChars" +
-      ",CASE WHEN ok THEN substr(json_extract(data,'$.state.output'),1," + SAMPLE_CHARS + ") END AS outputSample" +
       ",CASE WHEN ok THEN substr(json_extract(data,'$.state.output'),1," + SAMPLE_CHARS + ") END AS outputSample" +
       " FROM (SELECT *,json_valid(data) AS ok FROM part WHERE session_id=? AND message_id=?) ORDER BY created,id");
     // Tool inputs (a Write's whole file, say) cross into JavaScript only as the fields a title uses and a bounded sample.
