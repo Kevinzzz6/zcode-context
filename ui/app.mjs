@@ -23,11 +23,26 @@ function interacting() {
   const selection=document.getSelection?.();
   return Boolean(selection&&!selection.isCollapsed&&root.contains(selection.anchorNode));
 }
+// Focus is restored by id or by a button's stable data-focus key; anything else by its child path from the nearest
+// ancestor that has one, which holds while the rebuilt structure around it is the same.
+const anchorOf=el=>el.id?{id:el.id}:el.dataset?.focus?{key:el.dataset.focus}:null;
+function focusTarget(el) {
+  const path=[];
+  for(let x=el;x&&x!==root;x=x.parentElement) {
+    const anchor=anchorOf(x);if(anchor)return {...anchor,path};
+    path.unshift([...x.parentElement.children].indexOf(x));
+  }
+  return {root:true,path};
+}
+function restoreTarget({id,key,path}) {
+  let el=id?document.getElementById(id):key?[...root.querySelectorAll("[data-focus]")].find(x=>x.dataset.focus===key):root;
+  for(const i of path)el=el?.children[i];
+  return el&&root.contains(el)&&el.matches("button,input,select,textarea,a[href],[tabindex]")?el:null;
+}
 function render(background=false) {
   if(background&&interacting()){pendingRender=true;return;}
   pendingRender=false;highlight(null);
-  // Focus is restored by id, or by the stable data-focus key of a button that has no id.
-  const focus=document.activeElement,inside=focus&&root.contains(focus),focusId=inside?focus.id||null:null,focusKey=inside&&!focusId?focus.dataset?.focus??null:null,caret=focus?.selectionStart;
+  const focus=document.activeElement,target=focus&&root.contains(focus)&&focus!==root?focusTarget(focus):null,caret=focus?.selectionStart;
   const scrolls=new Map([...root.querySelectorAll("[data-scroll]")].map(el=>[el.dataset.scroll,[el.scrollLeft,el.scrollTop,el.scrollWidth]]));
   const y=window.scrollY,agents=items.filter(isAgent),index=agents.findIndex(x=>x.key===view.selectedKey);
   const selected=items.find(x=>x.key===view.selectedKey)??(detail?.summary?.key===view.selectedKey?detail.summary:null);
@@ -39,8 +54,8 @@ function render(background=false) {
   }
   keepRightEdge=null;
   adaptTrend();
-  if(focusId||focusKey) {
-    const el=focusId?document.getElementById(focusId):[...root.querySelectorAll("[data-focus]")].find(x=>x.dataset.focus===focusKey);
+  if(target) {
+    const el=restoreTarget(target);
     if(el&&el!==document.activeElement){el.focus({preventScroll:true});if(caret!=null&&el.setSelectionRange)try{el.setSelectionRange(caret,caret);}catch{}}
   }
   window.scrollTo(0,y);
@@ -311,6 +326,7 @@ const actions={
   toolsAtLatest(event){enterFocus(latestKey(),{...MCP,eventKey:eventId(event),baselineKey:null,mode:"all",note:{latest:true},probe:false,toolCount:event.toolCount??null});},
   exitFocus() {
     if(!view.focus)return;
+    ++navigation;
     view={...view,...leaveFocus()};detail=null;more={};moreSequence={};
     persist();render();loadDetail();
   },
@@ -334,14 +350,17 @@ const actions={
   sort(sort){view={...view,sort};persist();render();loadDetail();},
   schemaSort(schemaSort){view={...view,schemaSort};persist();render();loadDetail();},
   baselineMode(mode) {
+    ++navigation;
     view={...view,...leaveFocus(),baselineMode:mode,baselineKey:null,open:view.open?.diff?{...view.open,diff:false,diffBefore:null,offset:0}:view.open};
     persist();render();loadDetail();if(view.open)loadContent();
   },
   baseline(key) {
+    ++navigation;
     view={...view,...leaveFocus(),baselineKey:key,open:view.open?.diff?{...view.open,diff:false,diffBefore:null,offset:0}:view.open};
     persist();render();loadDetail();if(view.open)loadContent();
   },
   search(value,now=false) {
+    ++navigation;
     const left=Boolean(view.focus);
     view={...view,...leaveFocus(),search:value,searchExpanded:null};persist();
     if(left)detail=null;
@@ -349,7 +368,7 @@ const actions={
     clearTimeout(searchTimer);
     if(now)loadDetail();else searchTimer=setTimeout(()=>loadDetail(),200);
   },
-  searchAll(on){view={...view,searchAll:on};persist();render();loadDetail();},
+  searchAll(on){++navigation;view={...view,searchAll:on};persist();render();loadDetail();},
   toggleRole(role) {
     const current=expandedRoles(view,detail);
     setExpanded(current.includes(role)?current.filter(x=>x!==role):[...current,role]);persist();render();
