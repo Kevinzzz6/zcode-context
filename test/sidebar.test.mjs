@@ -314,6 +314,27 @@ test("reminders sharing a long opening are located by their own text, and a skip
       store.reminder("sess_A","ra",now-7000,a);store.reminder("sess_A","rb",now-6500,b);store.reminder("sess_A","rc",now-4000,c);
     });
 });
+test("injections longer than the read bound are told apart by length and digest",()=>{
+  const now=Date.now(),at=ms=>new Date(now+ms).toISOString(),opening="Restored context line. ".repeat(250);
+  const a=opening+"[alpha]",b=opening+"[beta, a little longer]";
+  return fixture([
+    modelRecord("sess_A","r0",[{role:"user",content:"start"}],{startedAt:at(-9000)}),
+    modelRecord("sess_A","r1",[{role:"user",content:"start"},{role:"user",content:a},{role:"user",content:b}],{startedAt:at(-3000)})],
+    async(service,o)=>{
+      const find=id=>o.events.find(e=>e.id===id);
+      assert.ok(opening.length>4000);
+      assert.equal(find("m:ra").elementKey,"message:1");assert.equal(find("m:rb").elementKey,"message:2");
+      assert.equal(find("m:ra").truncated,true);
+    },[],null,store=>{store.reminder("sess_A","ra",now-7000,a);store.reminder("sess_A","rb",now-6000,b);});
+});
+test("the earliest readable request is only the first carrier when its file was read without a gap before it",async()=>{
+  const now=Date.now(),at=ms=>new Date(now+ms).toISOString(),text="Background task finished.";
+  const carrier=modelRecord("sess_A","r1",[{role:"user",content:"start"},{role:"user",content:text}],{startedAt:at(-2000)});
+  const located=async lines=>{let step;await fixture(lines,async(service,o)=>{step=o.events.find(e=>e.id==="m:n1").stepKey;},[],null,
+    store=>store.reminder("sess_A","n1",now-5000,text,"background_notification","background_task"));return step;};
+  assert.ok(await located([carrier]));
+  assert.equal(await located(["{not json",carrier]),null);
+});
 test("recorded injections are matched to the item of the first agent request that carried them",()=>{
   const now=Date.now(),at=ms=>new Date(now+ms).toISOString(),reminder="The TodoWrite tool hasn't been used recently.";
   return fixture([
