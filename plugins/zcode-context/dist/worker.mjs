@@ -567,7 +567,7 @@ function open(dbPath) {
     const message = columns("message"), part = columns("part");
     if (!REQUIRED.every((key) => message.has(key)) || !REQUIRED.every((key) => part.has(key)) || !part.has("message_id"))
       throw new ContextError("schema_unsupported", "This database does not have the supported message/part schema.");
-    return { db, sequence: message.has("sequence") ? "sequence" : "NULL" };
+    return { db, sequence: message.has("sequence") ? "sequence" : "NULL", revert: columns("session").has("revert") };
   } catch (error) {
     try {
       db.exec("ROLLBACK");
@@ -611,13 +611,15 @@ function readConversation(dbPath, sessionId, cache = null) {
   let handle;
   try {
     handle = open(dbPath);
-    const { db, sequence } = handle;
+    const { db, sequence, revert } = handle;
+    const rawRevert = revert ? db.prepare("SELECT revert FROM session WHERE id=?").get(sessionId)?.revert : null;
+    const branch = rawRevert == null ? null : createHash("sha256").update(String(rawRevert)).digest("hex").slice(0, 16);
     const stat = (table) => db.prepare("SELECT count(*) AS n, max(time_updated) AS u FROM " + table + " WHERE session_id=?").get(sessionId);
     const messageStat = stat("message"), partStat = stat("part");
     let c = cache?.partIds && (messageStat.u ?? -1) >= cache.messageCursor && (partStat.u ?? -1) >= cache.partCursor ? cache : fresh();
     if (c.messageCursor === (messageStat.u ?? -1) && c.partCursor === (partStat.u ?? -1) && c.messageCount === messageStat.n && c.partCount === partStat.n) {
       db.exec("COMMIT");
-      return { available: true, changed: false, cache: c };
+      return { available: true, changed: false, cache: c, branch };
     }
     const messages = db.prepare("SELECT id," + sequence + " AS sequence,time_created AS created,time_updated AS updated," + select(MESSAGE_FIELDS) + ",CASE WHEN ok THEN substr(json_extract(data,'$.summary.body'),1," + TEXT_CHARS + ") END AS summary FROM (SELECT *,json_valid(data) AS ok FROM message WHERE session_id=? AND time_updated>=?)");
     const parts = db.prepare("SELECT id,message_id AS messageId,time_created AS created,time_updated AS updated," + select(PART_FIELDS) + ",CASE WHEN " + INJECTED_TEXT + " THEN substr(json_extract(data,'$.text'),1," + TEXT_CHARS + ") END AS text,CASE WHEN " + INJECTED_TEXT + " THEN length(json_extract(data,'$.text')) END AS textChars,CASE WHEN ok AND json_extract(data,'$.tool')='Skill' THEN length(json_extract(data,'$.state.output')) END AS outputChars,CASE WHEN ok AND json_extract(data,'$.tool')='Skill' THEN substr(json_extract(data,'$.state.output'),1," + SAMPLE_CHARS + ") END AS outputSample,CASE WHEN ok AND json_extract(data,'$.type') IN ('compaction','timeline') THEN data END AS raw FROM (SELECT *,json_valid(data) AS ok FROM part WHERE session_id=? AND time_updated>=?)");
@@ -654,7 +656,7 @@ function readConversation(dbPath, sessionId, cache = null) {
     }
     db.exec("COMMIT");
     Object.assign(c, { messageCursor: messageStat.u ?? -1, partCursor: partStat.u ?? -1, messageCount: messageStat.n, partCount: partStat.n });
-    return { available: true, changed: true, cache: c };
+    return { available: true, changed: true, cache: c, branch };
   } catch (error) {
     if (handle) {
       try {
@@ -1191,9 +1193,11 @@ var ContextDataService = class {
     if (conversation.available) {
       if (conversation.changed || !state.conversation) state.recorded = conversationEvents(conversation.cache);
       state.conversation = conversation.cache;
+      state.branch = conversation.branch;
     } else if (!["database_busy", "database_unavailable"].includes(conversation.code)) {
       state.conversation = null;
       state.recorded = [];
+      state.branch = null;
     }
     if (records.length && coverage.every((item) => !item.available) && !coverage.some((item) => item.code === "file_unavailable"))
       coverage.push({ coverage: ["source_rotated"], scanning: false });
@@ -1216,7 +1220,7 @@ var ContextDataService = class {
       },
       events: this.contextEvents(state, records, !coverage.some((item) => (item.coverage ?? []).some((code) => TRUNCATED.includes(code)))),
       eventWindowDays: 3,
-      conversation: { available: conversation.available || Boolean(state.conversation), code: conversation.available ? null : conversation.code }
+      conversation: { available: conversation.available || Boolean(state.conversation), code: conversation.available ? null : conversation.code, branch: state.branch ?? null }
     };
     overview.history = { loadedCount: records.length, loadedKeys: records.map((x) => x.key), page: 0, hasOlder: records.length > 60, scope: "bounded_loaded_window" };
     overview.revision = digest(JSON.stringify(overview));
