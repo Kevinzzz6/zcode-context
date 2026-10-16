@@ -322,7 +322,7 @@ README 里的图全部由 [`docs/images/src/render.sh`](docs/images/src/render.s
 
 <div align="center">
 
-<sub>MIT 许可 · 实现为原创，产品方向受 <a href="https://github.com/bowenliang123/dsh-context">dsh-context</a> 启发</sub><br>
+<sub>MIT 许可 · 界面与交互设计参考了 <a href="https://github.com/bowenliang123/dsh-context">dsh-context</a>，并针对 ZCode 重新实现</sub><br>
 <sub><a href="#readme-top">回到顶部 ↑</a></sub>
 
 </div>
