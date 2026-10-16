@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.10 — 2026-10-16
+
+- On first open the panel shows a banner above the overview pointing at ZCode's full Model I/O retention setting, since default recording drops older messages irrecoverably. Dismissing it once hides it permanently.
+
+## 0.3.9 — 2026-10-15
+
+- When session-wide call counts change while more than one page of schemas is shown, the loaded schema pages are reread with the first one. Before, a reorder under "by calls" could push a schema off the first page onto no page at all, and later pages kept stale counts.
+- The overview reports the conversation's active branch (a digest of `session.revert`), and an opened compaction's **What was summarized** is reread when it changes or on a manual refresh. Before, after a rewind the panel kept showing the old branch's messages without the rewound-branch note until it was reopened.
+
 ## 0.3.8 — 2026-10-14
 
 - Under default recording, a request recorded as a delta after a tail now keeps the tail's messages. ZCode writes the delta against its own untrimmed previous request, so after resuming a long session (or a size reset) every later request used to show only its newly added messages in the browser and the composition. The record stays partial: removals and Diff are still unavailable.

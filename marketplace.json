@@ -7,12 +7,12 @@
   "plugins": [
     {
       "name": "zcode-context",
-      "version": "0.3.8",
+      "version": "0.3.10",
       "source": "./plugins/zcode-context",
-      "description": "只读查看会话用量、模型输入组成、请求差异和压缩事件。",
+      "description": "只读查看会话用量、模型输入组成、请求差异和压缩事件。装好后点右上角「切换面板」，在会话侧边栏打开「上下文」面板；建议同时在「设置 → 通用」打开「完整保留模型 I/O」——默认记录会丢弃更早的请求，且无法事后恢复。",
       "description_i18n": {
-        "en": "Read-only session usage, model input composition, request differences and compaction events.",
-        "zh-CN": "只读查看会话用量、模型输入组成、请求差异和压缩事件。"
+        "en": "Read-only session usage, model input composition, request differences and compaction events. After installing, open the Context panel from the session sidebar (top-right panel switcher); also turn on full Model I/O retention in Settings → General — the default recording drops older requests and cannot recover them later.",
+        "zh-CN": "只读查看会话用量、模型输入组成、请求差异和压缩事件。装好后点右上角「切换面板」，在会话侧边栏打开「上下文」面板；建议同时在「设置 → 通用」打开「完整保留模型 I/O」——默认记录会丢弃更早的请求，且无法事后恢复。"
       },
       "category": "developer-tools",
       "keywords": [

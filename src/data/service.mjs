@@ -103,8 +103,8 @@ export class ContextDataService {
     const usage = readUsage(this.paths.db, sessionId); state.toolCalls = readToolCalls(this.paths.db, sessionId);
     // A busy or briefly unopenable database keeps the last events; a missing database or an unsupported schema falls back to the logs alone.
     const conversation = readConversation(this.paths.db, sessionId, state.conversation);
-    if (conversation.available) { if (conversation.changed || !state.conversation) state.recorded = conversationEvents(conversation.cache); state.conversation = conversation.cache; }
-    else if (!["database_busy", "database_unavailable"].includes(conversation.code)) { state.conversation = null; state.recorded = []; }
+    if (conversation.available) { if (conversation.changed || !state.conversation) state.recorded = conversationEvents(conversation.cache); state.conversation = conversation.cache; state.branch = conversation.branch; }
+    else if (!["database_busy", "database_unavailable"].includes(conversation.code)) { state.conversation = null; state.recorded = []; state.branch = null; }
     // A file that could not be opened this time is not evidence of rotation.
     if (records.length && coverage.every(item => !item.available) && !coverage.some(item => item.code === "file_unavailable"))
       coverage.push({ coverage: ["source_rotated"], scanning: false });
@@ -118,7 +118,7 @@ export class ContextDataService {
         pendingLine: coverage.some(item => item.pendingLine), coverage: [...new Set(coverage.flatMap(item => item.coverage))],
         errorCode: records.length ? null : coverage.every(item => !item.available) ? "trajectory_missing" : "waiting_for_records" },
       events: this.contextEvents(state, records, !coverage.some(item => (item.coverage ?? []).some(code => TRUNCATED.includes(code)))), eventWindowDays: 3,
-      conversation: { available: conversation.available || Boolean(state.conversation), code: conversation.available ? null : conversation.code } };
+      conversation: { available: conversation.available || Boolean(state.conversation), code: conversation.available ? null : conversation.code, branch: state.branch ?? null } };
     overview.history = {loadedCount:records.length, loadedKeys:records.map(x=>x.key), page:0, hasOlder:records.length>60, scope:"bounded_loaded_window"};
     overview.revision = digest(JSON.stringify(overview)); state.overview = overview; return overview;
   }

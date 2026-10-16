@@ -136,11 +136,19 @@ export function renderApp(ctx) {
   if(!ctx.overview){add(node("section",{class:"card"},node("p",{class:"muted",id:"loading"},ctx.t("loading"))));return page;}
   if(view.page==="usage"){add(usagePage(ctx),about(ctx));return page;}
   if(!ctx.items.length) {
-    add(node("section",{class:"card empty"},node("h2",{},ctx.t("empty")),node("p",{class:"muted"},ctx.t("emptyHint"))),eventsCard(ctx),about(ctx));
+    add(retentionBanner(ctx),node("section",{class:"card empty"},node("h2",{},ctx.t("empty")),node("p",{class:"muted"},ctx.t("emptyHint"))),eventsCard(ctx),about(ctx));
     return page;
   }
-  add(pinnedBar(ctx),summaryCard(ctx),trendCard(ctx),browserCard(ctx),eventsCard(ctx),about(ctx));
+  add(retentionBanner(ctx),pinnedBar(ctx),summaryCard(ctx),trendCard(ctx),browserCard(ctx),eventsCard(ctx),about(ctx));
   return page;
+}
+// Default recording drops older messages irrecoverably, so the panel shows where the retention setting is on first
+// open; dismissing it once hides it for good.
+function retentionBanner(ctx) {
+  const {t,actions:a}=ctx;
+  if(ctx.retentionDismissed)return null;
+  return node("section",{class:"card retention",id:"retention"},node("p",{class:"note"},node("span",{},t("retentionBanner")),spacer(),
+    button("×",()=>a.dismissRetention(),{class:"icon-btn",id:"retention-dismiss",title:t("dismiss"),ariaLabel:t("dismiss")})));
 }
 
 function toolbar(ctx) {

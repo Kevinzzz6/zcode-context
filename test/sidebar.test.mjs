@@ -386,14 +386,20 @@ test("a recorded compaction carries exact figures, replaces its log records and 
     });
 });
 test("a compaction's summarized messages follow the active branch after a rewind; one on the rewound branch says so",()=>{
-  const now=Date.now();
+  const now=Date.now();let conversation=null;
   return fixture([modelRecord("sess_A","only",[{role:"user",content:"third"}])],async(service,o)=>{
     const compactions=o.events.filter(e=>e.kind==="compaction");
     const active=compactions.find(e=>e.id==="c:compact_one"),rewound=compactions.find(e=>e.id==="c:compact_zero");
     const {eventDetail:d}=await service.eventDetail("sess_A",active.id);
     assert.equal(d.messageCount,4);assert.deepEqual(d.items.map(x=>x.role+":"+x.title),["user:first","assistant:first reply","user:third","assistant:third reply"]);
     await assert.rejects(service.eventDetail("sess_A",rewound.id),{code:"rewound_branch"});
+    // A rewind rewrites only session.revert; the overview still reports a new branch and revision, so the panel rereads details.
+    assert.ok(o.conversation.branch);
+    conversation.revert("sess_A",{kind:"conversation_rewind",targetMessageID:"u3",keptMessageIDs:["u1","a1"],branchCutAfterMessageID:"sum1",branchGeneration:2});
+    const after=await service.overview("sess_A",o.revision);
+    assert.equal(after.unchanged,undefined);assert.notEqual(after.conversation.branch,o.conversation.branch);
   },[],null,store=>{
+    conversation=store;
     store.prompt("sess_A","u1",now-9000,"first");store.reply("sess_A","a1",now-8900,"first reply");
     store.prompt("sess_A","u2",now-8000,"second");store.reply("sess_A","a2",now-7900,"second reply");
     store.compaction("sess_A","zero",now-7800,{summaryId:"sumX",lastSummarizedId:"a2",count:4});

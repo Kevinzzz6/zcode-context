@@ -20,7 +20,7 @@ function open(dbPath) {
     const message = columns("message"), part = columns("part");
     if (!REQUIRED.every(key => message.has(key)) || !REQUIRED.every(key => part.has(key)) || !part.has("message_id"))
       throw new ContextError("schema_unsupported", "This database does not have the supported message/part schema.");
-    return { db, sequence: message.has("sequence") ? "sequence" : "NULL" };
+    return { db, sequence: message.has("sequence") ? "sequence" : "NULL", revert: columns("session").has("revert") };
   } catch (error) {
     try { db.exec("ROLLBACK"); } catch {}
     db.close();
@@ -51,13 +51,16 @@ export function readConversation(dbPath, sessionId, cache = null) {
   let handle;
   try {
     handle = open(dbPath);
-    const { db, sequence } = handle;
+    const { db, sequence, revert } = handle;
+    // A rewind only rewrites session.revert, so the branch is reported on its own: what a compaction summarized depends on it.
+    const rawRevert = revert ? db.prepare("SELECT revert FROM session WHERE id=?").get(sessionId)?.revert : null;
+    const branch = rawRevert == null ? null : createHash("sha256").update(String(rawRevert)).digest("hex").slice(0, 16);
     const stat = table => db.prepare("SELECT count(*) AS n, max(time_updated) AS u FROM " + table + " WHERE session_id=?").get(sessionId);
     const messageStat = stat("message"), partStat = stat("part");
     let c = cache?.partIds && (messageStat.u ?? -1) >= cache.messageCursor && (partStat.u ?? -1) >= cache.partCursor ? cache : fresh();
     if (c.messageCursor === (messageStat.u ?? -1) && c.partCursor === (partStat.u ?? -1) && c.messageCount === messageStat.n && c.partCount === partStat.n) {
       db.exec("COMMIT");
-      return { available: true, changed: false, cache: c };
+      return { available: true, changed: false, cache: c, branch };
     }
     const messages = db.prepare("SELECT id," + sequence + " AS sequence,time_created AS created,time_updated AS updated," + select(MESSAGE_FIELDS) +
       ",CASE WHEN ok THEN substr(json_extract(data,'$.summary.body'),1," + TEXT_CHARS + ") END AS summary" +
@@ -96,7 +99,7 @@ export function readConversation(dbPath, sessionId, cache = null) {
     }
     db.exec("COMMIT");
     Object.assign(c, { messageCursor: messageStat.u ?? -1, partCursor: partStat.u ?? -1, messageCount: messageStat.n, partCount: partStat.n });
-    return { available: true, changed: true, cache: c };
+    return { available: true, changed: true, cache: c, branch };
   } catch (error) {
     if (handle) { try { handle.db.exec("ROLLBACK"); } catch {} }
     return { available: false, code: classifyDbError(error), cache };

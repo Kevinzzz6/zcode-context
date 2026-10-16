@@ -9,7 +9,7 @@ import { createReader } from "./data/reader.mjs";
 const HTML_URI = "ui://zcode-context/panel.html";
 const reader = createReader(() => new Worker(new URL("./worker.mjs", import.meta.url), { workerData: { paths: resolveDataPaths() }, resourceLimits: { maxOldGenerationSizeMb: 256 } }));
 export function createContextServer() {
-  const server = new McpServer({name:"zcode-context",version:"0.3.8"});
+  const server = new McpServer({name:"zcode-context",version:"0.3.10"});
   server.registerResource("context_panel", HTML_URI, { mimeType:"text/html;profile=mcp-app",
     _meta:{ui:{csp:{connectDomains:[],resourceDomains:[]}}} },
     async () => ({contents:[{uri:HTML_URI,mimeType:"text/html;profile=mcp-app",text:await readFile(new URL("./context.html",import.meta.url),"utf8")}]})
