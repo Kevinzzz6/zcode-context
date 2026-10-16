@@ -117,7 +117,7 @@ Plenty of what sits in the context was written neither by you nor by the model: 
 - **How to filter**: when more than one kind is present, kind filters appear under the title; the list shows the latest 12 with **Show all** for the rest. The ✂ and ↶ markers in the trend behave like their events.
 
 > [!NOTE]
-> Under default recording, model I/O records keep only the latest 64 messages of each request, so the full content of the step before a compaction is usually gone. **What was summarized** is then the only view of what a compaction removed: it comes from the conversation store and does not depend on the Model I/O retention setting.
+> Under default recording, model I/O records keep only a trailing window of each request's messages plus later deltas, so the full content of the step before a compaction is usually gone. **What was summarized** is then the only view of what a compaction removed: it comes from the conversation store and does not depend on the Model I/O retention setting.
 
 ## Layout
 
@@ -139,7 +139,7 @@ From top to bottom:
 
 Under its default settings, ZCode discards model I/O recordings at **two levels**:
 
-- **Message level**: only the **latest 64 messages** of each request are recorded, while a long session's request often has several hundred.
+- **Message level**: only a **trailing window of messages plus later deltas** is recorded for each request — earlier messages are never recorded, and a long session's request often has several hundred.
 - **Session level**: when a new session starts recording, existing recording files are pruned down to the 2 most recently written — so besides the current session, usually only the 3 most recent sessions keep recordings, and everything earlier is gone. This is why a conversation from a few hours ago shows nothing at all: the plugin cannot read what is no longer on disk.
 
 The plugin keeps these cases apart instead of guessing at missing data:
