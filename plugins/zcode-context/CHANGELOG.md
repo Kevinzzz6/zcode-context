@@ -100,7 +100,7 @@ Tested against a real 600k-token session in the user's ZCode.
 
 ## 0.3.0 — 2026-10-13
 
-- Redesign the sidebar after dsh-context's card layout: request summary with composition bar, legend and User / Added / Response brief; trend with a Y axis, turn band and ✂ compaction markers; a context browser with inline expansion; a compaction events card; collapsed explanations.
+- Redesign the sidebar with a card layout inspired by dsh-context: request summary with composition bar, legend and User / Added / Response brief; trend with a Y axis, turn band and ✂ compaction markers; a context browser with inline expansion; a compaction events card; collapsed explanations.
 - Number agent requests as stable steps and turns. Title and compaction requests stay selectable but no longer distort the trend or its Delta bars.
 - Show every size in estimated tokens with compact formatting; deltas no longer mix characters and tokens.
 - Give each category its own first page and "show more", replacing a global 40-row page that hid most items of small categories.

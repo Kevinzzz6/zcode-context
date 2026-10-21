@@ -1,4 +1,6 @@
-# 与 dsh-context 的 UI 和功能差距
+# 与 dsh-context 的功能对照
+
+> 本文是功能层面的对照，用来决定 zcode-context 要提供哪些能力。zcode-context 的代码针对 ZCode 的数据和宿主接口独立编写，没有复制 dsh-context 的代码。
 
 > 历史快照（0.1.1）。其中多数差距已在 0.3.x 实现，结论汇总在 [产品决策与取舍](decisions.md)；本文不再更新。
 
@@ -39,7 +41,7 @@
 [事件组件](https://github.com/bowenliang123/dsh-context/blob/fd8e3b80136c000af87ad0871c00a7880ec8d51e/src/client/components/events.tsx)、
 [视图联动](https://github.com/bowenliang123/dsh-context/blob/fd8e3b80136c000af87ad0871c00a7880ec8d51e/src/client/components/contextView.tsx)。
 
-## 还没有借鉴的功能
+## 尚未提供的同类功能
 
 | 功能 | 当前状态与边界 | 建议 |
 |---|---|---|
@@ -60,13 +62,13 @@
 ZCode 可用数据的核对位置：参考源码 `apps/zcode-cli/packages/adapters/src/storage/session-store/repositories/usage.ts` 中的 turn_usage/tool_usage 写入，及 `repositories/sessions.ts` 的 session.parent_id。
 存在这些字段证明可以探索部分功能，不证明当前插件已实现、数据全量或运行状态实时可靠。
 
-## 不能原样复制的能力
+## 受 ZCode 宿主限制、无法提供的能力
 
 - **Live / Next Request 和准确窗口占用**：dsh 使用宿主 contextPressure/contextBreakdown 等投影。ZCode 当前插件读取的是已记录 traj，不能把最新记录改名成实时上下文。
 - **精确生产者与 Skill Injections**：dsh 有结构化来源和工具注册信息，并对无法归因的第三方工具保留未知。我们不能仅按正文片段拆出精确 skill/插件来源；有明确元数据再显示来源，否则只用 role 分类。
 - **完整注入、剪枝、模式事件**：dsh 持久化相应生命周期事件。我们能展示已确认日志和观察到的内容变化，不能从字符下降推断完整原因。
 - **压缩前历史恢复与多媒体**：dsh 有 removed-message archive 和图像加载能力。ZCode 已轮转的数据不能恢复，脱敏图像不能恢复缩略图，只有真实保留的内容才能展示。
-- **系统提示词 Prefix/Suffix 设置**：dsh 支持修改提示词；这会改变 Agent 行为，超出本项目只读观察范围，不作为 UI 完善事项迁入。
+- **系统提示词 Prefix/Suffix 设置**：dsh 支持修改提示词；这会改变 Agent 行为，超出本项目只读观察范围，不纳入本项目范围。
 
 来源：
 [宿主投影与视图](https://github.com/bowenliang123/dsh-context/blob/fd8e3b80136c000af87ad0871c00a7880ec8d51e/src/client/components/contextView.tsx)、
@@ -104,4 +106,4 @@ Fleet、跨会话 Insights、DNA 和费用估算分别评估数据覆盖与宿�
 - `src/data/sqlite.mjs` 当前只查询 model_usage；turn_usage/tool_usage 没有接入。
 - `ui/app.mjs` 的事件仅显示 raw event/reason/time，正文通过 textContent 显示整条 JSON。
 
-这些证据说明，0.1.1 可以称为“数据闭环和基础 UI 已完成”，还不能称为“dsh 的 UI/功能已完整移植”。
+这些证据说明，0.1.1 可以称为“数据闭环和基础 UI 已完成”，还不具备与 dsh 同等的诊断功能。
