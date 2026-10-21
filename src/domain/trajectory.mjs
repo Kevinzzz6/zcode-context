@@ -70,6 +70,8 @@ export function foldRecord(raw, previous) {
       name: typeof (call?.name ?? call?.toolName) === "string" ? String(call.name ?? call.toolName).slice(0, 80) : null,
       title: inputSummary(parseInput(call?.input ?? call?.args ?? call?.arguments)) })),
     responseCallCount: Array.isArray(raw.response?.toolCalls) ? raw.response.toolCalls.length : 0,
+    responseCallIds: (Array.isArray(raw.response?.toolCalls) ? raw.response.toolCalls : []).slice(0, 64)
+      .map(call => call?.toolCallId ?? call?.id).filter(id => typeof id === "string").map(id => id.slice(0, 256)),
     hasResponse: Boolean(raw.response), hasError: Boolean(raw.error),
     hasReset: Boolean(raw.modelIOReset), bodySource: body?.bodySource ?? null
   };
@@ -173,10 +175,13 @@ export function inputElements(record) {
   });
   return result;
 }
-export function elementSummary(item) {
-  const label = describe(item), serialized = canonical(item.value);
+// `size` is the element's entry in a request's measured sizes (see ledger.mjs); without one the estimate is the size.
+const sizeLabel = size => !size ? { kind: "estimated", source: null, share: null } : { kind: size.kind, source: size.source ?? null,
+  share: size.share ? { tokens: Math.round(size.share.tokens), count: size.share.count, scope: size.share.scope } : null };
+export function elementSummary(item, size = null) {
+  const label = describe(item), serialized = canonical(item.value), estimatedTokens = estimateTokens(serialized);
   return {key:item.key, role:item.role, toolName:typeof item.toolName==="string"?item.toolName.slice(0,160):null, toolCallId:typeof item.toolCallId==="string"?item.toolCallId.slice(0,256):null,
-    chars:serialized.length, estimatedTokens:estimateTokens(serialized),
+    chars:serialized.length, estimatedTokens, tokens:size?Math.round(size.tokens):estimatedTokens, size:sizeLabel(size),
     preview:item.readable.replace(/\s+/g," ").slice(0,180), status:item.status,
     chip:typeof label.chip==="string"?label.chip.slice(0,80):null, title:label.title, subtitle:label.subtitle, lines:item.readable.split("\n").length};
 }
@@ -195,17 +200,25 @@ export function toolEvidence(record, element) {
 export function attemptUsage(usage) {
   return Object.fromEntries(["inputTokens","outputTokens","cacheReadTokens","cacheWriteTokens"].map(k=>[k,nonnegative(usage?.[k])]));
 }
-export function composition(record) {
+// `tokens` is each category's best-known size: measured where the request's sizes measured it, otherwise the estimate.
+// `estimatedTokens` stays the plain estimate, so comparisons in the estimate's own measure remain possible.
+// `measuredCount` counts the wholly measured elements: only a category whose every element is measured is exact.
+export function composition(record, sizes = null) {
   const buckets = new Map();
   for (const element of inputElements(record)) {
-    const current = buckets.get(element.role) ?? { role: element.role, chars: 0, estimatedTokens: 0, count: 0 };
-    const serialized = canonical(element.value);
-    current.chars += serialized.length; current.estimatedTokens += estimateTokens(serialized); current.count++;
+    const current = buckets.get(element.role) ?? { role: element.role, chars: 0, estimatedTokens: 0, count: 0, tokens: 0, measuredTokens: 0, measuredCount: 0 };
+    const serialized = canonical(element.value), estimate = estimateTokens(serialized), size = sizes?.byKey.get(element.key);
+    current.chars += serialized.length; current.estimatedTokens += estimate; current.count++;
+    current.tokens += size ? size.tokens : estimate;
+    if (size?.kind === "measured") { current.measuredTokens += size.tokens; current.measuredCount++; }
     buckets.set(element.role, current);
   }
-  return { buckets: [...buckets.values()], tokenMethod: TOKEN_METHOD, complete: record.messages.complete, schemasRecorded: record.tools !== null };
+  for (const bucket of buckets.values()) { bucket.tokens = Math.round(bucket.tokens); bucket.measuredTokens = Math.round(bucket.measuredTokens); }
+  return { buckets: [...buckets.values()], tokenMethod: TOKEN_METHOD, complete: record.messages.complete, schemasRecorded: record.tools !== null,
+    sizes: sizes ? { total: sizes.total, complete: sizes.complete, measuredTokens: Math.round(sizes.measured),
+      unrecorded: sizes.unrecorded == null ? null : Math.round(sizes.unrecorded), residual: sizes.residual == null ? null : Math.round(sizes.residual) } : null };
 }
-export function diffRecords(before, after) {
+export function diffRecords(before, after, sizesBefore = null, sizesAfter = null) {
   if (!before.messages.complete || !after.messages.complete) return { available:false, reason:"incomplete_snapshot" };
   if (before.querySource !== after.querySource) return {available:false,reason:"different_query_source"};
   const schemasComparable = before.tools !== null && after.tools !== null;
@@ -219,31 +232,44 @@ export function diffRecords(before, after) {
     if(q?.length){const j=q.shift();removed.delete(j);matches.push([j,i]);}else added.push(item);
   }
   const removedItems=[...removed].map(i=>a[i]);
+  const sizeBefore=x=>sizesBefore?.byKey.get(x.key)??null,sizeAfter=x=>sizesAfter?.byKey.get(x.key)??null;
   // Only pair replacements with unique recorded identity, never guess by similar text or index.
   const identity=x=>x.role==="schema"&&x.toolName?"schema:"+x.toolName:x.toolCallId?x.role+":"+x.toolCallId:null;
   const changed=[];
   for(const afterItem of added) {
     const id=identity(afterItem);if(!id)continue;
     const left=a.filter(x=>identity(x)===id),right=b.filter(x=>identity(x)===id);
-    if(left.length===1&&right.length===1&&removedItems.includes(left[0]))changed.push({before:elementSummary(left[0]),after:elementSummary(afterItem),identity:id});
+    if(left.length===1&&right.length===1&&removedItems.includes(left[0]))changed.push({before:elementSummary(left[0],sizeBefore(left[0])),after:elementSummary(afterItem,sizeAfter(afterItem)),identity:id});
   }
   const roles=[...new Set([...a,...b].map(x=>x.role))];
   const measure=new Map([...a,...b].map(x=>{const s=canonical(x.value);return [x,{chars:s.length,tokens:estimateTokens(s)}];}));
+  // With both requests' sizes from one tokenizer, a category's change is also given in that measure: what entered less
+  // what left, so content present on both sides never changes even when a request's shares were drawn afresh. It is
+  // exact when everything that entered or left the category is measured.
+  const modelChanged=canonical(before.model)!==canonical(after.model),sized=Boolean(sizesBefore&&sizesAfter)&&!modelChanged;
+  const measured=size=>size?.kind==="measured";
   const categories=roles.map(role=>{
     const size=(xs,unit)=>xs.filter(x=>x.role===role).reduce((n,x)=>n+measure.get(x)[unit],0);
+    const entered=added.filter(x=>x.role===role),left=removedItems.filter(x=>x.role===role);
+    const best=(xs,sizeOf)=>xs.reduce((n,x)=>n+(sizeOf(x)?.tokens??measure.get(x).tokens),0);
     return {role,beforeChars:size(a,"chars"),afterChars:size(b,"chars"),charsDelta:size(b,"chars")-size(a,"chars"),tokensDelta:size(b,"tokens")-size(a,"tokens"),
-      addedCount:added.filter(x=>x.role===role).length,removedCount:removedItems.filter(x=>x.role===role).length};
+      ...(sized?{sizeDelta:Math.round(best(entered,sizeAfter)-best(left,sizeBefore)),sizeExact:entered.every(x=>measured(sizeAfter(x)))&&left.every(x=>measured(sizeBefore(x)))}:{}),
+      addedCount:entered.length,removedCount:left.length};
   });
-  return {available:true,added:added.map(elementSummary),removed:removedItems.map(elementSummary),changed,categories,
+  // Two complete measured totals differ by exactly the provider-reported change; what the categories do not account for
+  // is the requests' residuals and shares drawn afresh.
+  const exact=sized&&sizesBefore.complete&&sizesAfter.complete&&sizesBefore.total!=null&&sizesAfter.total!=null;
+  return {available:true,added:added.map(x=>elementSummary(x,sizeAfter(x))),removed:removedItems.map(x=>elementSummary(x,sizeBefore(x))),changed,categories,
     reordered:matches.some((v,i)=>i>0&&v[0]<matches[i-1][0]),schemasComparable,
     charsDelta:categories.reduce((n,x)=>n+x.charsDelta,0),tokensDelta:categories.reduce((n,x)=>n+x.tokensDelta,0),
-    modelChanged:canonical(before.model)!==canonical(after.model),attribution:"observed_change"};
+    ...(sized?{sizeDelta:exact?sizesAfter.total-sizesBefore.total:categories.reduce((n,x)=>n+x.sizeDelta,0),sizeExact:exact}:{}),
+    modelChanged,attribution:"observed_change"};
 }
-export function trajectorySummary(record, key) {
+export function trajectorySummary(record, key, sizes = null) {
   return {key,requestId:record.requestId,attempt:record.attempt,startedAt:record.startedAt,turnId:record.turnId,
     querySource:record.querySource,model:record.model,complete:record.messages.complete,incompleteReason:record.messages.reason,
     messageCount:record.messages.items.length,messageTotal:record.messageTotal??null,schemaCount:record.tools?.length??null,hasResponse:record.hasResponse,hasError:record.hasError,
-    composition:composition(record),usage:attemptUsage(record.responseUsage),responsePreview:record.responsePreview,
+    composition:composition(record,sizes),usage:attemptUsage(record.responseUsage),responsePreview:record.responsePreview,
     responseCalls:record.responseCalls??[],responseCallCount:record.responseCallCount??0,
     userPreview:oneLine(userText(inputElements(record).findLast(x=>x.role==="user"&&!REMINDER.test(x.readable))?.readable??""))};
 }
