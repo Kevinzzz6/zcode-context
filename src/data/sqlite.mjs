@@ -1,7 +1,8 @@
 import { DatabaseSync } from "node:sqlite";
 import { statSync } from "node:fs";
 import { ContextError } from "../domain/session.mjs";
-import { normalizeFact } from "../domain/usage.mjs";
+import { normalizeFact, normalizedInput } from "../domain/usage.mjs";
+import { nonnegative } from "../domain/session.mjs";
 const FIELDS = ["id", "logical_request_id", "session_id", "turn_id", "trace_id", "query_source", "provider_id", "model_id",
   "status", "started_at", "duration_ms", "time_to_first_token_ms", "input_tokens", "output_tokens", "reasoning_tokens",
   "cache_creation_input_tokens", "cache_read_input_tokens", "provider_total_tokens", "computed_total_tokens", "retry_count", "raw_usage_json"];
@@ -102,5 +103,36 @@ export function readToolCalls(dbPath, sessionId) {
     if (db) { try { db.exec("ROLLBACK"); } catch {} }
     const code = classifyDbError(error);
     return { available: false, code, byName: {} };
+  } finally { db?.close(); }
+}
+// Completed requests of a session, oldest first, each with the assistant message it produced (null when not linked), for
+// measured sizes (ledger.mjs). Unlinked rows still mark where a request happened. The newest rows are kept when a session
+// has more than the bound. A summary of the rows is the key: when it equals `key`, the rows are not read again.
+export function readRequestUsage(dbPath, sessionId, { key = null, limit = 20000 } = {}) {
+  let db;
+  try {
+    if (!statSync(dbPath).isFile()) throw new ContextError("database_missing", "Session database is not a regular file.");
+    db = new DatabaseSync(dbPath, { readOnly: true });
+    db.exec("PRAGMA query_only = ON; PRAGMA busy_timeout = 100; BEGIN");
+    const columns = new Set(db.prepare("PRAGMA table_info(model_usage)").all().map(row => row.name));
+    if (!["session_id", "started_at", "status", "input_tokens", "output_tokens", "assistant_message_id"].every(key => columns.has(key)))
+      throw new ContextError("schema_unsupported", "This database does not link usage to assistant messages.");
+    const scope = " FROM model_usage WHERE session_id=? AND status='completed'";
+    const summary = db.prepare("SELECT count(*) AS n, max(started_at) AS last, total(input_tokens) AS input, total(output_tokens) AS output," +
+      " count(assistant_message_id) AS linked" + scope).get(sessionId);
+    const current = [summary.n, summary.last, summary.input, summary.output, summary.linked].join(":");
+    if (current === key) { db.exec("COMMIT"); return { available: true, key: current, unchanged: true, rows: null }; }
+    const expression = column => (columns.has(column) ? column : "NULL") + " AS " + column;
+    const rows = db.prepare("SELECT assistant_message_id AS message, started_at AS startedAt, " +
+      ["query_source", "model_id", "input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens",
+        "provider_total_tokens", "computed_total_tokens"].map(expression).join(",") + scope +
+      " ORDER BY started_at DESC," + (columns.has("attempt_index") ? "attempt_index DESC," : "") + "rowid DESC LIMIT ?").all(sessionId, limit);
+    db.exec("COMMIT");
+    return { available: true, key: current, unchanged: false, rows: rows.reverse().map(row => ({ message: row.message == null ? null : String(row.message),
+      startedAt: Number(row.startedAt), source: row.query_source ?? "unknown", model: row.model_id ?? null,
+      input: normalizedInput(row), output: nonnegative(row.output_tokens) })) };
+  } catch (error) {
+    if (db) { try { db.exec("ROLLBACK"); } catch {} }
+    return { available: false, code: classifyDbError(error), rows: null };
   } finally { db?.close(); }
 }

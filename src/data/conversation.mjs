@@ -43,7 +43,8 @@ const select = fields => fields.map(x => { const [name, path] = x.split(":"); re
 // rows in the same poll) or arrived below the cursor (a restored or backfilled database). Deletions are dropped; rows
 // never seen, or a cursor that went backwards, reload everything.
 // A rewind deletes nothing: the abandoned branch stays in the store and session.revert records the active one.
-const fresh = () => ({ messageCursor: -1, partCursor: -1, messageCount: 0, partCount: 0, messages: new Map(), parts: new Map(), partIds: new Set() });
+// Every tool part's message, call ID and output length is also kept (`tools`): measured sizes link replies and results through them.
+const fresh = () => ({ messageCursor: -1, partCursor: -1, messageCount: 0, partCount: 0, messages: new Map(), parts: new Map(), partIds: new Set(), tools: new Map() });
 // Injected text longer than the read bound is identified by its length and digest; the full text is read one part at a
 // time and only up to VERIFY_CHARS, beyond which it cannot be located and shows as recorded.
 const fingerprint = text => { const value = text.trim(); return { prefix: value.slice(0, 1000), chars: value.length, hash: createHash("sha256").update(value).digest("hex") }; };
@@ -57,7 +58,7 @@ export function readConversation(dbPath, sessionId, cache = null) {
     const branch = rawRevert == null ? null : createHash("sha256").update(String(rawRevert)).digest("hex").slice(0, 16);
     const stat = table => db.prepare("SELECT count(*) AS n, max(time_updated) AS u FROM " + table + " WHERE session_id=?").get(sessionId);
     const messageStat = stat("message"), partStat = stat("part");
-    let c = cache?.partIds && (messageStat.u ?? -1) >= cache.messageCursor && (partStat.u ?? -1) >= cache.partCursor ? cache : fresh();
+    let c = cache?.partIds && cache.tools && (messageStat.u ?? -1) >= cache.messageCursor && (partStat.u ?? -1) >= cache.partCursor ? cache : fresh();
     if (c.messageCursor === (messageStat.u ?? -1) && c.partCursor === (partStat.u ?? -1) && c.messageCount === messageStat.n && c.partCount === partStat.n) {
       db.exec("COMMIT");
       return { available: true, changed: false, cache: c, branch };
@@ -69,6 +70,7 @@ export function readConversation(dbPath, sessionId, cache = null) {
       ",CASE WHEN " + INJECTED_TEXT + " THEN substr(json_extract(data,'$.text'),1," + TEXT_CHARS + ") END AS text" +
       ",CASE WHEN " + INJECTED_TEXT + " THEN length(json_extract(data,'$.text')) END AS textChars" +
       ",CASE WHEN ok AND json_extract(data,'$.tool')='Skill' THEN length(json_extract(data,'$.state.output')) END AS outputChars" +
+      ",CASE WHEN ok AND json_extract(data,'$.type')='tool' THEN length(json_extract(data,'$.state.output')) END AS toolChars" +
       ",CASE WHEN ok AND json_extract(data,'$.tool')='Skill' THEN substr(json_extract(data,'$.state.output'),1," + SAMPLE_CHARS + ") END AS outputSample" +
       ",CASE WHEN ok AND json_extract(data,'$.type') IN ('compaction','timeline') THEN data END AS raw" +
       " FROM (SELECT *,json_valid(data) AS ok FROM part WHERE session_id=? AND time_updated>=?)");
@@ -78,6 +80,8 @@ export function readConversation(dbPath, sessionId, cache = null) {
       // Only the parts events are built from are kept; every other part is reread only when it changes.
       for (const row of parts.all(sessionId, c.partCursor)) {
         c.partIds.add(row.id);
+        if (row.type === "tool" && typeof row.callId === "string") c.tools.set(row.id, { messageId: row.messageId, callId: row.callId, outputChars: row.toolChars ?? null });
+        else c.tools.delete(row.id);
         const keep = row.type === "compaction" || row.type === "timeline" || (row.type === "tool" && row.tool === "Skill") || (row.type === "text" && row.synthetic === 1);
         if (!keep) { c.parts.delete(row.id); continue; }
         // SQLite counts code points, so truncation is decided here rather than by comparing JavaScript lengths.
@@ -94,7 +98,7 @@ export function readConversation(dbPath, sessionId, cache = null) {
       if ([...liveMessages].some(id => !c.messages.has(id)) || [...liveParts].some(id => !c.partIds.has(id))) { c = fresh(); ingest(c); }
       else {
         for (const id of [...c.messages.keys()]) if (!liveMessages.has(id)) c.messages.delete(id);
-        for (const id of [...c.partIds]) if (!liveParts.has(id)) { c.partIds.delete(id); c.parts.delete(id); }
+        for (const id of [...c.partIds]) if (!liveParts.has(id)) { c.partIds.delete(id); c.parts.delete(id); c.tools.delete(id); }
       }
     }
     db.exec("COMMIT");

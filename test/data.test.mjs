@@ -7,7 +7,8 @@ import { tmpdir } from "node:os";
 import { usageDatabase, modelRecord, conversationStore } from "./fixtures.mjs";
 import { readConversation, readSummarizedMessages } from "../src/data/conversation.mjs";
 import { conversationEvents } from "../src/domain/events.mjs";
-import { readUsage } from "../src/data/sqlite.mjs";
+import { readUsage, readRequestUsage } from "../src/data/sqlite.mjs";
+import { storeSizes } from "../src/domain/ledger.mjs";
 import { JsonlTail } from "../src/data/jsonl.mjs";
 import { ContextDataService } from "../src/data/service.mjs";
 async function temporary(callback){const path=await mkdtemp(join(tmpdir(),"zcode-context-test-"));try{await callback(path);}finally{await rm(path,{recursive:true,force:true});}}
@@ -241,3 +242,64 @@ test("older event logs cannot push out today's events",()=>temporary(async root=
   const spans=[...service.state("sess_A").events.values()].map(e=>e.spanId);
   assert.equal(spans.filter(x=>x.startsWith("today")).length,60);assert.equal(spans.length,200);
 }));
+
+const linkColumn=fixture=>{fixture.db.exec("ALTER TABLE model_usage ADD COLUMN assistant_message_id TEXT");
+  return (id,message)=>fixture.db.prepare("UPDATE model_usage SET assistant_message_id=? WHERE id=?").run(message,id);};
+const sizedRequest=(session,id,messages,input,output,calls=[],extra={})=>modelRecord(session,id,messages,{response:{text:"",usage:{inputTokens:input,outputTokens:output},toolCalls:calls.map(c=>({toolCallId:c,toolName:"Read"}))},...extra});
+const userMessage={role:"user",content:"Fix the cache expiry check."},systemMessage={role:"system",content:"You are a coding agent. ".repeat(20)};
+const readReply=ids=>({role:"assistant",content:"Reading",toolCalls:ids.map(id=>({id,name:"Read",input:{}}))}),readResult=(id,content)=>({role:"tool",toolCallId:id,toolName:"Read",content});
+
+test("request usage covers a session's completed requests oldest first, linked or not, and is reread only when it changes",()=>temporary(async root=>{
+  const fixture=usageDatabase(root);
+  try {
+    fixture.add("sess_A","q1",1000,50,10);fixture.add("sess_A","q2",1400,30,20);fixture.add("sess_A","q3",1500,5,30);fixture.add("sess_A","q4",1600,5,40);fixture.add("sess_B","b1",900,9,15);
+    assert.deepEqual(readRequestUsage(fixture.path,"sess_A"),{available:false,code:"schema_unsupported",rows:null});
+    const link=linkColumn(fixture);
+    link("q2","a2");link("q1","a1");link("q3","a3");link("b1","x1");
+    fixture.db.prepare("UPDATE model_usage SET status='error' WHERE id='q3'").run();
+    const read=readRequestUsage(fixture.path,"sess_A");
+    assert.deepEqual(read.rows.map(r=>[r.message,r.startedAt,r.source,r.model,r.input,r.output]),
+      [["a1",10,"main_turn","demo-model",1000,50],["a2",20,"main_turn","demo-model",1400,30],[null,40,"main_turn","demo-model",1600,5]]);
+    assert.deepEqual(readRequestUsage(fixture.path,"sess_A",{limit:1}).rows.map(r=>r.startedAt),[40]);
+    assert.deepEqual(readRequestUsage(fixture.path,"sess_A",{key:read.key}),{available:true,key:read.key,unchanged:true,rows:null});
+    // A usage figure updated in place changes the key, though no row was added.
+    fixture.db.prepare("UPDATE model_usage SET output_tokens=31 WHERE id='q2'").run();
+    assert.equal(readRequestUsage(fixture.path,"sess_A",{key:read.key}).unchanged,false);
+  } finally { fixture.db.close(); }
+}));
+
+test("the conversation store keeps every tool part's message, call ID and output length through incremental reads and deletions",()=>temporary(async root=>{
+  const fixture=usageDatabase(root),store=conversationStore(fixture.db),now=Date.now();
+  const calls=c=>[...c.tools.values()].map(t=>t.messageId+":"+t.callId+":"+t.outputChars).sort();
+  try {
+    store.prompt("sess_A","u1",now-5000,"hello");
+    store.reply("sess_A","a1",now-4000,"Reading",[["Read",{},"xx","c1"]]);
+    store.reply("sess_A","a2",now-3000,"Reading",[["Read",{},"yyy","c2"],["Grep",{},"z","c3"]]);
+    store.reply("sess_B","b1",now-3000,"Reading",[["Read",{},"w","cb"]]);
+    const first=readConversation(fixture.path,"sess_A");
+    assert.deepEqual(calls(first.cache),["a1:c1:2","a2:c2:3","a2:c3:1"]);
+    store.reply("sess_A","a3",now-2000,"Reading",[["Read",{},"vvvv","c4"]]);
+    const second=readConversation(fixture.path,"sess_A",first.cache);
+    assert.equal(second.cache,first.cache);
+    assert.deepEqual(calls(second.cache),["a1:c1:2","a2:c2:3","a2:c3:1","a3:c4:4"]);
+    store.remove("a2");
+    assert.deepEqual(calls(readConversation(fixture.path,"sess_A",second.cache).cache),["a1:c1:2","a3:c4:4"]);
+    fixture.db.prepare("UPDATE part SET data=?,time_updated=? WHERE id='a1_tool0'").run(JSON.stringify({type:"text",text:"x"}),now);
+    const rewritten=readConversation(fixture.path,"sess_A",second.cache).cache;
+    assert.deepEqual(calls(rewritten),["a3:c4:4"]);
+    const legacy={...rewritten};delete legacy.tools;
+    assert.deepEqual(calls(readConversation(fixture.path,"sess_A",legacy).cache),["a3:c4:4"]);
+  } finally { fixture.db.close(); }
+}));
+
+test("a completed request linked to no message still ends the store's step before it",()=>temporary(async root=>{
+  const fixture=usageDatabase(root),store=conversationStore(fixture.db);
+  try {
+    fixture.add("sess_A","q1",1000,50,10);fixture.add("sess_A","q2",1400,60,20);fixture.add("sess_A","q3",2000,10,30);
+    const link=linkColumn(fixture);link("q1","a1");link("q3","a3");
+    store.reply("sess_A","a1",10,"Reading",[["Read",{},"data","c1"]]);store.reply("sess_A","a2",20,"Reading",[["Read",{},"more","c2"]]);
+    const sizes=storeSizes(readRequestUsage(fixture.path,"sess_A").rows,readConversation(fixture.path,"sess_A").cache);
+    assert.equal(sizes.lookup("demo-model")({role:"tool",toolCallId:"c1",chars:4}),350);
+  } finally { fixture.db.close(); }
+}));
+
