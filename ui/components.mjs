@@ -13,8 +13,26 @@ export function compact(n) {
 const approx=n=>"≈"+compact(n);
 const signed=n=>(n>0?"+":n<0?"−":"±")+compact(Math.abs(n));
 const pct=ratio=>ratio>0&&ratio<0.005?"<1%":Math.round(ratio*100)+"%";
-// Token deltas come estimated by the server; chars/4 only covers payloads from before it sent them.
-const tokensOf=delta=>!delta?0:delta.tokensDelta??delta.tokens??Math.round((delta.charsDelta??delta.chars??0)/4);
+// A measured share is never rounded up to a whole that was not measured.
+const floorPct=ratio=>ratio>0&&ratio<0.01?"<1%":Math.floor(ratio*100)+"%";
+// Token deltas come from the server: in the measured sizes when both requests have them, otherwise in the estimate;
+// chars/4 only covers payloads from before it sent either. Only a change the server marks exact is shown without ≈.
+const tokensOf=delta=>!delta?0:delta.sizeDelta??delta.tokensDelta??delta.tokens??Math.round((delta.charsDelta??delta.chars??0)/4);
+const deltaText=(n,exact)=>(exact?"":"≈")+signed(n);
+// A size is the server's best-known value: measured where it could be, otherwise an estimate or an estimated share of a
+// measured total. Only a wholly measured size is shown without ≈.
+const sizeOf=x=>x?.tokens??x?.estimatedTokens??0;
+const bucketExact=b=>b?.count>0&&b.measuredCount===b.count;
+const bucketText=b=>bucketExact(b)?compact(b.tokens):approx(sizeOf(b));
+const itemText=item=>item.size?.kind==="measured"?compact(item.tokens):approx(sizeOf(item));
+function sizeTip(t,item) {
+  const s=item.size;
+  if(!s||s.kind==="estimated")return t("sizeEstimated");
+  if(s.kind==="measured")return t({reply:"sizeReply",store:"sizeStore",earlier:"sizeEarlier"}[s.source]??"sizeIncrement");
+  const scope=s.share?.scope==="base"?"sizeSplitBase":s.share?.scope==="removal"?"sizeSplitRemoval":"sizeSplitStep";
+  // A removal's total includes what left at an estimated share, so it is itself approximate.
+  return t(scope,{n:s.share?.count??"?",tokens:(s.share?.scope==="removal"?approx:compact)(s.share?.tokens)});
+}
 export const clock=ms=>ms?new Date(ms).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit",second:"2-digit",hour12:false}):"—";
 const utcDate=day=>new Date(day*86400000).toISOString().slice(0,10);
 
@@ -47,10 +65,10 @@ export const isAgent=item=>item?.step!=null;
 const sourceName=(t,source)=>t("source."+(SOURCES.has(source)?source:"unknown"));
 export const itemName=(t,item)=>!item?"—":item.step!=null?t("step",{n:item.step}):sourceName(t,item.querySource);
 const itemLong=(t,item)=>[itemName(t,item),item.turn!=null?t("turn",{n:item.turn}):null,clock(item.startedAt)].filter(Boolean).join(" · ");
-const totalOf=item=>item?.composition?.buckets?.reduce((n,x)=>n+x.estimatedTokens,0)??0;
+const totalOf=item=>item?.composition?.buckets?.reduce((n,x)=>n+sizeOf(x),0)??0;
 // Default ZCode rollouts keep only the latest messages (a tail). The provider's input count is then the only full size,
-// and the difference to the recorded estimate is shown as unrecorded earlier messages.
-const actualOf=item=>item?.usage?.inputTokens??null;
+// and the difference to the recorded part is shown as unrecorded earlier messages.
+const actualOf=item=>item?.usage?.inputTokens||null;
 function partialOf(item) {
   const recorded=totalOf(item),actual=actualOf(item);
   return item&&!item.complete&&actual!=null&&actual>recorded?{recorded,actual,unrecorded:actual-recorded}:null;
@@ -197,32 +215,37 @@ function noticeBar(ctx) {
 function summaryCard(ctx) {
   const {t,view,selected:s,detail:d,actions:a,latestKey}=ctx;
   if(!s)return null;
-  const buckets=bucketsOf(s),sum=buckets.reduce((n,x)=>n+x.estimatedTokens,0)||1;
+  const buckets=bucketsOf(s),sum=buckets.reduce((n,x)=>n+sizeOf(x),0)||1;
   const live=view.follow&&view.selectedKey===latestKey;
   const head=node("div",{class:"card-head"},
     node("div",{class:"eyebrow"},node("b",{},itemName(t,s)),s.turn!=null?muted(t("turn",{n:s.turn})):null),
     node("div",{class:"head-meta"},live?node("span",{class:"live"},node("i",{class:"live-dot"}),t("following")):null,muted(clock(s.startedAt))));
   const partial=partialOf(s),prev=partial?previousAgent(ctx.items,s):null,actualDelta=partial&&actualOf(prev)!=null?partial.actual-actualOf(prev):null;
-  const deltaTokens=s.delta?tokensOf(s.delta):actualDelta;
+  const deltaTokens=s.delta?tokensOf(s.delta):actualDelta,deltaExact=s.delta?s.delta.sizeExact===true:true;
   const badge=deltaTokens!=null
-    ?node("span",{class:"badge "+(deltaTokens>0?"up":deltaTokens<0?"down":"flat"),id:"selected-delta",title:s.delta?"":t("actualDeltaTip")},signed(deltaTokens)+" "+t("vsPrevious"))
+    ?node("span",{class:"badge "+(deltaTokens>0?"up":deltaTokens<0?"down":"flat"),id:"selected-delta",title:t(s.delta?(deltaExact?"deltaExactTip":"deltaEstimateTip"):"actualDeltaTip")},deltaText(deltaTokens,deltaExact)+" "+t("vsPrevious"))
     :node("span",{class:"badge flat",id:"selected-delta",title:t(s.deltaReason??"no_previous_snapshot")},t("notComparable"));
-  const big=partial
-    ?node("div",{class:"big-row"},node("strong",{class:"big",id:"selected-total"},compact(partial.actual)),muted(t("actualInput")),badge)
+  // The provider's count is the request's size whenever it was reported; the estimate stands in only without it.
+  const actual=actualOf(s);
+  const big=actual!=null
+    ?node("div",{class:"big-row"},node("strong",{class:"big",id:"selected-total"},compact(actual)),muted(t("actualInput")),badge)
     :node("div",{class:"big-row"},node("strong",{class:"big",id:"selected-total"},approx(totalOf(s))),muted(t("estimate")),badge);
-  const u=s.usage??{},facts=node("div",{class:"facts"});
+  const u=s.usage??{},facts=node("div",{class:"facts"}),sizes=s.composition?.sizes;
   if(partial)facts.append(node("span",{title:t("recordedTip")},t("recorded")+" ",node("b",{},approx(partial.recorded)),
     s.messageTotal!=null?" · "+t("recordedMessages",{n:s.messageCount,total:s.messageTotal}):null));
-  else if(u.inputTokens!=null)facts.append(node("span",{},t("actualIn")+" ",node("b",{},compact(u.inputTokens))));
+  // A partial record's unrecorded part can never be measured, so its share is of the recorded part.
+  if(sizes&&actual)facts.append(partial
+    ?node("span",{id:"measured-share",title:t("measuredTip")},t("measuredShareRecorded",{p:floorPct(sizes.measuredTokens/(partial.recorded||1))}))
+    :node("span",{id:"measured-share",title:t("measuredTip")},t("measuredShare",{p:floorPct(sizes.measuredTokens/actual)})));
   if(u.outputTokens!=null)facts.append(node("span",{},t("output")+" ",node("b",{},compact(u.outputTokens))));
   if(u.inputTokens&&u.cacheReadTokens!=null)facts.append(node("span",{},t("cache")+" ",node("b",{},pct(u.cacheReadTokens/u.inputTokens))));
   if(s.model?.modelId)facts.append(muted(s.model.modelId));
   if(!s.complete&&!partial)facts.append(node("span",{class:"badge warn",title:s.incompleteReason??""},t("partial")));
   const whole=partial?partial.actual:sum,stack=node("div",{class:"stackbar"});
-  for(const b of buckets)stack.append(node("span",{dataset:{role:b.role},style:{flexGrow:String(Math.max(b.estimatedTokens,1)),background:palette[b.role]??palette.unknown},title:t(b.role)+" "+approx(b.estimatedTokens),...hoverRole(b.role)}));
+  for(const b of buckets)stack.append(node("span",{dataset:{role:b.role},style:{flexGrow:String(Math.max(sizeOf(b),1)),background:palette[b.role]??palette.unknown},title:t(b.role)+" "+bucketText(b),...hoverRole(b.role)}));
   if(partial)stack.append(node("span",{class:"unrecorded",dataset:{role:"unrecorded"},style:{flexGrow:String(partial.unrecorded)},title:t("unrecorded")+" "+approx(partial.unrecorded),...hoverRole("unrecorded")}));
   const legend=node("div",{class:"legend"});
-  for(const b of buckets)legend.append(button([dot(b.role),node("span",{class:"legend-name"},t(b.role)),node("span",{class:"num"},approx(b.estimatedTokens)),node("span",{class:"pct"},pct(b.estimatedTokens/whole))],
+  for(const b of buckets)legend.append(button([dot(b.role),node("span",{class:"legend-name"},t(b.role)),node("span",{class:"num"},bucketText(b)),node("span",{class:"pct"},pct(sizeOf(b)/whole))],
     ()=>a.focusRole(b.role),{class:"legend-item",dataset:{role:b.role,focus:"legend:"+b.role},...hoverRole(b.role)}));
   if(partial)legend.append(node("div",{class:"legend-item",dataset:{role:"unrecorded"},title:t("unrecordedTip"),...hoverRole("unrecorded")},node("i",{class:"dot unrecorded"}),
     node("span",{class:"legend-name"},t("unrecorded")),node("span",{class:"num"},approx(partial.unrecorded)),node("span",{class:"pct"},pct(partial.unrecorded/whole))));
@@ -248,7 +271,7 @@ function stepInputs(ctx,s) {
   const items=Object.values(source??{}).flatMap(g=>g.items)
     .filter(x=>x.role!=="assistant"&&!(x.role==="user"&&x.chip!=="reminder")).sort((a,b)=>index(a)-index(b));
   if(!items.length)return muted(t("noInputs"));
-  return node("span",{class:"brief-list"},items.slice(0,3).map(item=>button([chip(label(t,item),"tool-chip"),node("span",{class:"brief-text"},item.title||item.preview),node("span",{class:"num"},approx(item.estimatedTokens))],
+  return node("span",{class:"brief-list"},items.slice(0,3).map(item=>button([chip(label(t,item),"tool-chip"),node("span",{class:"brief-text"},item.title||item.preview),node("span",{class:"num",title:sizeTip(t,item)},itemText(item))],
     ()=>a.reveal(item),{class:"brief-item clickable",dataset:{element:item.key,focus:"brief:"+item.key}})),
     items.length>3?button(t("moreItems",{n:items.length-3}),()=>a.mode("changes"),{class:"btn ghost small brief-more",dataset:{focus:"brief-more"}}):null);
 }
@@ -303,8 +326,8 @@ function trendColumns(series,turns) {
   for(const c of columns) {
     if(c.items.some(x=>!x.delta)){c.delta=null;continue;}
     const sums=new Map();
-    for(const x of c.items)for(const cat of x.delta.categories){const sum=sums.get(cat.role)??{role:cat.role,charsDelta:0,tokensDelta:0};sum.charsDelta+=cat.charsDelta;sum.tokensDelta+=tokensOf(cat);sums.set(cat.role,sum);}
-    c.delta={chars:c.items.reduce((n,x)=>n+x.delta.chars,0),tokens:c.items.reduce((n,x)=>n+tokensOf(x.delta),0),categories:[...sums.values()]};
+    for(const x of c.items)for(const cat of x.delta.categories){const sum=sums.get(cat.role)??{role:cat.role,charsDelta:0,tokensDelta:0,sizeExact:true};sum.charsDelta+=cat.charsDelta;sum.tokensDelta+=tokensOf(cat);sum.sizeExact&&=cat.sizeExact===true;sums.set(cat.role,sum);}
+    c.delta={chars:c.items.reduce((n,x)=>n+x.delta.chars,0),tokens:c.items.reduce((n,x)=>n+tokensOf(x.delta),0),categories:[...sums.values()],sizeExact:c.items.every(x=>x.delta.sizeExact===true)};
   }
   return columns;
 }
@@ -313,17 +336,19 @@ function trendTip(ctx,column,deltaMode) {
   const title=column.items.length>1||ctx.view.granularity==="turn"
     ?t("turn",{n:s.turn??"?"})+" · "+t("stepsIn",{n:column.items.length})
     :itemLong(t,s);
-  const partial=column.partial,change=column.delta?tokensOf(column.delta):partial?column.actualDelta:null;
+  const partial=column.partial,change=column.delta?tokensOf(column.delta):partial?column.actualDelta:null,changeExact=column.delta?column.delta.sizeExact===true:true;
   for(const role of ORDER) {
-    const value=deltaMode?tokensOf(column.delta?.categories.find(c=>c.role===role)):bucketsOf(s).find(b=>b.role===role)?.estimatedTokens;
+    const bucket=deltaMode?null:bucketsOf(s).find(b=>b.role===role),category=deltaMode?column.delta?.categories.find(c=>c.role===role):null;
+    const value=deltaMode?tokensOf(category):sizeOf(bucket);
     if(!value)continue;
-    rows.append(node("div",{class:"tip-row",dataset:{role}},dot(role),node("span",{class:"spacer"},t(role)),node("span",{class:"num"},deltaMode?signed(value):approx(value))));
+    rows.append(node("div",{class:"tip-row",dataset:{role}},dot(role),node("span",{class:"spacer"},t(role)),node("span",{class:"num"},deltaMode?deltaText(value,category?.sizeExact===true):bucketText(bucket))));
   }
   if(partial&&!deltaMode)rows.append(node("div",{class:"tip-row",dataset:{role:"unrecorded"}},node("i",{class:"dot unrecorded"}),node("span",{class:"spacer"},t("unrecorded")),node("span",{class:"num"},approx(partial.unrecorded))));
   if(partial&&deltaMode&&!column.delta)rows.append(node("div",{class:"tip-row muted"},t("actualOnly")));
+  const actual=actualOf(s);
   return node("div",{class:"trend-tip"},node("div",{class:"tip-title"},title),
-    node("div",{class:"tip-total"},node("b",{},partial?compact(partial.actual):approx(totalOf(s))),partial?muted(t("actualShort")):null,
-      change!=null?node("span",{class:"delta "+(change>0?"up":change<0?"down":"")},signed(change)):muted(t("notComparable"))),
+    node("div",{class:"tip-total"},node("b",{},actual!=null?compact(actual):approx(totalOf(s))),actual!=null?muted(t("actualShort")):null,
+      change!=null?node("span",{class:"delta "+(change>0?"up":change<0?"down":"")},deltaText(change,changeExact)):muted(t("notComparable"))),
     rows,s.userPreview?node("div",{class:"tip-user muted"},s.userPreview):null);
 }
 function showTip(ctx,bar,column,deltaMode) {
@@ -366,7 +391,7 @@ function trendCard(ctx) {
     if(i>0&&c.turn!==lastTurn)parity^=1;
     lastTurn=c.turn;
     let pos=[],neg=[],missing=false;
-    if(!delta){pos=bucketsOf(s).map(b=>({role:b.role,v:b.estimatedTokens}));if(c.partial)pos.push({role:"unrecorded",v:c.partial.unrecorded});}
+    if(!delta){pos=bucketsOf(s).map(b=>({role:b.role,v:sizeOf(b)}));if(c.partial)pos.push({role:"unrecorded",v:c.partial.unrecorded});}
     else if(c.delta)for(const role of ORDER) {
       const v=tokensOf(c.delta.categories.find(x=>x.role===role));
       if(v)(v>0?pos:neg).push({role,v:Math.abs(v)});
@@ -443,7 +468,7 @@ function browserCard(ctx) {
   for(const text of notes)card.append(node("p",{class:"note",id:text.startsWith(t("notComparable"))?"diff-status":undefined},text));
   if(changes&&!li.source)return card;
   const buckets=new Map(d.composition.buckets.map(b=>[b.role,b])),categories=new Map((d.diff.available?d.diff.categories:[]).map(c=>[c.role,c]));
-  const total=[...buckets.values()].reduce((n,b)=>n+b.estimatedTokens,0)||1,matched=new Set(matchedRoles(L,d)),expanded=expandedRoles(view,d);
+  const total=[...buckets.values()].reduce((n,b)=>n+sizeOf(b),0)||1,matched=new Set(matchedRoles(L,d)),expanded=expandedRoles(view,d);
   const list=node("div",{class:"categories"});
   for(const role of ORDER.filter(r=>buckets.has(r)||(changes&&li.roles[r]?.removed)))
     list.append(category(ctx,role,buckets.get(role),categories.get(role),total,expanded.includes(role),li.narrowed,matched.has(role)));
@@ -465,7 +490,7 @@ export function expandedRoles(view,d) {
 function category(ctx,role,bucket,change,total,open,narrowed,matched) {
   const {t,lens:L,detail:d,actions:a,more}=ctx,changes=L.mode==="changes",li=d.listing;
   const r=li.roles[role]??{total:0,matched:0,added:0,addedTotal:0,removed:null,removedTotal:null};
-  const group=d.groups?.[role],size=bucket?.estimatedTokens??0,added=li.addedGroups[role],removed=li.removedGroups[role];
+  const group=d.groups?.[role],size=sizeOf(bucket),added=li.addedGroups[role],removed=li.removedGroups[role];
   const dim=changes?!added?.items.length&&!removed?.items.length:narrowed&&!matched;
   const expanded=open&&!dim,toggle=()=>a.toggleRole(role),state={ariaExpanded:String(expanded),disabled:dim},delta=tokensOf(change);
   const badge=(n,all,cls,sign)=>n?button(sign+n,()=>a.showChanges(role),{class:"badge cat-badge "+cls,dataset:{focus:"badge:"+role+sign},title:narrowed&&n!==all?t("badgeNarrowedTip",{n,all}):t("badgeTip")}):null;
@@ -473,7 +498,7 @@ function category(ctx,role,bucket,change,total,open,narrowed,matched) {
     button([node("span",{class:"chev"},expanded?"▾":"▸"),dot(role),node("span",{class:"cat-name"},t(role)),
       node("span",{class:"cat-count"},changes?t("changedItems",{n:r.added+(r.removed??0)}):narrowed?t("matchedItems",{m:r.matched,n:r.total}):t("items",{n:r.total}))],toggle,{class:"cat-toggle",dataset:{focus:"cat:"+role},...state}),
     badge(r.added,r.addedTotal,"up","+"),badge(r.removed,r.removedTotal,"down","−"),
-    button([spacer(),delta?node("span",{class:"delta "+(delta>0?"up":"down")},signed(delta)):null,node("span",{class:"num"},approx(size)),node("span",{class:"pct"},pct(size/total))],
+    button([spacer(),delta?node("span",{class:"delta "+(delta>0?"up":"down")},deltaText(delta,change?.sizeExact===true)):null,node("span",{class:"num"},bucketText(bucket)),node("span",{class:"pct"},pct(size/total))],
       toggle,{class:"cat-toggle cat-facts",tabIndex:-1,...state}));
   const section=node("section",{class:"category"+(expanded?" open":"")+(dim?" dim":""),dataset:{role}},head);
   if(!expanded)return section;
@@ -501,8 +526,9 @@ function category(ctx,role,bucket,change,total,open,narrowed,matched) {
 function schemaTools(ctx,changes,narrowed) {
   const {t,view,detail:d,actions:a}=ctx,s=d.schemaCalls;
   const sort=seg([["size",t(view.sort==="order"?"byOrder":"bySize")],["calls",t("byCalls")],["name",t("byName")]],view.schemaSort,v=>a.schemaSort(v),{id:"schema-sort",small:true});
-  const unused=!s?.unusedCount?t("allSchemasCalled"):narrowed?t("unusedSchemasAll",{n:s.unusedCount,total:s.schemaCount,tokens:approx(s.unusedEstimatedTokens)})
-    :t("unusedSchemas",{n:s.unusedCount,tokens:approx(s.unusedEstimatedTokens)});
+  const unusedTokens=(s?.unusedExact?compact:approx)(s?.unusedTokens??s?.unusedEstimatedTokens);
+  const unused=!s?.unusedCount?t("allSchemasCalled"):narrowed?t("unusedSchemasAll",{n:s.unusedCount,total:s.schemaCount,tokens:unusedTokens})
+    :t("unusedSchemas",{n:s.unusedCount,tokens:unusedTokens});
   const line=changes?null:!s?.available?node("span",{class:"schema-unused muted",id:"schema-unused"},t("callsUnknown"))
     :node("span",{class:"schema-unused",id:"schema-unused",title:t("unusedTip")},unused,s.unknownCount?muted(" · "+t("callsUnknownSome",{n:s.unknownCount})):null);
   return node("div",{class:"schema-tools"},line,spacer(),sort);
@@ -545,7 +571,7 @@ function elementRow(ctx,item,{badge=null,snapshotKey=null,prefix=null}={}) {
     item.pinned?node("span",{class:"pin",title:t("pinnedTip")},t("pinnedItem")):null,
     badge?node("span",{class:"badge "+(badge==="added"?"up":"down")},t(badge==="added"?"addedBadge":"removedBadge")):null,
     item.role==="schema"&&item.callCount!=null?node("span",{class:"calls"+(item.callCount?"":" zero"),title:t("callsTip",{n:item.callCount})},"×"+item.callCount):null,
-    entryStamp(t,item),node("span",{class:"num"},approx(item.estimatedTokens))],()=>a.open(item,key),{class:"el-head",dataset:{focus:"el:"+key+":"+item.key},ariaExpanded:String(open)});
+    entryStamp(t,item),node("span",{class:"num",title:sizeTip(t,item)},itemText(item))],()=>a.open(item,key),{class:"el-head",dataset:{focus:"el:"+key+":"+item.key},ariaExpanded:String(open)});
   const row=node("div",{class:"el element-row"+(open?" open":"")+(badge==="removed"?" removed":""),dataset:{element:item.key,snapshot:key,kind:badge??""}},head);
   if(item.subtitle&&!open)row.append(node("div",{class:"el-sub"},item.subtitle));
   if(open)row.append(elementBody(ctx,item,{badge}));
@@ -717,8 +743,8 @@ function eventsCard(ctx) {
     const target=anchors(items,event,olderUnloaded(ctx)),{before,after}=target,at=eventAt(t,event,target),detail=eventDetail(t,event);
     const evidence=t(event.navigation?.evidence==="turn_range"?"turnEvidence":"timeEvidence");
     const on=view.eventKey===eventId(event)&&Boolean(view.selectedKey);
-    const saved=event.tokensSavedEstimate!=null?node("span",{class:"badge down",title:t("saved",{n:full(event.tokensSavedEstimate)})},"−"+compact(event.tokensSavedEstimate))
-      :event.tokens?node("span",{class:"badge up",title:t("eventTokensTip")},"+"+compact(event.tokens)):null;
+    const saved=event.tokensSavedEstimate!=null?node("span",{class:"badge down",title:t("saved",{n:full(event.tokensSavedEstimate)})},"≈−"+compact(event.tokensSavedEstimate))
+      :event.tokens?node("span",{class:"badge up",title:t("eventTokensTip")},"≈+"+compact(event.tokens)):null;
     const reachable=Boolean(after)||target.earlier||target.unlocated||event.kind==="tools";
     const open=view.eventOpen===eventId(event),compacted=event.kind==="compaction"&&event.evidence==="recorded"&&event.summarizedCount;
     const main=button([node("span",{class:"event-glyph"},GLYPH[event.kind]??"•"),node("span",{class:"kind"},eventLabel(t,event)),
@@ -771,7 +797,7 @@ function about(ctx) {
   const known=code=>{const text=t("cov."+code);return text==="cov."+code?code:text;};
   return node("details",{class:"about",id:"request-info",open:view.aboutOpen,ontoggle:e=>a.remember({aboutOpen:e.target.open})},
     node("summary",{},t("about")),
-    node("ul",{},["aboutEstimate","aboutRecorded","aboutUsage","aboutDiff","aboutPermission"].map(key=>node("li",{},t(key)))),
+    node("ul",{},["aboutMeasured","aboutEstimate","aboutRecorded","aboutUsage","aboutDiff","aboutPermission"].map(key=>node("li",{},t(key)))),
     node("div",{class:"about-row"},node("b",{},t("coverage")),node("span",{id:"coverage"},coverage.length?coverage.map(known).join("；"):t("coverageFull"))),
     session?node("div",{class:"about-row"},node("b",{},t("session")),node("code",{id:"session"},session),button(t("copyId"),()=>a.copy(session),{class:"btn small"})):null,
     ctx.demo?node("div",{class:"about-row"},node("b",{},t("demo"))):null);

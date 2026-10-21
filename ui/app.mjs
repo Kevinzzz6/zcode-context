@@ -166,7 +166,7 @@ async function loadDetail(background=false,keepMore=false) {
     // The page is short while a step loads, so the target is revealed again once its content is in.
     if(reveal?.key===key){scrollTarget=reveal.target;reveal=null;}
     if(view.expanded===null) {
-      const roles=next.composition.buckets.map(b=>b.role),largest=[...next.composition.buckets].sort((a,b)=>b.estimatedTokens-a.estimatedTokens)[0]?.role;
+      const roles=next.composition.buckets.map(b=>b.role),largest=[...next.composition.buckets].sort((a,b)=>(b.tokens??b.estimatedTokens)-(a.tokens??a.estimatedTokens))[0]?.role;
       view.expanded=roles.includes("tool")?["tool"]:largest?[largest]:[];
     }
     if(notice?.kind==="error")notice=null;
