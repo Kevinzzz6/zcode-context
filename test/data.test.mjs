@@ -105,6 +105,42 @@ test("child sessions receive their own recorded-input composition",()=>temporary
   const result=await service.overview("sess_child");assert.equal(result.composition.complete,true);assert.equal(result.composition.buckets[0].role,"user");
 }));
 
+test("measured sizes reach the browser, and the conversation store measures what entered before the records begin",()=>temporary(async root=>{
+  await mkdir(join(root,"rollout"));
+  const fixture=usageDatabase(root),store=conversationStore(fixture.db);
+  try {
+    // The record file starts at the second request, as after a cold read of a large file's end.
+    fixture.add("sess_M","q1",1000,50,10);fixture.add("sess_M","q2",1400,30,20);
+    fixture.db.exec("ALTER TABLE model_usage ADD COLUMN assistant_message_id TEXT");
+    const link=(id,message)=>fixture.db.prepare("UPDATE model_usage SET assistant_message_id=? WHERE id=?").run(message,id);
+    store.prompt("sess_M","u1",5,"Fix the cache expiry check.");
+    store.reply("sess_M","a1",10,"Reading",[["Read",{file_path:"cache.ts"},"export const ttl = 60;","c1"]]);
+    store.reply("sess_M","a2",20,"Reading",[["Read",{file_path:"a.ts"},"a","c2"],["Read",{file_path:"b.ts"},"b","c3"]]);
+    link("q1","a1");link("q2","a2");
+    const system={role:"system",content:"You are a coding agent. ".repeat(20)},prompt={role:"user",content:"Fix the cache expiry check."};
+    const reply=ids=>({role:"assistant",content:"Reading",toolCalls:ids.map(id=>({id,name:"Read",input:{}}))}),result=(id,content)=>({role:"tool",toolCallId:id,toolName:"Read",content});
+    const request=(id,messages,input,output,calls)=>modelRecord("sess_M",id,messages,{response:{text:"",usage:{inputTokens:input,outputTokens:output},toolCalls:calls.map(c=>({toolCallId:c,toolName:"Read"}))}});
+    const second=[system,prompt,reply(["c1"]),result("c1","export const ttl = 60;")];
+    const third=[...second,reply(["c2","c3"]),result("c2","a".repeat(300)),result("c3","b".repeat(3000))];
+    await writeFile(join(root,"rollout","model-io-sess_M.jsonl"),[request("q2",second,1400,30,["c2","c3"]),request("q3",third,2000,10,[])].map(x=>JSON.stringify(x)).join("\n")+"\n");
+    const service=new ContextDataService({db:fixture.path,trajectoryDirs:[join(root,"rollout")],logDir:join(root,"log")});
+    const o=await service.overview("sess_M"),[first,last]=o.trajectories;
+    assert.equal(last.composition.sizes.total,2000);assert.equal(last.composition.sizes.measuredTokens,50+350+30);
+    assert.equal(last.delta.sizeDelta,600);assert.equal(last.delta.sizeExact,true);
+    const sizeOf=(d,key)=>d.elements.find(x=>x.key===key);
+    const base=await service.request("sess_M",{key:first.key,sort:"order"});
+    assert.deepEqual([sizeOf(base,"message:2").size.source,sizeOf(base,"message:2").tokens],["store",50]);
+    assert.deepEqual([sizeOf(base,"message:3").size.source,sizeOf(base,"message:3").tokens],["store",350]);
+    assert.deepEqual(sizeOf(base,"message:0").size.share,{tokens:1000,count:2,scope:"base"});
+    const next=await service.request("sess_M",{key:last.key,sort:"size"});
+    assert.deepEqual([sizeOf(next,"message:4").size.source,sizeOf(next,"message:4").tokens],["reply",30]);
+    assert.deepEqual(sizeOf(next,"message:6").size.share,{tokens:570,count:2,scope:"step"});
+    assert.equal(next.largest.key,"message:0");assert.equal(next.elements[0].key,"message:0");
+    assert.ok(sizeOf(next,"message:6").tokens>sizeOf(next,"message:5").tokens);
+    assert.equal(next.diff.added.find(x=>x.key==="message:4").tokens,30);
+  } finally {fixture.db.close();}
+}));
+
 test("old request handles cannot resolve a different snapshot after worker restart",()=>temporary(async root=>{
   await mkdir(join(root,"rollout"));const path=join(root,"rollout","model-io-sess_A.jsonl");
   const first=modelRecord("sess_A","req1",[{role:"user",content:"x"}]);
@@ -303,3 +339,27 @@ test("a completed request linked to no message still ends the store's step befor
   } finally { fixture.db.close(); }
 }));
 
+test("records read after the store gained rows use them, the overview carries sizes, and unused schemas are totalled in both measures",()=>temporary(async root=>{
+  await mkdir(join(root,"rollout"));
+  const fixture=usageDatabase(root),store=conversationStore(fixture.db),file=join(root,"rollout","model-io-sess_M.jsonl");
+  try {
+    fixture.tool("sess_M","t1","Read");
+    store.prompt("sess_M","u1",5,"Fix the cache expiry check.");
+    store.reply("sess_M","a1",10,"Reading",[["Read",{file_path:"cache.ts"},"export const ttl = 60;","c1"]]);
+    fixture.add("sess_M","q1",1000,50,10);linkColumn(fixture)("q1","a1");
+    await writeFile(file,"");
+    const service=new ContextDataService({db:fixture.path,trajectoryDirs:[join(root,"rollout")],logDir:join(root,"log")});
+    await service.overview("sess_M");
+    store.reply("sess_M","a2",20,"Done",[]);
+    fixture.db.prepare("INSERT INTO model_usage(id,session_id,query_source,model_id,status,started_at,input_tokens,output_tokens,assistant_message_id) VALUES ('q2','sess_M','main_turn','demo-model','completed',20,1400,30,'a2')").run();
+    const tools=[{type:"function",function:{name:"Read",description:"r".repeat(400),parameters:{type:"object"}}},{type:"function",function:{name:"Unused",description:"u".repeat(200),parameters:{type:"object"}}}];
+    const messages=[systemMessage,userMessage,readReply(["c1"]),readResult("c1","export const ttl = 60;")];
+    await appendFile(file,JSON.stringify(sizedRequest("sess_M","q2",messages,1400,30,[],{request:{messages,messagesKind:"full",messageCount:4,toolNames:["Read","Unused"],body:{tools}}}))+"\n");
+    const o=await service.overview("sess_M");
+    assert.equal(o.composition.sizes.total,1400);assert.equal(o.composition.sizes.measuredTokens,400);
+    const d=await service.request("sess_M",{key:o.trajectories[0].key,sort:"order"});
+    assert.deepEqual([d.elements[3].size.source,d.elements[3].tokens],["store",350]);
+    const unused=d.groups.schema.items.filter(x=>x.callCount===0);
+    assert.equal(d.schemaCalls.unusedTokens,unused.reduce((n,x)=>n+x.tokens,0));assert.equal(d.schemaCalls.unusedExact,false);
+  } finally { fixture.db.close(); }
+}));

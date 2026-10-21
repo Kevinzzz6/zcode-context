@@ -1,10 +1,11 @@
 import { join } from "node:path";
 import { createHash } from "node:crypto";
-import { readUsage, readToolCalls } from "./sqlite.mjs";
+import { readUsage, readToolCalls, readRequestUsage } from "./sqlite.mjs";
 import { readConversation, readSummarizedMessages } from "./conversation.mjs";
 import { JsonlTail } from "./jsonl.mjs";
 import { sanitizeSessionSegment, ContextError, isAgentSource } from "../domain/session.mjs";
 import { foldRecord, inputElements, composition, diffRecords, trajectorySummary, canonical, contentKey, elementSummary, toolEvidence, textDifference, isContinuation } from "../domain/trajectory.mjs";
+import { createSizeLedger, measureRecord, storeSizes } from "../domain/ledger.mjs";
 import { contextEvent, mergeEvents, conversationEvents, combineEvents, summarizedItems } from "../domain/events.mjs";
 const digest = value => createHash("sha256").update(value).digest("hex").slice(0,24);
 const sha = value => createHash("sha256").update(value).digest("hex");
@@ -26,7 +27,7 @@ function groupByRole(items, limit = 40) {
   }
   return groups;
 }
-const bySize = (a, b) => b.chars - a.chars || a.key.localeCompare(b.key);
+const bySize = (a, b) => b.tokens - a.tokens || b.chars - a.chars || a.key.localeCompare(b.key);
 const SCHEMA_ORDER = { calls: (a, b) => (b.callCount ?? -1) - (a.callCount ?? -1) || bySize(a, b),
   name: (a, b) => (a.toolName == null) - (b.toolName == null) || String(a.toolName ?? "").localeCompare(String(b.toolName ?? "")) || a.key.localeCompare(b.key) };
 // A schema order only permutes schema items among their own slots, so other categories and pages keep the general order.
@@ -53,38 +54,19 @@ export class ContextDataService {
     let state = this.sessions.get(sessionId);
     if (state) { this.sessions.delete(sessionId); this.sessions.set(sessionId, state); return state; }
     if (this.sessions.size >= 8) this.sessions.delete(this.sessions.keys().next().value);
-    state = { ledgers: new Map(), events: new Map(), logTails: new Map(), overview: null, conversation: null, recorded: [], targets: new Map() };
+    state = { ledgers: new Map(), events: new Map(), logTails: new Map(), overview: null, conversation: null, recorded: [], targets: new Map(), store: null, storeKey: null };
     this.sessions.set(sessionId, state);
     return state;
   }
   async refresh(sessionId) {
     const state = this.state(sessionId); const coverage = [];
-    for (const directory of this.paths.trajectoryDirs) {
-      const path = join(directory, "model-io-" + sanitizeSessionSegment(sessionId) + ".jsonl");
-      let ledger = state.ledgers.get(path);
-      if (!ledger) { ledger = { tail: new JsonlTail(), previous: null, records: new Map(), chars: 0, segment: 0, baseSegment: null, steps: 0, turns: new Map() }; state.ledgers.set(path, ledger); }
-      const status = await ledger.tail.scan(path, (raw, offset) => {
-        if (raw.type !== "model_io" || raw.sessionId !== sessionId) { ledger.previous = null; ledger.segment++; return; }
-        if (raw.modelIOReset) { ledger.previous = null; ledger.segment++; ledger.tail.markCoverage("history_reset"); }
-        const record = foldRecord(raw, ledger.previous);
-        if (record.oversized) { ledger.previous = null; ledger.segment++; ledger.tail.markCoverage("context_limit"); return; }
-        const serialized = canonical(record); const chars = serialized.length;
-        const key = digest(sessionId + ":" + path + ":" + ledger.tail.generation + ":" + ledger.segment + ":" + offset + ":" + digest(serialized));
-        const summary = trajectorySummary(record,key);
-        // Ordinals count from the first record read in this file generation, so labels stay stable as the cache window slides.
-        const agent = isAgentSource(record.querySource);
-        if (agent && record.turnId && !ledger.turns.has(record.turnId)) ledger.turns.set(record.turnId, ledger.turns.size + 1);
-        summary.step = agent ? ++ledger.steps : null; summary.turn = record.turnId ? ledger.turns.get(record.turnId) ?? null : null;
-        // fromStart: nothing was skipped between the start of this file generation and the record.
-        ledger.records.set(key, { key, record, chars, path, offset, segment:ledger.segment, fromStart:ledger.segment===ledger.baseSegment, summary }); ledger.chars += chars; ledger.previous = record;
-        while (ledger.records.size > 120 || ledger.chars > MAX_CACHE_CHARS) {
-          const first = ledger.records.keys().next().value;
-          ledger.chars -= ledger.records.get(first).chars; ledger.records.delete(first); ledger.tail.markCoverage("display_window");
-        }
-        this.trimCaches();
-      }, () => { ledger.previous = null; ledger.records.clear(); ledger.chars = 0; ledger.segment++; ledger.baseSegment = ledger.segment; ledger.steps = 0; ledger.turns.clear(); }, () => { ledger.previous = null; ledger.segment++; });
-      coverage.push(status);
-    }
+    // The conversation store, the logs and request usage are read before the records: where a record series starts, the
+    // store's measured sizes fill in what the records alone cannot measure, and compactions end partial records' series.
+    // A busy or briefly unopenable database keeps the last events; a missing database or an unsupported schema falls back to the logs alone.
+    const transient = code => code === "database_busy" || code === "database_unavailable";
+    const conversation = readConversation(this.paths.db, sessionId, state.conversation);
+    if (conversation.available) { if (conversation.changed || !state.conversation) state.recorded = conversationEvents(conversation.cache); state.conversation = conversation.cache; state.branch = conversation.branch; }
+    else if (!transient(conversation.code)) { state.conversation = null; state.recorded = []; state.branch = null; }
     // Event logs are a short diagnostic window; usage history comes from SQLite. Oldest day first, so the
     // insertion-ordered caps below drop the oldest events and log tails.
     for (let day = 2; day >= 0; day--) {
@@ -99,12 +81,48 @@ export class ContextDataService {
         while (state.events.size > 200) state.events.delete(state.events.keys().next().value);
       });
     }
+    // Like the events, a store that is briefly unreadable keeps its last rows.
+    const requests = readRequestUsage(this.paths.db, sessionId, { key: state.requestKey });
+    if (requests.available) { if (!requests.unchanged) { state.requestRows = requests.rows; state.requestKey = requests.key; } }
+    else if (!transient(requests.code)) { state.requestRows = null; state.requestKey = null; }
+    const breaks = [...state.recorded, ...state.events.values()].filter(e => e.kind === "compaction")
+      .flatMap(e => [e.timestamp, e.endedAt]).filter(Number.isFinite).sort((a, b) => a - b);
+    const c = state.conversation, storeKey = state.requestRows && c ? [state.requestKey, c.messageCount, c.partCount, c.messageCursor, c.partCursor, breaks.length, breaks.at(-1)].join(":") : null;
+    if (storeKey !== state.storeKey) { state.store = storeKey ? storeSizes(state.requestRows, c, breaks) : null; state.storeKey = storeKey; }
+    // Sizes are fixed when a record is read, so a first read waits up to two polls for a store that is briefly unreadable.
+    const waiting = !state.store && !this.records(state).length && (transient(requests.code) || transient(conversation.code))
+      && (state.storeWaits = (state.storeWaits ?? 0) + 1) <= 2;
+    for (const directory of this.paths.trajectoryDirs) {
+      if (waiting) { coverage.push({ available: true, scanning: true, pendingLine: false, coverage: [] }); continue; }
+      const path = join(directory, "model-io-" + sanitizeSessionSegment(sessionId) + ".jsonl");
+      let ledger = state.ledgers.get(path);
+      if (!ledger) { ledger = { tail: new JsonlTail(), previous: null, records: new Map(), chars: 0, segment: 0, baseSegment: null, steps: 0, turns: new Map(), sizes: createSizeLedger() }; state.ledgers.set(path, ledger); }
+      const status = await ledger.tail.scan(path, (raw, offset) => {
+        if (raw.type !== "model_io" || raw.sessionId !== sessionId) { ledger.previous = null; ledger.segment++; return; }
+        if (raw.modelIOReset) { ledger.previous = null; ledger.segment++; ledger.tail.markCoverage("history_reset"); }
+        const record = foldRecord(raw, ledger.previous);
+        if (record.oversized) { ledger.previous = null; ledger.segment++; ledger.tail.markCoverage("context_limit"); return; }
+        const serialized = canonical(record); const chars = serialized.length;
+        const key = digest(sessionId + ":" + path + ":" + ledger.tail.generation + ":" + ledger.segment + ":" + offset + ":" + digest(serialized));
+        // Sizes are fixed when a record is read, in file order, so they do not shift as the cache window slides.
+        const sizes = measureRecord(ledger.sizes, record, { segment: ledger.segment, store: state.store, breaks });
+        const summary = trajectorySummary(record,key,sizes);
+        // Ordinals count from the first record read in this file generation, so labels stay stable as the cache window slides.
+        const agent = isAgentSource(record.querySource);
+        if (agent && record.turnId && !ledger.turns.has(record.turnId)) ledger.turns.set(record.turnId, ledger.turns.size + 1);
+        summary.step = agent ? ++ledger.steps : null; summary.turn = record.turnId ? ledger.turns.get(record.turnId) ?? null : null;
+        // fromStart: nothing was skipped between the start of this file generation and the record.
+        ledger.records.set(key, { key, record, chars, path, offset, segment:ledger.segment, fromStart:ledger.segment===ledger.baseSegment, summary, sizes }); ledger.chars += chars; ledger.previous = record;
+        while (ledger.records.size > 120 || ledger.chars > MAX_CACHE_CHARS) {
+          const first = ledger.records.keys().next().value;
+          ledger.chars -= ledger.records.get(first).chars; ledger.records.delete(first); ledger.tail.markCoverage("display_window");
+        }
+        this.trimCaches();
+      }, () => { ledger.previous = null; ledger.records.clear(); ledger.chars = 0; ledger.segment++; ledger.baseSegment = ledger.segment; ledger.steps = 0; ledger.turns.clear(); ledger.sizes = createSizeLedger(); }, () => { ledger.previous = null; ledger.segment++; });
+      coverage.push(status);
+    }
     const records = this.records(state);
     const usage = readUsage(this.paths.db, sessionId); state.toolCalls = readToolCalls(this.paths.db, sessionId);
-    // A busy or briefly unopenable database keeps the last events; a missing database or an unsupported schema falls back to the logs alone.
-    const conversation = readConversation(this.paths.db, sessionId, state.conversation);
-    if (conversation.available) { if (conversation.changed || !state.conversation) state.recorded = conversationEvents(conversation.cache); state.conversation = conversation.cache; state.branch = conversation.branch; }
-    else if (!["database_busy", "database_unavailable"].includes(conversation.code)) { state.conversation = null; state.recorded = []; state.branch = null; }
     // A file that could not be opened this time is not evidence of rotation.
     if (records.length && coverage.every(item => !item.available) && !coverage.some(item => item.code === "file_unavailable"))
       coverage.push({ coverage: ["source_rotated"], scanning: false });
@@ -113,7 +131,7 @@ export class ContextDataService {
     while (state.logTails.size > 3) state.logTails.delete(state.logTails.keys().next().value);
     const latest = records.findLast(item => isAgentSource(item.record.querySource));
     const overview = { sessionId, usage, toolCalls: state.toolCalls, trajectories: records.slice(-60).map(item => this.timelineItem(records,item)),
-      composition: latest ? composition(latest.record) : null,
+      composition: latest ? composition(latest.record, latest.sizes) : null,
       trajectory: { available: records.length > 0, scanning: coverage.some(item => item.scanning),
         pendingLine: coverage.some(item => item.pendingLine), coverage: [...new Set(coverage.flatMap(item => item.coverage))],
         errorCode: records.length ? null : coverage.every(item => !item.available) ? "trajectory_missing" : "waiting_for_records" },
@@ -150,7 +168,7 @@ export class ContextDataService {
     if(!previous)return {available:false,reason:baselineKey?"baseline_expired":"no_previous_snapshot"};
     if(previous.path!==selected.path||previous.segment!==selected.segment)return {available:false,reason:"history_gap",previousKey:previous.key};
     if(previous.key===selected.key||all.indexOf(previous)>=all.indexOf(selected))return {available:false,reason:"invalid_baseline"};
-    return {...diffRecords(previous.record,selected.record),previousKey:previous.key};
+    return {...diffRecords(previous.record,selected.record,previous.sizes,selected.sizes),previousKey:previous.key};
   }
   // Absolute message range and per-message digests of one cached record, computed once and kept on the cache entry.
   fingerprint(entry) {
@@ -182,7 +200,8 @@ export class ContextDataService {
   timelineItem(all,item) {
     if(!item.timeline || item.timeline.baselineKey && !all.some(x=>x.key===item.timeline.baselineKey)){
       const d=this.comparison(all,item);
-      item.timeline={...item.summary,delta:d.available?{chars:d.charsDelta,tokens:d.tokensDelta,categories:d.categories,schemasComparable:d.schemasComparable}:null,
+      item.timeline={...item.summary,delta:d.available?{chars:d.charsDelta,tokens:d.tokensDelta,categories:d.categories,schemasComparable:d.schemasComparable,
+          ...(d.sizeDelta!=null?{sizeDelta:d.sizeDelta,sizeExact:d.sizeExact}:{})}:null,
         baselineKey:d.previousKey??null,deltaReason:d.reason??null};
     }
     return item.timeline;
@@ -266,6 +285,7 @@ export class ContextDataService {
     if(!selected)throw new ContextError("request_expired","Request is outside the loaded trajectory window.");
     if(args.baselineMode==="turn"&&!args.baselineKey&&!args.noBaseline)args={...args,...this.turnBaseline(all,selected)};
     const record=selected.record,elements=inputElements(record),page=args.page??0,pageSize=40;
+    const summarize=(entry,item)=>elementSummary(item,entry?.sizes?.byKey.get(item.key)??null);
     // A turn's first step has no previous turn: nothing is compared, rather than falling back to the previous step.
     let diff=args.noBaseline?{available:false,reason:args.noBaselineReason??"no_previous_turn"}:this.comparison(all,selected,args.baselineKey);
     // Session-wide counts from tool_usage; null when the table is unavailable or a name fell outside the bounded read.
@@ -290,7 +310,7 @@ export class ContextDataService {
       if(since!=null) {
         const stamped=elements.filter(x=>x.key.startsWith("message:")).map(x=>({item:x,entry:entries[Number(x.key.slice(8))]})).filter(x=>x.entry);
         arrived=stamped.filter(x=>x.entry.entered&&x.entry.entered.step>since).map(x=>x.item);
-        arrivals={available:true,sinceStep:since,count:arrived.length,keys:arrived.map(x=>x.key),groups:groupByRole(order(arrived.map(elementSummary),true)),
+        arrivals={available:true,sinceStep:since,count:arrived.length,keys:arrived.map(x=>x.key),groups:groupByRole(order(arrived.map(x=>summarize(selected,x)),true)),
           unknownCount:stamped.filter(x=>!x.entry.entered&&x.entry.before&&x.entry.before.step>since).length};
       }
     }
@@ -301,7 +321,7 @@ export class ContextDataService {
     if(diff.available) {
       const before=new Map(inputElements(all.find(x=>x.key===diff.previousKey).record).map(x=>[x.key,x]));
       changes={source:"diff",added:diff.added.map(x=>[x,own.get(x.key)]),removed:diff.removed.map(x=>[x,before.get(x.key)])};
-    } else if(arrived)changes={source:"arrivals",added:arrived.map(x=>[elementSummary(x),x]),removed:null};
+    } else if(arrived)changes={source:"arrivals",added:arrived.map(x=>[summarize(selected,x),x]),removed:null};
     const shown=list=>list?list.filter(([,x])=>x&&hit(x)).map(([summary])=>summary):null;
     const added=shown(changes?.added),removed=shown(changes?.removed),roles={};
     const tally=role=>roles[role]??={total:0,matched:0,added:0,addedTotal:0,removed:removed?0:null,removedTotal:removed?0:null};
@@ -310,7 +330,7 @@ export class ContextDataService {
     for(const [x] of changes?.removed??[])tally(x.role).removedTotal++;
     for(const x of added??[])tally(x.role).added++;
     for(const x of removed??[])tally(x.role).removed++;
-    const focusItem=args.focusKey&&own.has(args.focusKey)?decorate(elementSummary(own.get(args.focusKey))):null,addedOrdered=order(added??[],true);
+    const focusItem=args.focusKey&&own.has(args.focusKey)?decorate(summarize(selected,own.get(args.focusKey))):null,addedOrdered=order(added??[],true);
     const listing={narrowed:Boolean(search||prefix),source:changes?.source??null,roles,added:added?.length??0,addedTotal:changes?.added.length??0,
       removed:removed?.length??null,removedTotal:changes?.removed?.length??null,
       addedGroups:changes?pin(groupByRole(addedOrdered),args.focusKey,addedOrdered,focusItem):{},removedGroups:removed?groupByRole(order(removed,false)):{}};
@@ -325,13 +345,14 @@ export class ContextDataService {
       for(const item of snapshot===selected?elements:inputElements(snapshot.record)) {
         if(role&&item.role!==role)continue;
         if(!hit(item))continue;
-        filtered.push({...decorate(elementSummary(item),snapshot===selected),...(loadedSearch?{snapshotKey:snapshot.key,snapshotTime:snapshot.record.startedAt}:{})});
+        filtered.push({...decorate(summarize(snapshot,item),snapshot===selected),...(loadedSearch?{snapshotKey:snapshot.key,snapshotTime:snapshot.record.startedAt}:{})});
       }
     }
     const ordered=arrange(filtered,args.sort,loadedSearch?null:args.schemaSort);
-    const schemas=elements.filter(x=>x.role==="schema").map(x=>decorate(elementSummary(x))),unused=schemas.filter(x=>x.callCount===0);
+    const schemas=elements.filter(x=>x.role==="schema").map(x=>decorate(summarize(selected,x))),unused=schemas.filter(x=>x.callCount===0);
     const schemaCalls=record.tools===null?{available:false,reason:"not_recorded"}:!calls.available?{available:false,reason:calls.code??"tool_usage_unavailable"}
-      :{available:true,scope:"session",schemaCount:schemas.length,unusedCount:unused.length,unusedEstimatedTokens:unused.reduce((n,x)=>n+x.estimatedTokens,0),unknownCount:schemas.filter(x=>x.callCount==null).length};
+      :{available:true,scope:"session",schemaCount:schemas.length,unusedCount:unused.length,unusedEstimatedTokens:unused.reduce((n,x)=>n+x.estimatedTokens,0),
+        unusedTokens:unused.reduce((n,x)=>n+x.tokens,0),unusedExact:unused.length>0&&unused.every(x=>x.size.kind==="measured"),unknownCount:schemas.filter(x=>x.callCount==null).length};
     const element=args.elementKey?elements.find(x=>x.key===args.elementKey):null;
     if(args.elementKey&&!element)throw new ContextError("element_missing","Element unavailable.");
     let content=null;
@@ -339,7 +360,7 @@ export class ContextDataService {
       const text=args.format==="raw"?element.text:element.readable,offset=args.offset??0;
       const hits=[];let matchCount=0;const query=(args.bodySearch??"").toLowerCase();
       if(query){const haystack=text.toLowerCase();let cursor=0;while((cursor=haystack.indexOf(query,cursor))!==-1){matchCount++;if(hits.length<100)hits.push(cursor);cursor+=query.length;}}
-      content={...decorate(elementSummary(element)),offset,totalChars:text.length,lineCount:text.split("\n").length,
+      content={...decorate(summarize(selected,element)),offset,totalChars:text.length,lineCount:text.split("\n").length,
         text:text.slice(offset,offset+12000),hasMore:offset+12000<text.length,format:args.format??"readable",
         tool:toolEvidence(record,element),hits,matchCount};
     }
@@ -357,7 +378,7 @@ export class ContextDataService {
     return {sessionId,revision:state.overview.revision,summary:this.timelineItem(all,selected),composition:selected.summary.composition,diff,arrivals,listing,
       baselineOptions:all.filter(x=>x.path===selected.path&&x.record.querySource===record.querySource&&all.indexOf(x)<all.indexOf(selected)).slice(-60).map(x=>({key:x.key,startedAt:x.record.startedAt,turnId:x.record.turnId,complete:x.record.messages.complete})),
       elementCount:elements.length,filteredCount:filtered.length,page,searchScope:args.searchScope==="loaded"&&search?"all_loaded_snapshots":"all_elements_in_selected_loaded_snapshot",loadedSnapshotCount:all.length,
-      largest:filtered.length?filtered.reduce((largest,x)=>x.chars>largest.chars?x:largest):null,
+      largest:filtered.length?filtered.reduce((largest,x)=>x.tokens>largest.tokens?x:largest):null,
       groups:loadedSearch?null:pin(groupByRole(ordered),args.focusKey,ordered,focusItem),schemaCalls,
       elements:ordered.slice(page*pageSize,(page+1)*pageSize),content,bodyDiff};
   }
