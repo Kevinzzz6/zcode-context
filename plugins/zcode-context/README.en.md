@@ -126,7 +126,7 @@ From top to bottom:
 <table>
   <tr><th align="left">Area</th><th align="left">Contents</th></tr>
   <tr><td nowrap><b>Step selector</b></td><td><kbd>‹</kbd> <kbd>›</kbd> or <kbd>←</kbd> <kbd>→</kbd> move between agent requests; the menu also lists title and compaction requests. Follows the latest request, pauses while you read an expanded element, and tells you how many newer requests arrived when you look at history</td></tr>
-  <tr><td nowrap><b>Request summary</b></td><td>Size, change versus the previous step, actual input/output/cache and model, a category bar and legend, and a Turn / In / Reply brief</td></tr>
+  <tr><td nowrap><b>Request summary</b></td><td>Actual input, change versus the previous step, measured share, output/cache and model, a category bar and legend, and a Turn / In / Reply brief</td></tr>
   <tr><td nowrap><b>Context trend</b></td><td>One bar per agent request with an axis, a turn band and ✂ compaction markers; Total/Delta, Steps/Turns, Adaptive scaling; hover for per-category values, and hovering a category highlights it everywhere</td></tr>
   <tr><td nowrap><b>Context browser</b></td><td>Collapsible, paged categories; compare with the previous step, the previous turn or any earlier step; Changes mode shows only additions and removals; elements are named by tool and key argument, such as <code>Read · src/cache.ts</code></td></tr>
   <tr><td nowrap><b>Element details</b></td><td>Inline tool cards (argument table, OK/error), schema parameter tables and bodies (readable / Markdown / raw, copy, find, parts)</td></tr>
@@ -147,7 +147,7 @@ The plugin keeps these cases apart instead of guessing at missing data:
 | | Default | Complete Model I/O retention |
 |---|---|---|
 | Recordings of earlier sessions | ❌ Only the 3 most recent sessions keep recording files; earlier ones are already deleted and unrecoverable | ✅ Kept, with no per-session-count cleanup |
-| Request size | ⚠️ Provider-reported actual input; the recorded part is marked and the rest is shown hatched as "earlier messages (not recorded)" | ✅ Full category estimate |
+| Request size | ⚠️ Provider-reported actual input; the recorded part is marked and the rest is shown hatched as "earlier messages (not recorded)" | ✅ Actual input, with categories booked from measured increases |
 | Composition by category | ⚠️ Recorded messages and tool schemas only | ✅ Complete |
 | In row, additions | ✅ Available (derived from entry stamps) | ✅ Available |
 | Removals, per-category change | ❌ Unknown, and the panel says so | ✅ Available |
@@ -243,13 +243,14 @@ Enabling the plugin only makes ZCode load it. The panel reads data by calling tw
 
 ## Reading the numbers
 
-- **Estimates** use about 4 serialized characters per token for English and code and about 1.5 for Chinese, Japanese and Korean, to compare size and change; they are not the model's tokenization. Values with "≈" are estimates.
-- **Actual input** is the provider-reported input of the request, including cache reads.
+- **Actual input**, the large number, is the provider-reported input of the request, including cache reads.
+- **Measured and estimated sizes**: item and category sizes are booked from measured increases. Each reply counts at the output tokens of the response that produced it, provided that output leaves room for whatever else the step added; an item that was a step's only other addition counts at that step's increase in actual input; the same content keeps a size once measured, with the same model and request source; in the first request of a series, replies and lone tool results (from a reply that made a single call, with unchanged content) are filled in from ZCode's conversation store. Sizes and changes without "≈" are measured. Those with "≈" are estimates, or estimated shares of a measured total, such as the items of a step that added several at once, or the system prompt and tool schemas of a series' first request; hovering shows which total was shared. "79% measured" is the measured part of the request, rounded down; under default recording it is the measured part of what was recorded.
+- **Estimates** use about 4 serialized characters per token for English and code and about 1.5 for Chinese, Japanese and Korean. They are not the model's tokenization. They share out a measured total, or stand in where nothing was measured: requests without reported usage, and under default recording the messages and tool schemas of the window where booking starts.
 - **Step and turn numbers** count from the first readable record, not from the start of the session. ZCode periodically resets long sessions' record files; history then starts over, and the trend says so.
 - **Entry stamps** `T2 S7` are traced by absolute message position. A message still present where tracing stops (oldest loaded record, a gap, a reset or a compaction) shows "earlier" instead of a guessed step.
 - **Tool call counts** cover the whole session, including calls after the selected step and calls already compacted away. Without the call records they are unknown, never ×0.
-- **Injection size** `+47` is the estimated tokens of the injected text; a large Skill output is estimated from the script mix of its opening and its full length, without reading all of it into the plugin.
-- **Compaction** tokens before and after are what ZCode recorded when it compacted, and `−12.1k` is their difference; the summarized message count and contents come from the conversation store. A drop in size alone is not a compaction — only one recorded in the conversation store or the logs counts.
+- **Injection size** `≈+47` is the estimated tokens of the injected text; a large Skill output is estimated from the script mix of its opening and its full length, without reading all of it into the plugin.
+- **Compaction** tokens before and after are what ZCode recorded when it compacted, and `≈−12.1k` is their difference (ZCode does not guarantee they are measured); the summarized message count and contents come from the conversation store. A drop in size alone is not a compaction — only one recorded in the conversation store or the logs counts.
 - **Usage** comes from ZCode's logical request statistics, including title and compaction calls, and is counted separately from the trend's records.
 
 ## How it works and privacy

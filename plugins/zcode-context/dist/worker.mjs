@@ -5,7 +5,7 @@ import { parentPort, workerData } from "node:worker_threads";
 
 // src/data/service.mjs
 import { join } from "node:path";
-import { createHash as createHash3 } from "node:crypto";
+import { createHash as createHash4 } from "node:crypto";
 
 // src/data/sqlite.mjs
 import { DatabaseSync } from "node:sqlite";
@@ -207,6 +207,54 @@ function readToolCalls(dbPath, sessionId) {
     db?.close();
   }
 }
+function readRequestUsage(dbPath, sessionId, { key = null, limit = 2e4 } = {}) {
+  let db;
+  try {
+    if (!statSync(dbPath).isFile()) throw new ContextError("database_missing", "Session database is not a regular file.");
+    db = new DatabaseSync(dbPath, { readOnly: true });
+    db.exec("PRAGMA query_only = ON; PRAGMA busy_timeout = 100; BEGIN");
+    const columns = new Set(db.prepare("PRAGMA table_info(model_usage)").all().map((row) => row.name));
+    if (!["session_id", "started_at", "status", "input_tokens", "output_tokens", "assistant_message_id"].every((key2) => columns.has(key2)))
+      throw new ContextError("schema_unsupported", "This database does not link usage to assistant messages.");
+    const scope = " FROM model_usage WHERE session_id=? AND status='completed'";
+    const summary = db.prepare("SELECT count(*) AS n, max(started_at) AS last, total(input_tokens) AS input, total(output_tokens) AS output, count(assistant_message_id) AS linked" + scope).get(sessionId);
+    const current = [summary.n, summary.last, summary.input, summary.output, summary.linked].join(":");
+    if (current === key) {
+      db.exec("COMMIT");
+      return { available: true, key: current, unchanged: true, rows: null };
+    }
+    const expression = (column) => (columns.has(column) ? column : "NULL") + " AS " + column;
+    const rows = db.prepare("SELECT assistant_message_id AS message, started_at AS startedAt, " + [
+      "query_source",
+      "model_id",
+      "input_tokens",
+      "output_tokens",
+      "cache_read_input_tokens",
+      "cache_creation_input_tokens",
+      "provider_total_tokens",
+      "computed_total_tokens"
+    ].map(expression).join(",") + scope + " ORDER BY started_at DESC," + (columns.has("attempt_index") ? "attempt_index DESC," : "") + "rowid DESC LIMIT ?").all(sessionId, limit);
+    db.exec("COMMIT");
+    return { available: true, key: current, unchanged: false, rows: rows.reverse().map((row) => ({
+      message: row.message == null ? null : String(row.message),
+      startedAt: Number(row.startedAt),
+      source: row.query_source ?? "unknown",
+      model: row.model_id ?? null,
+      input: normalizedInput(row),
+      output: nonnegative(row.output_tokens)
+    })) };
+  } catch (error) {
+    if (db) {
+      try {
+        db.exec("ROLLBACK");
+      } catch {
+      }
+    }
+    return { available: false, code: classifyDbError(error), rows: null };
+  } finally {
+    db?.close();
+  }
+}
 
 // src/data/conversation.mjs
 import { DatabaseSync as DatabaseSync2 } from "node:sqlite";
@@ -291,6 +339,7 @@ function foldRecord(raw, previous) {
       title: inputSummary(parseInput(call?.input ?? call?.args ?? call?.arguments))
     })),
     responseCallCount: Array.isArray(raw.response?.toolCalls) ? raw.response.toolCalls.length : 0,
+    responseCallIds: (Array.isArray(raw.response?.toolCalls) ? raw.response.toolCalls : []).slice(0, 64).map((call) => call?.toolCallId ?? call?.id).filter((id) => typeof id === "string").map((id) => id.slice(0, 256)),
     hasResponse: Boolean(raw.response),
     hasError: Boolean(raw.error),
     hasReset: Boolean(raw.modelIOReset),
@@ -407,15 +456,22 @@ function inputElements(record) {
   });
   return result;
 }
-function elementSummary(item) {
-  const label = describe(item), serialized = canonical(item.value);
+var sizeLabel = (size) => !size ? { kind: "estimated", source: null, share: null } : {
+  kind: size.kind,
+  source: size.source ?? null,
+  share: size.share ? { tokens: Math.round(size.share.tokens), count: size.share.count, scope: size.share.scope } : null
+};
+function elementSummary(item, size = null) {
+  const label = describe(item), serialized = canonical(item.value), estimatedTokens = estimateTokens(serialized);
   return {
     key: item.key,
     role: item.role,
     toolName: typeof item.toolName === "string" ? item.toolName.slice(0, 160) : null,
     toolCallId: typeof item.toolCallId === "string" ? item.toolCallId.slice(0, 256) : null,
     chars: serialized.length,
-    estimatedTokens: estimateTokens(serialized),
+    estimatedTokens,
+    tokens: size ? Math.round(size.tokens) : estimatedTokens,
+    size: sizeLabel(size),
     preview: item.readable.replace(/\s+/g, " ").slice(0, 180),
     status: item.status,
     chip: typeof label.chip === "string" ? label.chip.slice(0, 80) : null,
@@ -438,19 +494,40 @@ function toolEvidence(record, element) {
 function attemptUsage(usage) {
   return Object.fromEntries(["inputTokens", "outputTokens", "cacheReadTokens", "cacheWriteTokens"].map((k) => [k, nonnegative(usage?.[k])]));
 }
-function composition(record) {
+function composition(record, sizes = null) {
   const buckets = /* @__PURE__ */ new Map();
   for (const element of inputElements(record)) {
-    const current = buckets.get(element.role) ?? { role: element.role, chars: 0, estimatedTokens: 0, count: 0 };
-    const serialized = canonical(element.value);
+    const current = buckets.get(element.role) ?? { role: element.role, chars: 0, estimatedTokens: 0, count: 0, tokens: 0, measuredTokens: 0, measuredCount: 0 };
+    const serialized = canonical(element.value), estimate = estimateTokens(serialized), size = sizes?.byKey.get(element.key);
     current.chars += serialized.length;
-    current.estimatedTokens += estimateTokens(serialized);
+    current.estimatedTokens += estimate;
     current.count++;
+    current.tokens += size ? size.tokens : estimate;
+    if (size?.kind === "measured") {
+      current.measuredTokens += size.tokens;
+      current.measuredCount++;
+    }
     buckets.set(element.role, current);
   }
-  return { buckets: [...buckets.values()], tokenMethod: TOKEN_METHOD, complete: record.messages.complete, schemasRecorded: record.tools !== null };
+  for (const bucket of buckets.values()) {
+    bucket.tokens = Math.round(bucket.tokens);
+    bucket.measuredTokens = Math.round(bucket.measuredTokens);
+  }
+  return {
+    buckets: [...buckets.values()],
+    tokenMethod: TOKEN_METHOD,
+    complete: record.messages.complete,
+    schemasRecorded: record.tools !== null,
+    sizes: sizes ? {
+      total: sizes.total,
+      complete: sizes.complete,
+      measuredTokens: Math.round(sizes.measured),
+      unrecorded: sizes.unrecorded == null ? null : Math.round(sizes.unrecorded),
+      residual: sizes.residual == null ? null : Math.round(sizes.residual)
+    } : null
+  };
 }
-function diffRecords(before, after) {
+function diffRecords(before, after, sizesBefore = null, sizesAfter = null) {
   if (!before.messages.complete || !after.messages.complete) return { available: false, reason: "incomplete_snapshot" };
   if (before.querySource !== after.querySource) return { available: false, reason: "different_query_source" };
   const schemasComparable = before.tools !== null && after.tools !== null;
@@ -475,46 +552,54 @@ function diffRecords(before, after) {
     } else added.push(item);
   }
   const removedItems = [...removed].map((i) => a[i]);
-  const identity = (x) => x.role === "schema" && x.toolName ? "schema:" + x.toolName : x.toolCallId ? x.role + ":" + x.toolCallId : null;
+  const sizeBefore = (x) => sizesBefore?.byKey.get(x.key) ?? null, sizeAfter = (x) => sizesAfter?.byKey.get(x.key) ?? null;
+  const identity2 = (x) => x.role === "schema" && x.toolName ? "schema:" + x.toolName : x.toolCallId ? x.role + ":" + x.toolCallId : null;
   const changed = [];
   for (const afterItem of added) {
-    const id = identity(afterItem);
+    const id = identity2(afterItem);
     if (!id) continue;
-    const left = a.filter((x) => identity(x) === id), right = b.filter((x) => identity(x) === id);
-    if (left.length === 1 && right.length === 1 && removedItems.includes(left[0])) changed.push({ before: elementSummary(left[0]), after: elementSummary(afterItem), identity: id });
+    const left = a.filter((x) => identity2(x) === id), right = b.filter((x) => identity2(x) === id);
+    if (left.length === 1 && right.length === 1 && removedItems.includes(left[0])) changed.push({ before: elementSummary(left[0], sizeBefore(left[0])), after: elementSummary(afterItem, sizeAfter(afterItem)), identity: id });
   }
   const roles = [...new Set([...a, ...b].map((x) => x.role))];
   const measure = new Map([...a, ...b].map((x) => {
     const s = canonical(x.value);
     return [x, { chars: s.length, tokens: estimateTokens(s) }];
   }));
+  const modelChanged = canonical(before.model) !== canonical(after.model), sized = Boolean(sizesBefore && sizesAfter) && !modelChanged;
+  const measured = (size) => size?.kind === "measured";
   const categories = roles.map((role) => {
     const size = (xs, unit) => xs.filter((x) => x.role === role).reduce((n, x) => n + measure.get(x)[unit], 0);
+    const entered = added.filter((x) => x.role === role), left = removedItems.filter((x) => x.role === role);
+    const best = (xs, sizeOf) => xs.reduce((n, x) => n + (sizeOf(x)?.tokens ?? measure.get(x).tokens), 0);
     return {
       role,
       beforeChars: size(a, "chars"),
       afterChars: size(b, "chars"),
       charsDelta: size(b, "chars") - size(a, "chars"),
       tokensDelta: size(b, "tokens") - size(a, "tokens"),
-      addedCount: added.filter((x) => x.role === role).length,
-      removedCount: removedItems.filter((x) => x.role === role).length
+      ...sized ? { sizeDelta: Math.round(best(entered, sizeAfter) - best(left, sizeBefore)), sizeExact: entered.every((x) => measured(sizeAfter(x))) && left.every((x) => measured(sizeBefore(x))) } : {},
+      addedCount: entered.length,
+      removedCount: left.length
     };
   });
+  const exact = sized && sizesBefore.complete && sizesAfter.complete && sizesBefore.total != null && sizesAfter.total != null;
   return {
     available: true,
-    added: added.map(elementSummary),
-    removed: removedItems.map(elementSummary),
+    added: added.map((x) => elementSummary(x, sizeAfter(x))),
+    removed: removedItems.map((x) => elementSummary(x, sizeBefore(x))),
     changed,
     categories,
     reordered: matches.some((v, i) => i > 0 && v[0] < matches[i - 1][0]),
     schemasComparable,
     charsDelta: categories.reduce((n, x) => n + x.charsDelta, 0),
     tokensDelta: categories.reduce((n, x) => n + x.tokensDelta, 0),
-    modelChanged: canonical(before.model) !== canonical(after.model),
+    ...sized ? { sizeDelta: exact ? sizesAfter.total - sizesBefore.total : categories.reduce((n, x) => n + x.sizeDelta, 0), sizeExact: exact } : {},
+    modelChanged,
     attribution: "observed_change"
   };
 }
-function trajectorySummary(record, key) {
+function trajectorySummary(record, key, sizes = null) {
   return {
     key,
     requestId: record.requestId,
@@ -530,7 +615,7 @@ function trajectorySummary(record, key) {
     schemaCount: record.tools?.length ?? null,
     hasResponse: record.hasResponse,
     hasError: record.hasError,
-    composition: composition(record),
+    composition: composition(record, sizes),
     usage: attemptUsage(record.responseUsage),
     responsePreview: record.responsePreview,
     responseCalls: record.responseCalls ?? [],
@@ -602,7 +687,7 @@ var select = (fields) => fields.map((x) => {
   const [name, path] = x.split(":");
   return field(path) + " AS " + name;
 }).join(",");
-var fresh = () => ({ messageCursor: -1, partCursor: -1, messageCount: 0, partCount: 0, messages: /* @__PURE__ */ new Map(), parts: /* @__PURE__ */ new Map(), partIds: /* @__PURE__ */ new Set() });
+var fresh = () => ({ messageCursor: -1, partCursor: -1, messageCount: 0, partCount: 0, messages: /* @__PURE__ */ new Map(), parts: /* @__PURE__ */ new Map(), partIds: /* @__PURE__ */ new Set(), tools: /* @__PURE__ */ new Map() });
 var fingerprint = (text) => {
   const value = text.trim();
   return { prefix: value.slice(0, 1e3), chars: value.length, hash: createHash("sha256").update(value).digest("hex") };
@@ -616,18 +701,20 @@ function readConversation(dbPath, sessionId, cache = null) {
     const branch = rawRevert == null ? null : createHash("sha256").update(String(rawRevert)).digest("hex").slice(0, 16);
     const stat = (table) => db.prepare("SELECT count(*) AS n, max(time_updated) AS u FROM " + table + " WHERE session_id=?").get(sessionId);
     const messageStat = stat("message"), partStat = stat("part");
-    let c = cache?.partIds && (messageStat.u ?? -1) >= cache.messageCursor && (partStat.u ?? -1) >= cache.partCursor ? cache : fresh();
+    let c = cache?.partIds && cache.tools && (messageStat.u ?? -1) >= cache.messageCursor && (partStat.u ?? -1) >= cache.partCursor ? cache : fresh();
     if (c.messageCursor === (messageStat.u ?? -1) && c.partCursor === (partStat.u ?? -1) && c.messageCount === messageStat.n && c.partCount === partStat.n) {
       db.exec("COMMIT");
       return { available: true, changed: false, cache: c, branch };
     }
     const messages = db.prepare("SELECT id," + sequence + " AS sequence,time_created AS created,time_updated AS updated," + select(MESSAGE_FIELDS) + ",CASE WHEN ok THEN substr(json_extract(data,'$.summary.body'),1," + TEXT_CHARS + ") END AS summary FROM (SELECT *,json_valid(data) AS ok FROM message WHERE session_id=? AND time_updated>=?)");
-    const parts = db.prepare("SELECT id,message_id AS messageId,time_created AS created,time_updated AS updated," + select(PART_FIELDS) + ",CASE WHEN " + INJECTED_TEXT + " THEN substr(json_extract(data,'$.text'),1," + TEXT_CHARS + ") END AS text,CASE WHEN " + INJECTED_TEXT + " THEN length(json_extract(data,'$.text')) END AS textChars,CASE WHEN ok AND json_extract(data,'$.tool')='Skill' THEN length(json_extract(data,'$.state.output')) END AS outputChars,CASE WHEN ok AND json_extract(data,'$.tool')='Skill' THEN substr(json_extract(data,'$.state.output'),1," + SAMPLE_CHARS + ") END AS outputSample,CASE WHEN ok AND json_extract(data,'$.type') IN ('compaction','timeline') THEN data END AS raw FROM (SELECT *,json_valid(data) AS ok FROM part WHERE session_id=? AND time_updated>=?)");
+    const parts = db.prepare("SELECT id,message_id AS messageId,time_created AS created,time_updated AS updated," + select(PART_FIELDS) + ",CASE WHEN " + INJECTED_TEXT + " THEN substr(json_extract(data,'$.text'),1," + TEXT_CHARS + ") END AS text,CASE WHEN " + INJECTED_TEXT + " THEN length(json_extract(data,'$.text')) END AS textChars,CASE WHEN ok AND json_extract(data,'$.tool')='Skill' THEN length(json_extract(data,'$.state.output')) END AS outputChars,CASE WHEN ok AND json_extract(data,'$.type')='tool' THEN length(json_extract(data,'$.state.output')) END AS toolChars,CASE WHEN ok AND json_extract(data,'$.tool')='Skill' THEN substr(json_extract(data,'$.state.output'),1," + SAMPLE_CHARS + ") END AS outputSample,CASE WHEN ok AND json_extract(data,'$.type') IN ('compaction','timeline') THEN data END AS raw FROM (SELECT *,json_valid(data) AS ok FROM part WHERE session_id=? AND time_updated>=?)");
     const fullText = db.prepare("SELECT json_extract(data,'$.text') AS text FROM part WHERE session_id=? AND id=?");
     const ingest = (c2) => {
       for (const row of messages.all(sessionId, c2.messageCursor)) c2.messages.set(row.id, row);
       for (const row of parts.all(sessionId, c2.partCursor)) {
         c2.partIds.add(row.id);
+        if (row.type === "tool" && typeof row.callId === "string") c2.tools.set(row.id, { messageId: row.messageId, callId: row.callId, outputChars: row.toolChars ?? null });
+        else c2.tools.delete(row.id);
         const keep = row.type === "compaction" || row.type === "timeline" || row.type === "tool" && row.tool === "Skill" || row.type === "text" && row.synthetic === 1;
         if (!keep) {
           c2.parts.delete(row.id);
@@ -651,6 +738,7 @@ function readConversation(dbPath, sessionId, cache = null) {
         for (const id of [...c.partIds]) if (!liveParts.has(id)) {
           c.partIds.delete(id);
           c.parts.delete(id);
+          c.tools.delete(id);
         }
       }
     }
@@ -764,11 +852,11 @@ var JsonlTail = class {
     try {
       file = await this.openFile(path, "r");
       const st = await file.stat();
-      const identity = st.dev + ":" + st.ino;
+      const identity2 = st.dev + ":" + st.ino;
       const prefix = Buffer.alloc(this.headLength || Math.min(256, st.size));
       await file.read(prefix, 0, prefix.length, 0);
-      const changed = this.identity !== identity || st.size < this.offset || this.missing || this.headHash !== null && hash(prefix) !== this.headHash || st.size === this.offset && st.mtimeMs !== this.mtime;
-      if (this.identity === null || changed) this.reset(identity, st.size, onReset);
+      const changed = this.identity !== identity2 || st.size < this.offset || this.missing || this.headHash !== null && hash(prefix) !== this.headHash || st.size === this.offset && st.mtimeMs !== this.mtime;
+      if (this.identity === null || changed) this.reset(identity2, st.size, onReset);
       if (this.headHash === null) {
         this.headLength = Math.min(256, st.size);
         const head = Buffer.alloc(this.headLength);
@@ -838,6 +926,307 @@ var JsonlTail = class {
     }
   }
 };
+
+// src/domain/ledger.mjs
+import { createHash as createHash3 } from "node:crypto";
+var identity = (key) => createHash3("sha256").update(key).digest("base64url").slice(0, 22);
+var FRAMING = 16;
+var tolerance = (total) => Math.max(FRAMING, total * 2e-3);
+var GUARD_STEPS = 10;
+var GUARD_MISSES = 3;
+var GUARD_MISS_RATE = 0.05;
+var guardFails = (guard) => guard.steps >= GUARD_STEPS && guard.misses >= GUARD_MISSES && guard.misses / guard.steps > GUARD_MISS_RATE;
+var PLAUSIBLE_SHARE = 0.3;
+var accountable = (record) => record.messages.complete && !(record.tools === null && record.toolNames.length > 0);
+var isMessage = (element) => element.key.startsWith("message:");
+var replyText = (message) => typeof message?.content === "string" ? message.content : Array.isArray(message?.content) ? message.content.filter((part) => part?.type === "text").map((part) => String(part.text ?? "")).join("") : "";
+var squeeze = (text) => String(text).replace(/\s+/g, "");
+function rank(sorted, x) {
+  let low = 0, high = sorted.length;
+  while (low < high) {
+    const mid = low + high >> 1;
+    if (sorted[mid] <= x) low = mid + 1;
+    else high = mid;
+  }
+  return low;
+}
+var identities = /* @__PURE__ */ new WeakMap();
+function elementsOf(record) {
+  return inputElements(record).map((element) => {
+    const value = element.value, shared = value && typeof value === "object";
+    let known = shared ? identities.get(value) : null;
+    if (!known) {
+      const key = contentKey(value);
+      known = { id: identity(key), estimate: Math.max(1, estimateTokens(key)) };
+      if (shared) identities.set(value, known);
+    }
+    return {
+      key: element.key,
+      role: element.role,
+      id: known.id,
+      estimate: known.estimate,
+      calls: element.calls.map((call) => call.id).filter((id) => typeof id === "string").map((id) => id.slice(0, 256)),
+      toolCallId: element.toolCallId,
+      chars: element.role === "tool" ? element.readable.length : null,
+      text: element.role === "assistant" ? replyText(value) : null
+    };
+  });
+}
+var entry = (element, tokens, kind, source) => ({ id: element.id, role: element.role, tokens, kind, source, share: null });
+function share(next, elements, indexes, tokens, scope) {
+  const estimate = indexes.reduce((n, i) => n + elements[i].estimate, 0) || 1, group = { tokens, count: indexes.length, scope };
+  for (const i of indexes) next[i] = { ...entry(elements[i], tokens * elements[i].estimate / estimate, "split", null), share: group };
+}
+var estimateOf = (elements, indexes) => indexes.reduce((n, i) => n + elements[i].estimate, 0);
+function isResponse(element, prev) {
+  if (prev.callCount > prev.callIds.length) return false;
+  const ids = prev.callIds;
+  if (element.calls.length || ids.length)
+    return element.calls.length === ids.length && new Set(element.calls).size === ids.length && element.calls.every((id) => ids.includes(id));
+  const said = squeeze(prev.preview), text = squeeze(element.text ?? "");
+  return said.length >= 8 && (prev.previewWhole ? text === said : text.startsWith(said));
+}
+function baseline(elements, total, complete, lookup) {
+  const next = new Array(elements.length).fill(null);
+  let known = elements.map((element) => {
+    const found = lookup?.(element);
+    return found && found.tokens >= 1 ? found : null;
+  });
+  const fixedOf = (list) => list.reduce((n, found) => n + (found?.tokens ?? 0), 0);
+  if (complete) {
+    const fixed = fixedOf(known), open3 = estimateOf(elements, elements.flatMap((_, i) => known[i] ? [] : [i]));
+    if (fixed && (open3 ? total - fixed < PLAUSIBLE_SHARE * open3 : Math.abs(total - fixed) > tolerance(total))) known = known.map(() => null);
+  }
+  const rest = [];
+  elements.forEach((element, i) => {
+    if (known[i]) next[i] = entry(element, known[i].tokens, "measured", known[i].source);
+    else rest.push(i);
+  });
+  if (complete) {
+    if (rest.length) share(next, elements, rest, total - fixedOf(known), "base");
+  } else for (const i of rest) next[i] = entry(elements[i], elements[i].estimate, "estimated", null);
+  return next;
+}
+function matchAll(prev, elements) {
+  const pool = /* @__PURE__ */ new Map();
+  prev.entries.forEach((item, j) => {
+    const q = pool.get(item.id);
+    if (q) q.push(j);
+    else pool.set(item.id, [j]);
+  });
+  const used = /* @__PURE__ */ new Set(), next = new Array(elements.length).fill(null), added = [];
+  elements.forEach((element, i) => {
+    const q = pool.get(element.id);
+    if (q?.length) {
+      const j = q.shift();
+      used.add(j);
+      next[i] = { ...prev.entries[j], role: element.role };
+    } else added.push(i);
+  });
+  return { next, added, removed: prev.entries.filter((_, j) => !used.has(j)) };
+}
+function matchWindow(prev, elements, record) {
+  const start = record.messages.offset, from = prev.offset;
+  const messages = elements.filter(isMessage), end = start + messages.length, previousEnd = from + prev.messageIds.length;
+  if (start == null || from == null || start < from || start >= previousEnd || end < previousEnd) return null;
+  for (let j = start; j < previousEnd; j++) if (messages[j - start].id !== prev.messageIds[j - from]) return null;
+  const next = new Array(elements.length).fill(null), added = [], pool = /* @__PURE__ */ new Map(), used = /* @__PURE__ */ new Set();
+  prev.entries.forEach((item, j) => {
+    if (j < prev.messageIds.length) return;
+    const q = pool.get(item.id);
+    if (q) q.push(j);
+    else pool.set(item.id, [j]);
+  });
+  elements.forEach((element, i) => {
+    if (isMessage(element)) {
+      const j = start + i;
+      if (j < previousEnd) next[i] = { ...prev.entries[j - from], role: element.role };
+      else added.push(i);
+      return;
+    }
+    const q = pool.get(element.id);
+    if (q?.length) {
+      const j = q.shift();
+      used.add(j);
+      next[i] = { ...prev.entries[j], role: element.role };
+    } else added.push(i);
+  });
+  return { next, added, removed: prev.entries.filter((_, j) => j >= prev.messageIds.length && !used.has(j)) };
+}
+function advance(prev, elements, record, total, complete, guard, remembered) {
+  if (complete !== prev.complete) return null;
+  const match = complete ? matchAll(prev, elements) : matchWindow(prev, elements, record);
+  if (!match) return null;
+  const { next, added, removed } = match;
+  if (removed.some((item) => item.kind === "estimated")) return null;
+  const exact = removed.every((item) => item.kind === "measured");
+  const tol = tolerance(total), budget = total - prev.total + removed.reduce((n, item) => n + item.tokens, 0);
+  const replies = added.filter((i) => elements[i].role === "assistant");
+  let reply = replies.length === 1 && prev.output > 0 && isResponse(elements[replies[0]], prev) ? replies[0] : null;
+  if (reply !== null && exact) {
+    guard.steps++;
+    if (prev.output > budget + FRAMING) guard.misses++;
+  }
+  if (reply !== null && (guard.disabled || added.length === 1 || prev.output >= budget)) reply = null;
+  const others = added.filter((i) => i !== reply), rest = budget - (reply === null ? 0 : prev.output);
+  if (!others.length) return Math.abs(rest) > tol ? null : next;
+  if (rest < 1) return null;
+  if (reply !== null) next[reply] = entry(elements[reply], prev.output, "measured", "reply");
+  let known = exact && remembered && others.length > 1 ? others.filter((i) => remembered(elements[i])) : [];
+  let unknown = others.filter((i) => !known.includes(i)), remaining = rest - known.reduce((n, i) => n + remembered(elements[i]).tokens, 0);
+  if (known.length && (unknown.length ? remaining < Math.max(1, PLAUSIBLE_SHARE * estimateOf(elements, unknown)) : Math.abs(remaining) > tol)) {
+    known = [];
+    unknown = others;
+    remaining = rest;
+  }
+  for (const i of known) next[i] = entry(elements[i], remembered(elements[i]).tokens, "measured", "earlier");
+  if (unknown.length === 1 && exact) next[unknown[0]] = entry(elements[unknown[0]], remaining, "measured", "increment");
+  else if (unknown.length) share(next, elements, unknown, remaining, exact ? "step" : "removal");
+  return next;
+}
+function finish(elements, entries, total, complete) {
+  const byKey = /* @__PURE__ */ new Map();
+  let sum = 0, measured = 0;
+  elements.forEach((element, i) => {
+    const item = entries[i];
+    byKey.set(element.key, { tokens: item.tokens, kind: item.kind, source: item.source, share: item.share });
+    sum += item.tokens;
+    if (item.kind === "measured") measured += item.tokens;
+  });
+  return {
+    total,
+    complete,
+    measured,
+    byKey,
+    residual: complete ? total - sum : null,
+    unrecorded: !complete && total - sum > tolerance(total) ? total - sum : null
+  };
+}
+var sumOf = (entries) => entries.reduce((n, item) => n + item.tokens, 0);
+var createSizeLedger = () => ({ series: /* @__PURE__ */ new Map() });
+var MEMORY = 8e3;
+function remember(memory, elements, entries) {
+  entries.forEach((item, i) => {
+    if (item.kind !== "measured") return;
+    memory.delete(elements[i].id);
+    memory.set(elements[i].id, item.tokens);
+    if (memory.size > MEMORY) memory.delete(memory.keys().next().value);
+  });
+}
+function measureRecord(ledger, record, { segment = 0, store = null, breaks = [] } = {}) {
+  const total = nonnegative(record.responseUsage?.inputTokens);
+  if (!total) return null;
+  const elements = elementsOf(record), complete = accountable(record), model = canonical(record.model ?? {}), modelId = record.model?.modelId;
+  let series = ledger.series.get(record.querySource);
+  if (!series) ledger.series.set(record.querySource, series = { prev: null, guards: /* @__PURE__ */ new Map(), memories: /* @__PURE__ */ new Map() });
+  let guard = series.guards.get(model), memory = series.memories.get(model);
+  if (!guard) series.guards.set(model, guard = { steps: 0, misses: 0, disabled: false });
+  if (!memory) series.memories.set(model, memory = /* @__PURE__ */ new Map());
+  if (!guard.disabled && store?.disabled(modelId)) {
+    guard.disabled = true;
+    memory.clear();
+  }
+  let prev = series.prev?.segment === segment && series.prev.model === model ? series.prev : null;
+  if (prev && !complete && rank(breaks, record.startedAt) !== rank(breaks, prev.startedAt)) prev = null;
+  const remembered = guard.disabled ? null : (element) => {
+    const tokens = memory.get(element.id);
+    return tokens ? { tokens, source: "earlier" } : null;
+  };
+  const fromStore = guard.disabled ? null : store?.lookup(modelId);
+  const lookup = (element) => {
+    const found = remembered?.(element);
+    if (found) return found;
+    const tokens = fromStore?.(element);
+    return tokens == null ? null : { tokens, source: "store" };
+  };
+  const before = guard.disabled;
+  let entries = prev ? advance(prev, elements, record, total, complete, guard, remembered) : null;
+  if (!before && guardFails(guard)) {
+    guard.disabled = true;
+    memory.clear();
+    entries = null;
+  }
+  if (entries && complete && Math.abs(total - sumOf(entries)) > tolerance(total)) entries = null;
+  entries ??= baseline(elements, total, complete, guard.disabled ? null : lookup);
+  if (!guard.disabled) remember(memory, elements, entries);
+  series.prev = {
+    segment,
+    model,
+    total,
+    complete,
+    startedAt: record.startedAt,
+    output: nonnegative(record.responseUsage?.outputTokens),
+    callIds: record.responseCallIds ?? [],
+    callCount: record.responseCallCount ?? 0,
+    preview: String(record.responsePreview ?? ""),
+    previewWhole: String(record.responsePreview ?? "").length < 240,
+    offset: record.messages.offset,
+    messageIds: elements.filter(isMessage).map((element) => element.id),
+    entries
+  };
+  return finish(elements, entries, total, complete);
+}
+function storeSizes(rows, conversation, breaks = []) {
+  if (!rows?.length || !conversation?.tools) return null;
+  const callsByMessage = /* @__PURE__ */ new Map(), messageByCall = /* @__PURE__ */ new Map(), lengthOf = /* @__PURE__ */ new Map();
+  for (const tool of conversation.tools.values()) {
+    if (typeof tool.callId !== "string" || !tool.messageId) continue;
+    const calls = callsByMessage.get(tool.messageId) ?? [];
+    calls.push(tool.callId);
+    callsByMessage.set(tool.messageId, calls);
+    messageByCall.set(tool.callId, messageByCall.has(tool.callId) ? null : tool.messageId);
+    lengthOf.set(tool.callId, Number.isFinite(tool.outputChars) ? tool.outputChars : null);
+  }
+  const times = (list) => list.filter(Number.isFinite).sort((a, b) => a - b);
+  const users = times([...conversation.messages.values()].filter((m) => m.role === "user" && m.visibility !== "hidden").map((m) => m.created));
+  const marks = times([...breaks, ...[...conversation.parts?.values() ?? []].filter((p) => p.type === "compaction" || p.type === "timeline").map((p) => p.created)]);
+  const between = (sorted, from, to) => rank(sorted, to) !== rank(sorted, from);
+  const completed = /* @__PURE__ */ new Map(), series = /* @__PURE__ */ new Map();
+  for (const row of rows) {
+    if (row.message) completed.set(row.message, (completed.get(row.message) ?? 0) + 1);
+    const list = series.get(row.source) ?? [];
+    list.push(row);
+    series.set(row.source, list);
+  }
+  const output = /* @__PURE__ */ new Map(), tools = /* @__PURE__ */ new Map(), guards = /* @__PURE__ */ new Map();
+  for (const list of series.values()) {
+    list.sort((a, b) => a.startedAt - b.startedAt);
+    for (let k = 0; k + 1 < list.length; k++) {
+      const row = list[k], next = list[k + 1];
+      if (!row.message || completed.get(row.message) !== 1 || !row.model || next.model !== row.model) continue;
+      if (!(row.output > 0) || !(row.input > 0) || !(next.input >= row.input) || between(marks, row.startedAt, next.startedAt)) continue;
+      const delta = next.input - row.input, guard = guards.get(row.model) ?? { steps: 0, misses: 0 };
+      guards.set(row.model, guard);
+      guard.steps++;
+      if (row.output > delta + FRAMING) {
+        guard.misses++;
+        continue;
+      }
+      if (row.output > delta) continue;
+      output.set(row.message, { tokens: row.output, model: row.model });
+      const calls = callsByMessage.get(row.message);
+      if (delta - row.output >= 1 && calls?.length === 1 && messageByCall.get(calls[0]) === row.message && !between(users, row.startedAt, next.startedAt))
+        tools.set(calls[0], { tokens: delta - row.output, model: row.model, chars: lengthOf.get(calls[0]) });
+    }
+  }
+  const disabled = new Set([...guards].filter(([, guard]) => guardFails(guard)).map(([model]) => model));
+  return {
+    disabled: (modelId) => disabled.has(modelId),
+    lookup(modelId) {
+      if (typeof modelId !== "string" || disabled.has(modelId)) return null;
+      return (element) => {
+        if (element.role === "assistant" && element.calls.length) {
+          const message = messageByCall.get(element.calls[0]);
+          if (!message || element.calls.some((id) => messageByCall.get(id) !== message) || callsByMessage.get(message).length !== element.calls.length) return null;
+          const reply = output.get(message);
+          return reply?.model === modelId ? reply.tokens : null;
+        }
+        const result = element.role === "tool" && element.toolCallId ? tools.get(element.toolCallId) : null;
+        return result?.model === modelId && result.chars != null && result.chars === element.chars ? result.tokens : null;
+      };
+    }
+  };
+}
 
 // src/domain/events.mjs
 var COMPACT = /* @__PURE__ */ new Set([
@@ -1052,8 +1441,8 @@ function combineEvents(recorded, logged) {
 }
 
 // src/data/service.mjs
-var digest = (value) => createHash3("sha256").update(value).digest("hex").slice(0, 24);
-var sha = (value) => createHash3("sha256").update(value).digest("hex");
+var digest = (value) => createHash4("sha256").update(value).digest("hex").slice(0, 24);
+var sha = (value) => createHash4("sha256").update(value).digest("hex");
 function contains(readable, needle) {
   if (needle.text !== void 0) return readable.includes(needle.text);
   for (let at = readable.indexOf(needle.prefix); at !== -1; at = readable.indexOf(needle.prefix, at + 1))
@@ -1071,7 +1460,7 @@ function groupByRole(items, limit = 40) {
   }
   return groups;
 }
-var bySize = (a, b) => b.chars - a.chars || a.key.localeCompare(b.key);
+var bySize = (a, b) => b.tokens - a.tokens || b.chars - a.chars || a.key.localeCompare(b.key);
 var SCHEMA_ORDER = {
   calls: (a, b) => (b.callCount ?? -1) - (a.callCount ?? -1) || bySize(a, b),
   name: (a, b) => (a.toolName == null) - (b.toolName == null) || String(a.toolName ?? "").localeCompare(String(b.toolName ?? "")) || a.key.localeCompare(b.key)
@@ -1106,18 +1495,66 @@ var ContextDataService = class {
       return state;
     }
     if (this.sessions.size >= 8) this.sessions.delete(this.sessions.keys().next().value);
-    state = { ledgers: /* @__PURE__ */ new Map(), events: /* @__PURE__ */ new Map(), logTails: /* @__PURE__ */ new Map(), overview: null, conversation: null, recorded: [], targets: /* @__PURE__ */ new Map() };
+    state = { ledgers: /* @__PURE__ */ new Map(), events: /* @__PURE__ */ new Map(), logTails: /* @__PURE__ */ new Map(), overview: null, conversation: null, recorded: [], targets: /* @__PURE__ */ new Map(), store: null, storeKey: null };
     this.sessions.set(sessionId, state);
     return state;
   }
   async refresh(sessionId) {
     const state = this.state(sessionId);
     const coverage = [];
+    const transient = (code) => code === "database_busy" || code === "database_unavailable";
+    const conversation = readConversation(this.paths.db, sessionId, state.conversation);
+    if (conversation.available) {
+      if (conversation.changed || !state.conversation) state.recorded = conversationEvents(conversation.cache);
+      state.conversation = conversation.cache;
+      state.branch = conversation.branch;
+    } else if (!transient(conversation.code)) {
+      state.conversation = null;
+      state.recorded = [];
+      state.branch = null;
+    }
+    for (let day = 2; day >= 0; day--) {
+      const date = /* @__PURE__ */ new Date();
+      date.setDate(date.getDate() - day);
+      const stamp = date.getFullYear() + "-" + String(date.getMonth() + 1).padStart(2, "0") + "-" + String(date.getDate()).padStart(2, "0");
+      const path = join(this.paths.logDir, "zcode-" + stamp + ".jsonl");
+      let tail = state.logTails.get(path);
+      if (!tail) {
+        tail = new JsonlTail();
+        state.logTails.set(path, tail);
+      }
+      await tail.scan(path, (raw) => {
+        const event = contextEvent(raw, sessionId);
+        if (event) state.events.set(event.event + ":" + event.timestamp + ":" + event.turnId + ":" + event.spanId, event);
+        while (state.events.size > 200) state.events.delete(state.events.keys().next().value);
+      });
+    }
+    const requests = readRequestUsage(this.paths.db, sessionId, { key: state.requestKey });
+    if (requests.available) {
+      if (!requests.unchanged) {
+        state.requestRows = requests.rows;
+        state.requestKey = requests.key;
+      }
+    } else if (!transient(requests.code)) {
+      state.requestRows = null;
+      state.requestKey = null;
+    }
+    const breaks = [...state.recorded, ...state.events.values()].filter((e) => e.kind === "compaction").flatMap((e) => [e.timestamp, e.endedAt]).filter(Number.isFinite).sort((a, b) => a - b);
+    const c = state.conversation, storeKey = state.requestRows && c ? [state.requestKey, c.messageCount, c.partCount, c.messageCursor, c.partCursor, breaks.length, breaks.at(-1)].join(":") : null;
+    if (storeKey !== state.storeKey) {
+      state.store = storeKey ? storeSizes(state.requestRows, c, breaks) : null;
+      state.storeKey = storeKey;
+    }
+    const waiting = !state.store && !this.records(state).length && (transient(requests.code) || transient(conversation.code)) && (state.storeWaits = (state.storeWaits ?? 0) + 1) <= 2;
     for (const directory of this.paths.trajectoryDirs) {
+      if (waiting) {
+        coverage.push({ available: true, scanning: true, pendingLine: false, coverage: [] });
+        continue;
+      }
       const path = join(directory, "model-io-" + sanitizeSessionSegment(sessionId) + ".jsonl");
       let ledger = state.ledgers.get(path);
       if (!ledger) {
-        ledger = { tail: new JsonlTail(), previous: null, records: /* @__PURE__ */ new Map(), chars: 0, segment: 0, baseSegment: null, steps: 0, turns: /* @__PURE__ */ new Map() };
+        ledger = { tail: new JsonlTail(), previous: null, records: /* @__PURE__ */ new Map(), chars: 0, segment: 0, baseSegment: null, steps: 0, turns: /* @__PURE__ */ new Map(), sizes: createSizeLedger() };
         state.ledgers.set(path, ledger);
       }
       const status = await ledger.tail.scan(path, (raw, offset) => {
@@ -1141,12 +1578,13 @@ var ContextDataService = class {
         const serialized = canonical(record);
         const chars = serialized.length;
         const key = digest(sessionId + ":" + path + ":" + ledger.tail.generation + ":" + ledger.segment + ":" + offset + ":" + digest(serialized));
-        const summary = trajectorySummary(record, key);
+        const sizes = measureRecord(ledger.sizes, record, { segment: ledger.segment, store: state.store, breaks });
+        const summary = trajectorySummary(record, key, sizes);
         const agent = isAgentSource(record.querySource);
         if (agent && record.turnId && !ledger.turns.has(record.turnId)) ledger.turns.set(record.turnId, ledger.turns.size + 1);
         summary.step = agent ? ++ledger.steps : null;
         summary.turn = record.turnId ? ledger.turns.get(record.turnId) ?? null : null;
-        ledger.records.set(key, { key, record, chars, path, offset, segment: ledger.segment, fromStart: ledger.segment === ledger.baseSegment, summary });
+        ledger.records.set(key, { key, record, chars, path, offset, segment: ledger.segment, fromStart: ledger.segment === ledger.baseSegment, summary, sizes });
         ledger.chars += chars;
         ledger.previous = record;
         while (ledger.records.size > 120 || ledger.chars > MAX_CACHE_CHARS) {
@@ -1164,41 +1602,16 @@ var ContextDataService = class {
         ledger.baseSegment = ledger.segment;
         ledger.steps = 0;
         ledger.turns.clear();
+        ledger.sizes = createSizeLedger();
       }, () => {
         ledger.previous = null;
         ledger.segment++;
       });
       coverage.push(status);
     }
-    for (let day = 2; day >= 0; day--) {
-      const date = /* @__PURE__ */ new Date();
-      date.setDate(date.getDate() - day);
-      const stamp = date.getFullYear() + "-" + String(date.getMonth() + 1).padStart(2, "0") + "-" + String(date.getDate()).padStart(2, "0");
-      const path = join(this.paths.logDir, "zcode-" + stamp + ".jsonl");
-      let tail = state.logTails.get(path);
-      if (!tail) {
-        tail = new JsonlTail();
-        state.logTails.set(path, tail);
-      }
-      await tail.scan(path, (raw) => {
-        const event = contextEvent(raw, sessionId);
-        if (event) state.events.set(event.event + ":" + event.timestamp + ":" + event.turnId + ":" + event.spanId, event);
-        while (state.events.size > 200) state.events.delete(state.events.keys().next().value);
-      });
-    }
     const records = this.records(state);
     const usage = readUsage(this.paths.db, sessionId);
     state.toolCalls = readToolCalls(this.paths.db, sessionId);
-    const conversation = readConversation(this.paths.db, sessionId, state.conversation);
-    if (conversation.available) {
-      if (conversation.changed || !state.conversation) state.recorded = conversationEvents(conversation.cache);
-      state.conversation = conversation.cache;
-      state.branch = conversation.branch;
-    } else if (!["database_busy", "database_unavailable"].includes(conversation.code)) {
-      state.conversation = null;
-      state.recorded = [];
-      state.branch = null;
-    }
     if (records.length && coverage.every((item) => !item.available) && !coverage.some((item) => item.code === "file_unavailable"))
       coverage.push({ coverage: ["source_rotated"], scanning: false });
     const cutoff = Date.now() - 3 * 864e5;
@@ -1210,7 +1623,7 @@ var ContextDataService = class {
       usage,
       toolCalls: state.toolCalls,
       trajectories: records.slice(-60).map((item) => this.timelineItem(records, item)),
-      composition: latest ? composition(latest.record) : null,
+      composition: latest ? composition(latest.record, latest.sizes) : null,
       trajectory: {
         available: records.length > 0,
         scanning: coverage.some((item) => item.scanning),
@@ -1260,12 +1673,12 @@ var ContextDataService = class {
     if (!previous) return { available: false, reason: baselineKey ? "baseline_expired" : "no_previous_snapshot" };
     if (previous.path !== selected.path || previous.segment !== selected.segment) return { available: false, reason: "history_gap", previousKey: previous.key };
     if (previous.key === selected.key || all.indexOf(previous) >= all.indexOf(selected)) return { available: false, reason: "invalid_baseline" };
-    return { ...diffRecords(previous.record, selected.record), previousKey: previous.key };
+    return { ...diffRecords(previous.record, selected.record, previous.sizes, selected.sizes), previousKey: previous.key };
   }
   // Absolute message range and per-message digests of one cached record, computed once and kept on the cache entry.
-  fingerprint(entry) {
-    const { items, offset } = entry.record.messages;
-    return entry.fingerprint ??= { start: offset, end: offset == null ? null : offset + items.length, hashes: items.map((x) => digest(contentKey(x))) };
+  fingerprint(entry2) {
+    const { items, offset } = entry2.record.messages;
+    return entry2.fingerprint ??= { start: offset, end: offset == null ? null : offset + items.length, hashes: items.map((x) => digest(contentKey(x))) };
   }
   // The message at absolute index i entered with the earliest snapshot of an unbroken chain whose message count exceeds i.
   // The chain follows previous(): same file, segment and source. A missing offset, a shrinking count (compaction) or a
@@ -1303,7 +1716,13 @@ var ContextDataService = class {
       const d = this.comparison(all, item);
       item.timeline = {
         ...item.summary,
-        delta: d.available ? { chars: d.charsDelta, tokens: d.tokensDelta, categories: d.categories, schemasComparable: d.schemasComparable } : null,
+        delta: d.available ? {
+          chars: d.charsDelta,
+          tokens: d.tokensDelta,
+          categories: d.categories,
+          schemasComparable: d.schemasComparable,
+          ...d.sizeDelta != null ? { sizeDelta: d.sizeDelta, sizeExact: d.sizeExact } : {}
+        } : null,
         baselineKey: d.previousKey ?? null,
         deltaReason: d.reason ?? null
       };
@@ -1403,6 +1822,7 @@ var ContextDataService = class {
     if (!selected) throw new ContextError("request_expired", "Request is outside the loaded trajectory window.");
     if (args.baselineMode === "turn" && !args.baselineKey && !args.noBaseline) args = { ...args, ...this.turnBaseline(all, selected) };
     const record = selected.record, elements = inputElements(record), page = args.page ?? 0, pageSize = 40;
+    const summarize = (entry2, item) => elementSummary(item, entry2?.sizes?.byKey.get(item.key) ?? null);
     let diff = args.noBaseline ? { available: false, reason: args.noBaselineReason ?? "no_previous_turn" } : this.comparison(all, selected, args.baselineKey);
     const calls = state.toolCalls ?? { available: false, byName: {} };
     const callCount = (x) => !calls.available || typeof x.toolName !== "string" ? null : Object.hasOwn(calls.byName, x.toolName) ? calls.byName[x.toolName].count : calls.truncated ? null : 0;
@@ -1428,7 +1848,7 @@ var ContextDataService = class {
           sinceStep: since,
           count: arrived.length,
           keys: arrived.map((x) => x.key),
-          groups: groupByRole(order(arrived.map(elementSummary), true)),
+          groups: groupByRole(order(arrived.map((x) => summarize(selected, x)), true)),
           unknownCount: stamped.filter((x) => !x.entry.entered && x.entry.before && x.entry.before.step > since).length
         };
       }
@@ -1438,7 +1858,7 @@ var ContextDataService = class {
     if (diff.available) {
       const before = new Map(inputElements(all.find((x) => x.key === diff.previousKey).record).map((x) => [x.key, x]));
       changes = { source: "diff", added: diff.added.map((x) => [x, own.get(x.key)]), removed: diff.removed.map((x) => [x, before.get(x.key)]) };
-    } else if (arrived) changes = { source: "arrivals", added: arrived.map((x) => [elementSummary(x), x]), removed: null };
+    } else if (arrived) changes = { source: "arrivals", added: arrived.map((x) => [summarize(selected, x), x]), removed: null };
     const shown = (list) => list ? list.filter(([, x]) => x && hit(x)).map(([summary]) => summary) : null;
     const added = shown(changes?.added), removed = shown(changes?.removed), roles = {};
     const tally = (role2) => roles[role2] ??= { total: 0, matched: 0, added: 0, addedTotal: 0, removed: removed ? 0 : null, removedTotal: removed ? 0 : null };
@@ -1451,7 +1871,7 @@ var ContextDataService = class {
     for (const [x] of changes?.removed ?? []) tally(x.role).removedTotal++;
     for (const x of added ?? []) tally(x.role).added++;
     for (const x of removed ?? []) tally(x.role).removed++;
-    const focusItem = args.focusKey && own.has(args.focusKey) ? decorate(elementSummary(own.get(args.focusKey))) : null, addedOrdered = order(added ?? [], true);
+    const focusItem = args.focusKey && own.has(args.focusKey) ? decorate(summarize(selected, own.get(args.focusKey))) : null, addedOrdered = order(added ?? [], true);
     const listing = {
       narrowed: Boolean(search || prefix),
       source: changes?.source ?? null,
@@ -1481,12 +1901,21 @@ var ContextDataService = class {
       for (const item of snapshot === selected ? elements : inputElements(snapshot.record)) {
         if (role && item.role !== role) continue;
         if (!hit(item)) continue;
-        filtered.push({ ...decorate(elementSummary(item), snapshot === selected), ...loadedSearch ? { snapshotKey: snapshot.key, snapshotTime: snapshot.record.startedAt } : {} });
+        filtered.push({ ...decorate(summarize(snapshot, item), snapshot === selected), ...loadedSearch ? { snapshotKey: snapshot.key, snapshotTime: snapshot.record.startedAt } : {} });
       }
     }
     const ordered = arrange(filtered, args.sort, loadedSearch ? null : args.schemaSort);
-    const schemas = elements.filter((x) => x.role === "schema").map((x) => decorate(elementSummary(x))), unused = schemas.filter((x) => x.callCount === 0);
-    const schemaCalls = record.tools === null ? { available: false, reason: "not_recorded" } : !calls.available ? { available: false, reason: calls.code ?? "tool_usage_unavailable" } : { available: true, scope: "session", schemaCount: schemas.length, unusedCount: unused.length, unusedEstimatedTokens: unused.reduce((n, x) => n + x.estimatedTokens, 0), unknownCount: schemas.filter((x) => x.callCount == null).length };
+    const schemas = elements.filter((x) => x.role === "schema").map((x) => decorate(summarize(selected, x))), unused = schemas.filter((x) => x.callCount === 0);
+    const schemaCalls = record.tools === null ? { available: false, reason: "not_recorded" } : !calls.available ? { available: false, reason: calls.code ?? "tool_usage_unavailable" } : {
+      available: true,
+      scope: "session",
+      schemaCount: schemas.length,
+      unusedCount: unused.length,
+      unusedEstimatedTokens: unused.reduce((n, x) => n + x.estimatedTokens, 0),
+      unusedTokens: unused.reduce((n, x) => n + x.tokens, 0),
+      unusedExact: unused.length > 0 && unused.every((x) => x.size.kind === "measured"),
+      unknownCount: schemas.filter((x) => x.callCount == null).length
+    };
     const element = args.elementKey ? elements.find((x) => x.key === args.elementKey) : null;
     if (args.elementKey && !element) throw new ContextError("element_missing", "Element unavailable.");
     let content = null;
@@ -1505,7 +1934,7 @@ var ContextDataService = class {
         }
       }
       content = {
-        ...decorate(elementSummary(element)),
+        ...decorate(summarize(selected, element)),
         offset,
         totalChars: text.length,
         lineCount: text.split("\n").length,
@@ -1548,7 +1977,7 @@ var ContextDataService = class {
       page,
       searchScope: args.searchScope === "loaded" && search ? "all_loaded_snapshots" : "all_elements_in_selected_loaded_snapshot",
       loadedSnapshotCount: all.length,
-      largest: filtered.length ? filtered.reduce((largest, x) => x.chars > largest.chars ? x : largest) : null,
+      largest: filtered.length ? filtered.reduce((largest, x) => x.tokens > largest.tokens ? x : largest) : null,
       groups: loadedSearch ? null : pin(groupByRole(ordered), args.focusKey, ordered, focusItem),
       schemaCalls,
       elements: ordered.slice(page * pageSize, (page + 1) * pageSize),
