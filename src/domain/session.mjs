@@ -9,6 +9,7 @@ export function readSessionContext(meta) {
   }
   return Object.freeze({ sessionId });
 }
+// From ZCode's modelTrajectoryFileTail.ts (Apache-2.0, see NOTICE); must stay identical to match the host's file names.
 export function sanitizeSessionSegment(value) {
   return value.replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80);
 }

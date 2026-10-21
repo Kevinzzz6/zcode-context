@@ -41,7 +41,7 @@ await cp(path(".zcode-plugin"),new URL(".zcode-plugin/",plugin),{recursive:true}
 await mkdir(new URL("dist/",plugin),{recursive:true});
 for(const file of ["server.mjs","worker.mjs","context.html"])await cp(path("dist/"+file),new URL("dist/"+file,plugin));
 await cp(path("dist/THIRD_PARTY_NOTICES.txt"),new URL("THIRD_PARTY_NOTICES.txt",plugin));
-for(const file of ["README.md","README.en.md","CHANGELOG.md","LICENSE"])await cp(path(file),new URL(file,plugin));
+for(const file of ["README.md","README.en.md","CHANGELOG.md","LICENSE","NOTICE"])await cp(path(file),new URL(file,plugin));
 await cp(path("docs"),new URL("docs/",plugin),{recursive:true});
 const manifest=JSON.parse(await readFile(path(".zcode-plugin/plugin.json"),"utf8"));
 await writeFile(path("marketplace.json"),JSON.stringify({name:"zcode-context-marketplace",description:"Distribution marketplace for the zcode-context plugin.",owner:{name:manifest.author.name},plugins:[{name:manifest.name,version:manifest.version,source:"./plugins/zcode-context",description:manifest.description,description_i18n:manifest.description_i18n,category:"developer-tools",keywords:["context","tokens","usage","mcp"]}]},null,2)+"\n");
