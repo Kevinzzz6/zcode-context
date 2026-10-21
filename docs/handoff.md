@@ -1,6 +1,15 @@
 # ZCode Context 交接文档
 
-更新时间：2026-10-14，Asia/Shanghai。当前版本：0.3.8。
+更新时间：2026-10-21，Asia/Shanghai。当前版本：0.3.10，另有未发布的改动（见下）。
+
+## 实测大小记账（2026-10-21，未发布）
+
+- 起因：完整记录下概览的大数字是字符估算，本机 Claude 会话中位只有实际输入的 72%（例如估算约 6 万、实际约 10 万）；浏览器里工具结果显得偏小、带 thinking 的回复显得偏大，按大小排序会排错。
+- 新模块 `src/domain/ledger.mjs`：入库时按文件顺序记账，口径和证据见 [decisions.md](decisions.md)「大小口径」和 [architecture.md](architecture.md)「Measured sizes」。`measureRecord` 每条记录给出各条目的 `tokens / kind / source / share`；`storeSizes` 从会话记录（`readRequestUsage` 加上 `readConversation` 新增的 `tools`）补序列开头的回复和单个工具结果。
+- 服务在扫描请求记录之前先读会话记录、日志和请求用量；`composition`、`elementSummary`、`diffRecords` 接收实测大小，原有的 `estimatedTokens`、`tokensDelta` 和 `unusedEstimatedTokens` 含义不变，新增 `tokens`、`size`、`measuredTokens`、`measuredCount`、`sizes`（含 `residual`）、`sizeDelta`、`sizeExact`、`unusedTokens` 和 `unusedExact`。界面优先用新字段，没有时退回估算（演示数据就是这样）。
+- 代码审查（4 个并行审查，记账、数据层、界面与文档、测试质量）后修复：会话库的工具结果按内容长度核对，配对只取同来源真正相邻、同模型、中间没有压缩或模型切换的两次请求，回复大小只在输出放得进增量时才记；回复只按输出原值记账、实测值不小于 1、余量单独记着；防护要求至少 3 次超出，只检验离开内容都是实测的步骤，用会话库的整场判断提前生效，触发时当前请求重新起账；类别变化只算进入和离开的内容，换模型不给实测变化，变化量不精确时带 ≈；取整不再丢掉 ≈，上报输入为 0 不当作大数字；数据库短暂不可读时保留上次的行，首次扫描最多等两轮；用量改为先读汇总、有变化再读行。
+- 验证：`npm run verify` 通过（122 个单元测试；`test/ledger.test.mjs` 24 个，数据层另有 5 个）；16 个针对审查发现的变异全部被测试发现；浏览器冒烟 36 组通过；用本机真实会话只读回放：完整记录的 Claude 会话实测 52%–79%、GLM 会话 81%，类别加总在容差内等于实际输入，相邻步骤的变化 19/20、13/14 步是精确的；无变化的刷新多约 2 ms（汇总查询），冷读扫描多约 4%–9%。尚未在真实 Electron 客户端中验收。
+- 已知限制：一步同时新增多项时各项是估算份额；系统提示词和工具定义永远是份额；默认记录下工具定义和起账时窗口里的消息只能估算；隐藏推理比同一步工具结果小、且会话不到 10 步时，防护发现不了；会话库补的工具结果在约 0.7% 的情况下会带上请求时临时注入、会话库里没有的提醒。
 
 ## 0.3.8 代码审查修复（2026-10-14）
 
@@ -87,7 +96,7 @@ UI 开发用 `npm run fixture:ui`（端口 4175）；`npm run fixture:browser` +
 
 每次工具调用重新从 `_meta["com.zcode/request-context"].session_id` 绑定。
 视图存储只是偏好，绝不提供会话授权；绑定失败清空页面旧数据。
-SQLite 与 traj 不强行关联 request ID。估算与实际 usage 分开，缺字段保持未知。
+SQLite 与 traj 不强行关联 request ID。实际 usage 是请求的大小，估算只在实测总量里分份额或在无从实测时代替；缺字段保持未知。
 缺消息基线、reset、损坏行/跨缺口不能产生删除或负 Delta；未记录 schema 不按删除处理。
 下降不是压缩原因证据；淘汰内容不可恢复；不猜 skill/插件来源。
 冷文件 24 MiB、每轮/单行 8 MiB、8 会话、总记录缓存 32 Mi 字符、worker 堆 256 MiB；响应只返回有界摘要与正文块。
