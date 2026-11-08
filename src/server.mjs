@@ -10,8 +10,10 @@ const HTML_URI = "ui://zcode-context/panel.html";
 const reader = createReader(() => new Worker(new URL("./worker.mjs", import.meta.url), { workerData: { paths: resolveDataPaths() }, resourceLimits: { maxOldGenerationSizeMb: 256 } }));
 export function createContextServer() {
   const server = new McpServer({name:"zcode-context",version:"0.3.10"});
+  // clipboardWrite is what the panel's copy buttons need: the host gates clipboard-write on what the resource
+  // declares, and a sandboxed frame is not the host origin that feature defaults to.
   server.registerResource("context_panel", HTML_URI, { mimeType:"text/html;profile=mcp-app",
-    _meta:{ui:{csp:{connectDomains:[],resourceDomains:[]}}} },
+    _meta:{ui:{csp:{connectDomains:[],resourceDomains:[]},permissions:{clipboardWrite:{}}}} },
     async () => ({contents:[{uri:HTML_URI,mimeType:"text/html;profile=mcp-app",text:await readFile(new URL("./context.html",import.meta.url),"utf8")}]})
   );
   const wrap = method => async (args,extra) => {

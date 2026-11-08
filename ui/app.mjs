@@ -247,8 +247,18 @@ function loadOlder() {
   olderLoad={generation:expected,promise};
   return promise;
 }
+// The panel runs in a sandboxed frame; the host's Permissions-Policy blocks clipboard-write for it, so the
+// async Clipboard API rejects and only the execCommand path can still reach the clipboard.
 async function copy(text) {
-  try{await navigator.clipboard.writeText(text);flash("copied");}catch{flash("copyFailed");}
+  try{await navigator.clipboard.writeText(text);flash("copied");return;}catch{}
+  const scratch=document.createElement("textarea");
+  scratch.value=text;scratch.setAttribute("readonly","");
+  scratch.style.position="fixed";scratch.style.top="-1000px";scratch.style.left="-1000px";scratch.style.opacity="0";
+  document.body.append(scratch);scratch.select();scratch.setSelectionRange(0,text.length);
+  let ok=false;
+  try{ok=document.execCommand("copy");}catch{ok=false;}
+  scratch.remove();
+  flash(ok?"copied":"copyFailed");
 }
 // "Previous turn" is resolved by the service over its whole cache, not only the steps this panel has loaded.
 function baselineArgs() {
