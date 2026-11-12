@@ -31379,7 +31379,7 @@ function createContextServer() {
     HTML_URI,
     {
       mimeType: "text/html;profile=mcp-app",
-      _meta: { ui: { csp: { connectDomains: [], resourceDomains: [] } } }
+      _meta: { ui: { csp: { connectDomains: [], resourceDomains: [] }, permissions: { clipboardWrite: {} } } }
     },
     async () => ({ contents: [{ uri: HTML_URI, mimeType: "text/html;profile=mcp-app", text: await readFile(new URL("./context.html", import.meta.url), "utf8") }] })
   );
